@@ -1,0 +1,941 @@
+\documentclass[11pt]{article}
+\usepackage[a4paper,margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{enumitem}
+\usepackage{graphicx}
+\usepackage{tikz}
+\usetikzlibrary{positioning,arrows.meta,shapes.multipart,trees}
+\usepackage[round,authoryear]{natbib}
+\usepackage{xcolor}
+\usepackage[colorlinks=true,linkcolor=blue!50!black,citecolor=blue!50!black,urlcolor=blue!50!black]{hyperref}
+\usepackage{caption}
+\captionsetup{font=small,labelfont=bf}
+\setlist{nosep}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+\bibliographystyle{plainnat}
+\setlength{\bibsep}{2pt}
+
+\title{\textbf{Memory for LLM Agents: A Critical Review of Approaches, Evaluation, and Governance (2023--2026)}}
+\author{Prepared for the \texttt{agent-memory} project\thanks{Drafted with AI assistance (Factory Droid). Literature search conducted on 25 October 2026 using arXiv, conference proceedings, alphaXiv overviews, and vendor publications. Claims that rest on vendor-run evaluations are marked as such in the text and in the reference list.}}
+\date{25 October 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Large language models are stateless functions of their input, so everything an agent ``remembers'' is an engineering decision about what to return to the prompt, what to fold into weights or latent state, and what to keep in storage the model reaches through tools. This review surveys the approaches that emerged for this problem between 2023 and late 2026, organised by substrate (parametric, latent, token-level), function (working, episodic, semantic, procedural), and control policy (who writes, consolidates, retrieves, and forgets). It covers five mechanism families, parametric and latent memory, context-resident memory and compaction, external retrieval stores from vector indexes to temporal graphs and agent-maintained wikis, experiential and procedural memory, and learned memory-management policies, together with personalisation, multi-agent memory, evaluation, frameworks, applications, and the security, temporal-validity, provenance, and deletion literature of 2026. Unlike prior surveys, it grades every claim by evidence type and examines the field's credibility problem directly: LoCoMo scores for the same systems range from 53 to 92.5 depending on who ran them, and a plain filesystem agent has outscored several memory products. The main findings are that no mechanism family dominates and the harness often matters more than the store; recall benchmarks are saturated and poorly predict agentic use; write-time summarisation creates a barrier only raw-evidence retention can remove; similarity search cannot detect contradiction or staleness; deletion is unsolved; and memory is a compounding attack surface. The review reads the field's trajectory towards memory as a trained capability and a governed data system, sets out a research agenda with explicit success criteria, and closes with design recommendations for auditable, multi-harness memory, illustrated by a case study.
+\end{abstract}
+
+\section{Introduction}
+
+\subsection{Why memory, and why now}
+
+A transformer language model conditions its output on a bounded sequence of tokens. Across calls it retains nothing. Early chat applications hid this by replaying the conversation, and early ``agents'' extended that by replaying tool outputs. By 2023 three pressures made this untenable. Conversations and tasks outgrew the window. Users expected assistants to remember preferences and prior work across sessions. And agents began to run for hours or days, where failing to recall a constraint stated earlier (an allergy, a renamed API, a prior failed attempt) produces visible, costly errors \citep{zhao2026amabench,wu2026proactive}.
+
+The response has been a research and product field that now has its own surveys, benchmarks, security literature, and vendor ecosystem. Between 2024 and 2026 at least seven broad surveys appeared \citep{zhang2024survey,du2025rethinking,wu2025humanmemory,hu2025memoryage,du2026memory,jiang2026anatomy,luo2026storage}, each proposing a taxonomy, which is itself evidence that the field has not converged on vocabulary. \citet{hu2025memoryage}, a 47-author survey, open by noting that ``the proliferation of loosely defined memory terminologies has further obscured conceptual clarity'' and that the long-term/short-term split ``has proven insufficient.''
+
+\subsection{Questions and scope}
+
+This review asks four questions:
+\begin{enumerate}
+\item What approaches exist for giving LLM agents memory, and what are the mechanisms behind each?
+\item What does the evidence say about their relative effectiveness, and how trustworthy is that evidence?
+\item What failure modes have been documented, including security, staleness, and deletion?
+\item Where is the field heading, and which research directions does the evidence make promising?
+\item What do these findings imply for the design of a memory system intended to be auditable and shared across agent harnesses?
+\end{enumerate}
+
+Scope is memory for LLM-based agents: systems in which a model takes actions over multiple steps or sessions and must carry information across them. Three adjacent topics are treated only where they bear on agent memory: long-context modelling as such, retrieval-augmented generation (RAG) over static corpora, and continual pretraining. Following \citet{hu2025memoryage}, the distinction adopted here is that agent memory is writable by the agent during operation, evolves over time, and is read back to influence future behaviour. RAG over a fixed corpus and a long context window are ingredients, not memory systems.
+
+\subsection{Method and evidence grading}
+\label{sec:method}
+
+Sources were gathered from arXiv, conference proceedings (NeurIPS, ICML, ICLR, ACL, EMNLP, EACL, COLM), alphaXiv paper overviews, and vendor publications, with searches conducted on 25 October 2026 and citation snowballing from the surveys above. Three grades of evidence are distinguished in the text:
+\begin{itemize}
+\item \textbf{Peer-reviewed}: accepted at a venue with review (noted in the reference list where known).
+\item \textbf{Preprint}: arXiv only at the time of writing.
+\item \textbf{Vendor or practitioner report}: blog posts, READMEs, product documentation. Useful for what was shipped; weak for comparative performance.
+\end{itemize}
+The field moves fast and much of the strongest 2026 work is still preprint. This is noted rather than treated as disqualifying, but readers should weight claims accordingly.
+
+\subsection{Relation to prior surveys and contributions}
+
+Table~\ref{tab:surveys} in Section~\ref{sec:foundations} summarises the taxonomies proposed by eight surveys published between 2024 and 2026. Each is valuable as a map of mechanisms. This review differs from them in four ways.
+
+\begin{enumerate}
+\item \textbf{Evidence grading.} Every quantitative claim is labelled by source type (peer-reviewed, preprint, vendor), and Section~\ref{sec:crosscutting} rates the strength of evidence for each of the field's main claims. Prior surveys report published numbers without distinguishing who produced them.
+\item \textbf{The credibility problem as an object of study.} Section~\ref{sec:eval} documents the dispute over LoCoMo scores, the saturation of recall benchmarks, and the failure of recall scores to predict agentic performance, drawing on the empirical analyses of \citet{jiang2026anatomy} and \citet{spencer2026groundtruth}.
+\item \textbf{Governance as a first-class topic.} Temporal validity, provenance, belief revision, poisoning, and deletion receive a full section rather than a future-directions bullet, because the 2026 literature on these topics is now large enough, and negative enough, to change design conclusions.
+\item \textbf{An actionable agenda.} Section~\ref{sec:directions} states, for each research direction, the measured gap that motivates it and what a convincing result would look like; Section~\ref{sec:implications} turns the findings into design recommendations and tests them against a concrete case.
+\end{enumerate}
+
+\subsection{Organisation}
+
+Section~\ref{sec:foundations} fixes definitions, separates agent memory from adjacent concepts, and sets out the taxonomy. Sections~\ref{sec:parametric} to \ref{sec:rl} walk the substrate axis from inside the model outward (parametric and latent; context-resident; external retrieval) and then treat experiential memory and learned control as cross-cutting families. Section~\ref{sec:personalization} covers user-centric memory, Section~\ref{sec:multiagent} shared memory. Section~\ref{sec:eval} covers metrics, benchmarks, and the credibility problem; Section~\ref{sec:resources} the frameworks and products; Section~\ref{sec:applications} the application domains. Section~\ref{sec:security} covers security, temporal validity, provenance, and forgetting. Sections~\ref{sec:crosscutting} to \ref{sec:directions} analyse across families, read the field's trajectory, and propose a research agenda. Section~\ref{sec:implications} gives design recommendations with a case study, and Section~\ref{sec:conclusion} concludes. Appendix~\ref{app:method} documents the search protocol; Appendix~\ref{app:systems} tabulates representative systems. Figure~\ref{fig:timeline} places the works discussed on a timeline.
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[
+  x=1cm,
+  ev/.style={font=\scriptsize, align=center, text width=2.6cm},
+  tick/.style={draw, black!60, thick},
+  yr/.style={font=\small\bfseries}
+]
+\draw[-{Latex[length=2.5mm]}, very thick, black!70] (0,0) -- (15.6,0);
+\foreach \x/\y in {0.4/2023, 4.2/2024, 8.0/2025, 11.8/2026} {
+  \draw[tick] (\x,-0.12) -- (\x,0.12);
+  \node[yr, below] at (\x,-0.15) {\y};
+}
+% 2023
+\node[ev, above] at (1.6,0.25) {Generative Agents; Reflexion; CoALA; \textbf{MemGPT}};
+\node[ev, below] at (2.0,-0.75) {Lost in the Middle};
+% 2024
+\node[ev, above] at (5.0,0.25) {LoCoMo; LongMemEval; HippoRAG; Memory Layers; Titans};
+\node[ev, below] at (5.8,-0.75) {AgentPoison; first memory survey (Zhang et al.)};
+% 2025
+\node[ev, above] at (8.9,0.25) {Mem0 and Zep papers; A-MEM; MIRIX; MemOS; ReasoningBank; Memory-R1; ACE};
+\node[ev, below] at (9.5,-0.75) {Letta filesystem result and the LoCoMo dispute; context rot; Anthropic memory tool; Hindsight};
+% 2026
+\node[ev, above] at (12.9,0.25) {TierMem; MemoryArena; AMA-Bench; Kumiho; MemTX; LLM-Wiki; MemCalib; NapMem};
+\node[ev, below] at (13.6,-0.75) {STALE; StateMemBench; Bemula; PM-Bench; security and unlearning surveys; Ground Truth First};
+\end{tikzpicture}
+\caption{Timeline of the works discussed, 2023--2026. Above the line: mechanisms and systems; below: evaluation, failure modes, and governance. The field's emphasis moved from mechanisms (2023--2025) to measurement and governance (2025--2026).}
+\label{fig:timeline}
+\end{figure}
+
+\section{Background: Definitions, Adjacent Concepts, and Taxonomies}
+\label{sec:foundations}
+
+\subsection{Definitions}
+
+An \emph{LLM agent} is here a system in which a language model $\pi$ is called repeatedly: at step $t$ it receives a context $c_t$ (a token sequence), emits an action $a_t$ (text, a tool call, or an edit to its own state), and the environment and harness together produce the next context $c_{t+1}$. The model is stateless: $a_t = \pi(c_t)$ and nothing else. Every form of persistence therefore lives in the function that builds $c_{t+1}$ from the history, which this review calls the \emph{harness}, and in whatever stores that function can read.
+
+Following \citet{hu2025memoryage}, \emph{agent memory} is information that (i) is written during operation, by the agent, the harness, or a side process, rather than fixed before deployment; (ii) persists beyond the step or session in which it was written; (iii) evolves, in that it can be updated, consolidated, superseded, or removed; and (iv) is read back to influence later actions. A \emph{memory system} is the combination of a store, a write policy (what is written, in what form, with what metadata), a read policy (what is retrieved and injected into $c_t$), a maintenance policy (consolidation, supersession, forgetting), and the harness rules that invoke them. Much of this review's argument is that the policies and harness, not the store, determine measured behaviour.
+
+Four quantities recur in evaluation and are used throughout. \emph{Recall quality}: whether the information needed for a task was present in $c_t$ when needed. \emph{Use quality}: whether the model gave it appropriate weight \citep{cao2026memcalib}. \emph{Cost}: tokens, latency, and model calls across the write, store, and read paths \citep{omri2026systems}. \emph{Governability}: whether a memory's origin, validity, and status can be inspected, and whether it can be corrected or removed \citep{lin2026security}.
+
+\subsection{Agent memory and adjacent concepts}
+
+Agent memory overlaps with several older topics, and the surveys spend effort delimiting it \citep{hu2025memoryage,du2025rethinking}. Table~\ref{tab:adjacent} records the distinctions this review uses. The short version: long context, RAG, KV-cache reuse, knowledge editing, and continual pretraining are each an \emph{ingredient} of some memory system, but none satisfies all four conditions above on its own. A retrieval index over a fixed corpus is not written during operation; a long context window does not persist across sessions; knowledge editing persists but is not read back selectively; continual pretraining evolves but is not written by the agent.
+
+\begin{table}[t]
+\centering\small
+\caption{Agent memory and adjacent concepts. The last column names the condition from the definition above that the concept does not meet on its own.}
+\label{tab:adjacent}
+\begin{tabularx}{\textwidth}{L{3.0cm} X L{3.6cm}}
+\toprule
+\textbf{Concept} & \textbf{What it provides} & \textbf{Missing on its own} \\
+\midrule
+Long context window & Working memory within one episode; the baseline every memory system is compared against & Persistence across sessions; degrades with length \citep{hong2025contextrot} \\
+RAG over a static corpus & Read path over documents fixed before deployment & Written during operation; evolution \\
+KV-cache reuse, prefix caching & Latent reuse of computed state across calls to the same prefix & Selective read-back; evolution; inspectability \\
+Knowledge editing, fine-tuning & Persistent change to parameters & Selective read-back; provenance; reliable removal \citep{gupta2024editing} \\
+Continual pretraining & Evolution of parametric knowledge from streams & Agent-written; per-item governance \\
+Context engineering & Harness rules for assembling $c_t$ \citep{anthropic2025context} & A store; the term names the read policy only \\
+Agent skills, \texttt{AGENTS.md} & Human- or agent-written procedural memory loaded at start & Automatic write path; evolution during operation \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Borrowings from cognitive science}
+
+Almost every agent memory paper borrows a human-memory frame. Three recur.
+
+\paragraph{Multi-store models.} Atkinson and Shiffrin's sensory, short-term, and long-term stores motivate systems such as LightMem \citep{fang2025lightmem}, which filters input through a ``sensory'' stage, groups it into topic-segmented short-term memory, and consolidates into long-term memory offline. MemoryBank \citep{zhong2023memorybank} borrowed Ebbinghaus's forgetting curve to decay memories that are not reinforced by retrieval.
+
+\paragraph{Tulving's episodic/semantic distinction, extended with procedural memory.} \citet{sumers2023coala} formalised this for language agents in the CoALA framework: working memory (the active context), episodic memory (records of past experience), semantic memory (facts about the world and the agent), and procedural memory (skills, including the agent's own code and prompts). This four-way split has become the lingua franca of production systems; MIRIX \citep{wang2025mirix} adds ``resource'' and ``knowledge vault'' components, and a 2026 practitioner survey of vendors describes exactly this four-tier vocabulary as the industry default \citep{kumar2026agentmemory}.
+
+\paragraph{Complementary learning systems.} The hippocampal/neocortical fast/slow learning account motivates systems that record episodes quickly and consolidate them into abstractions slowly. HippoRAG \citep{gutierrez2024hipporag} is the most explicit, modelling a knowledge graph plus Personalized PageRank as hippocampal pattern completion over a neocortical (LLM) store. \citet{pink2025episodic} argue, in a position paper, that episodic memory specifically is ``the missing piece'' for long-term agents, and define it by five properties: long-term, explicit, single-shot (acquired from one exposure), instance-specific, and contextual (bound to when and where). This definition is useful because it separates what a ledger of events provides from what a store of extracted facts provides.
+
+These analogies are productive as design heuristics. They are weaker as evidence: no paper surveyed here shows that fidelity to a cognitive model predicts task performance, and the simplest systems in Section~\ref{sec:filesystems} ignore the analogies entirely while performing competitively.
+
+\subsection{Survey taxonomies}
+
+The surveys propose overlapping but distinct cuts. Table~\ref{tab:surveys} summarises them.
+
+\begin{table}[t]
+\centering\small
+\begin{tabularx}{\textwidth}{L{3.2cm} L{6.2cm} X}
+\toprule
+\textbf{Survey} & \textbf{Primary axes} & \textbf{Notable contribution} \\
+\midrule
+\citet{zhang2024survey} & Sources, forms, operations (writing, management, reading) & First memory-specific survey; memory as what gives agents a ``self-evolving capability'' \\
+\citet{du2025rethinking} & Representation (parametric vs.\ contextual) $\times$ six atomic operations: consolidation, updating, indexing, forgetting, retrieval, compression & Operation-centric view; maps operations to long-term, long-context, parametric-modification, and multi-source topics \\
+\citet{wu2025humanmemory} & Human memory to AI memory mapping & Cognitive grounding \\
+\citet{hu2025memoryage} & Forms (token-level, parametric, latent) $\times$ functions (factual, experiential, working) $\times$ dynamics (formation, evolution, retrieval) & Delimits agent memory from RAG and context engineering; compiles benchmarks and frameworks \\
+\citet{du2026memory} & Write--manage--read loop; temporal scope $\times$ substrate $\times$ control policy; five mechanism families & Mechanism families used to structure this review \\
+\citet{jiang2026anatomy} & Four structures: lightweight semantic; entity-centric and personalised; episodic and reflective; structured and hierarchical & Empirical analysis of evaluation pathologies and system costs \\
+\citet{luo2026storage} & Evolutionary stages: Storage, Reflection, Experience & Historical view; ACL 2026 Findings \\
+\citet{lin2026security} & Six lifecycle phases $\times$ four security objectives & Security-specific; EMNLP 2026 \\
+\bottomrule
+\end{tabularx}
+\caption{Taxonomies proposed by the major surveys of agent memory.}
+\label{tab:surveys}
+\end{table}
+
+\subsection{Working taxonomy for this review}
+
+To compare systems, this review uses three axes and one lifecycle.
+
+\textbf{Substrate.} Where the information physically lives: \emph{parametric} (model weights: fine-tuning, knowledge editing, memory layers); \emph{latent} (continuous state that is neither weights nor tokens: KV caches, recurrent states, memory tokens, test-time-trained modules); \emph{token-level} (text, or structured data serialised to text, that the model reads through its context window).
+
+\textbf{Function.} What the information is for: working (the current task's state), episodic (what happened, when), semantic (what is true), procedural (how to act).
+
+\textbf{Control.} Who decides what to write and read, and when: a fixed pipeline (an extraction LLM runs on every turn), the agent itself through tools (MemGPT's self-directed edits), a separate memory agent, a learned policy (RL-trained managers), or a human (\texttt{AGENTS.md} files).
+
+\textbf{Lifecycle.} The six operations of \citet{du2025rethinking}, consolidation, updating, indexing, forgetting, retrieval, compression, plus the write-path filtering and provenance capture that the 2026 security literature adds at the front \citep{lin2026security}.
+
+The sections that follow walk the substrate axis from inside the model outward, then treat experiential memory and learned control as cross-cutting families, then evaluation and governance.
+Figure~\ref{fig:taxonomy} shows the mechanism families treated in Sections~\ref{sec:parametric} to \ref{sec:rl}, placed on the substrate axis with representative systems.
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[
+  root/.style={draw, rounded corners=2pt, fill=blue!15, font=\small\bfseries, align=center, text width=2.8cm, minimum height=0.8cm},
+  fam/.style={draw, rounded corners=2pt, fill=blue!7, font=\small, align=center, text width=2.35cm, minimum height=1.45cm, anchor=north},
+  sys/.style={font=\scriptsize, align=center, text width=2.5cm, text=black!70, anchor=north},
+  ln/.style={draw, black!60}
+]
+\node[root] (root) at (0,0) {Agent memory mechanisms};
+\node[fam] (f1) at (-6.0,-1.2) {\textbf{Parametric and latent}\\ Sec.~\ref{sec:parametric}};
+\node[fam] (f2) at (-3.0,-1.2) {\textbf{Context-resident, compaction}\\ Sec.~\ref{sec:context}};
+\node[fam] (f3) at (0,-1.2) {\textbf{External retrieval stores}\\ Sec.~\ref{sec:retrieval}};
+\node[fam] (f4) at (3.0,-1.2) {\textbf{Experiential and procedural}\\ Sec.~\ref{sec:experiential}};
+\node[fam] (f5) at (6.0,-1.2) {\textbf{Learned management policies}\\ Sec.~\ref{sec:rl}};
+\foreach \f in {f1,f2,f3,f4,f5} \draw[ln] (root.south) -- (\f.north);
+\node[sys] at (-6.0,-2.95) {Memory Layers; Titans; Cartridges; MemoryLLM, M+; ROME, MEMIT};
+\node[sys] at (-3.0,-2.95) {MemGPT; ACE; ACON; TierMem; MEM1; MemAgent};
+\node[sys] at (0,-2.95) {Mem0; Zep; HippoRAG; A-MEM; Hindsight; MIRIX; LLM-Wiki; filesystems};
+\node[sys] at (3.0,-2.95) {Reflexion; ExpeL; AWM; ReasoningBank; Memento; Trace2Skill; REM};
+\node[sys] at (6.0,-2.95) {Memory-R1; Mem-$\alpha$; AgeMem; NapMem; MemCalib-RL; Proactive Memory Agent};
+\draw[-{Latex[length=1.5mm]}, black!40] (-6.6,-5.15) -- (6.6,-5.15);
+\node[font=\scriptsize\itshape, text=black!60, anchor=north west] at (-6.6,-5.25) {inside the model: weights, latent state};
+\node[font=\scriptsize\itshape, text=black!60, anchor=north east] at (6.6,-5.25) {outside the model: tokens, stores, policies};
+\end{tikzpicture}
+\caption{Taxonomy of mechanism families used in this review, ordered from inside the model outward, with representative systems. Personalisation (Section~\ref{sec:personalization}) and multi-agent memory (Section~\ref{sec:multiagent}) cut across the families by memory subject; evaluation, resources, and governance are treated separately.}
+\label{fig:taxonomy}
+\end{figure}
+
+\section{Parametric and Latent Memory}
+\label{sec:parametric}
+
+\subsection{Extending the window from inside the architecture}
+
+The earliest ``memory'' work changed the model: compressed secondary memories \citep{rae2019compressive}, approximate $k$-nearest-neighbour lookup over past key-value pairs for a 262k-token effective context \citep{wu2022memorizing}, memory tokens passed between segments \citep{bulatov2022rmt}, compressive memory fused with local attention \citep{munkhdalai2024infini}, and explicit sparse key-value memory loaded alongside parameters \citep{yang2024memory3}.
+
+These approaches extend what the model can attend to, but they inherit a known weakness of attention itself: performance degrades with input length even when the information is nominally in range. \citet{liu2023lost} documented the ``lost in the middle'' effect. Chroma's July 2025 technical report \citep{hong2025contextrot} tested 18 frontier models and found that every one degraded as input length grew, including on tasks as simple as repeated-word copying; the effect is now commonly called ``context rot.'' RULER \citep{hsieh2024ruler} and NoLiMa \citep{modarressi2025nolima} showed that effective context lengths are far below advertised ones when the task requires anything beyond literal matching. These results matter for the whole field: they are why ``use a bigger window'' is not an answer, and why memory systems that reduce the number of tokens presented to the model can beat full-context baselines even when every needed fact is in the full context \citep{rasmussen2025zep,chhikara2025mem0}.
+
+\subsection{Test-time learning and neural long-term memory}
+
+A second line makes part of the network learn during inference. Test-Time Training layers \citep{sun2024ttt} treat the hidden state as a small model updated by gradient steps on the incoming sequence. Titans \citep{behrouz2024titans} adds a ``neural long-term memory'' module trained at test time with a surprise-based update rule (the gradient of the loss with respect to the input, with momentum and adaptive forgetting), reporting better scaling than Transformers and modern linear recurrent models to context windows beyond 2M tokens on needle-in-haystack tasks. Nested Learning \citep{behrouz2025nested} generalises this to a ``continuum memory system'' in which components update at different frequencies, and proposes the HOPE architecture as a proof of concept aimed at continual learning without catastrophic forgetting.
+
+These are genuine memory mechanisms in the sense that they accumulate information across a stream. Their limitation for agent systems is that the memory is a tensor. It cannot be inspected, cited, corrected, exported, or shared with a different model. No agent memory survey reviewed here reports a production agent using them, and the agentic benchmarks of Section~\ref{sec:eval} do not include them.
+
+\subsection{Memory layers and latent memory tokens}
+
+Memory Layers at Scale \citep{berges2024memorylayers} adds a trainable key-value lookup with product-key indexing, adding up to 128B memory parameters without increasing FLOPs, and shows gains on factual tasks over dense and mixture-of-experts baselines at matched compute. MemoryLLM \citep{wang2024memoryllm} and its extension M+ \citep{wang2025mplus} attach a pool of latent memory tokens to a frozen model and train an update mechanism; M+ adds a long-term pool with a co-trained retriever and reports retention beyond 160k tokens. Larimar \citep{das2024larimar} uses an episodic memory controller for one-shot knowledge updates and selective forgetting.
+
+A distinct and practical idea is the Cartridge \citep{eyuboglu2025cartridges}: train a small KV cache offline on a corpus using a ``self-study'' recipe (the model generates questions about the corpus and trains the cache to answer them), then load that cache at inference. The authors report 38.6$\times$ memory reduction and 26.4$\times$ throughput improvement compared with placing the corpus in context, at matched quality. This is parametric memory for a document set, trained per corpus. It is relevant to agent memory as a possible consolidation target: a nightly job could compile a project's stable knowledge into a cartridge. No agent system surveyed here has yet done so.
+
+\subsection{Knowledge editing and fine-tuning}
+
+Knowledge editing methods \citep{meng2022rome,meng2023memit} locate and modify the weights that encode a fact. They are precise for single edits but degrade under sequential editing \citep{gupta2024editing} and do not propagate consequences of an edit to related facts. Fine-tuning on interaction logs is the obvious way to make an agent ``learn,'' but within the agent memory literature it is treated mainly as a baseline. Memento \citep{zhou2025memento} is titled ``Fine-tuning LLM Agents without Fine-tuning LLMs'' precisely because the authors regard weight updates as too costly, too slow, and too opaque for continual adaptation.
+
+\subsection{Assessment}
+
+Parametric and latent memory is the only family that can make a model faster or cheaper at using what it has learned, because the information does not re-enter the context window each time. It is also the only family that offers nothing to an auditor: there is no record of what was stored, no provenance, no way to quarantine a suspect memory, and deletion means retraining or editing with uncertain side effects. \citet{hu2025memoryage} list parametric memory as one of three forms; in practice the surveyed agent systems treat it as future work. The honest summary is that parametric memory is where the long-run efficiency gains lie and token-level memory is where everything deployable lives today.
+
+\section{Context-Resident Memory and Compaction}
+\label{sec:context}
+
+\subsection{The window as working memory}
+
+In every agent the context window is the working memory. What distinguishes systems is how they manage it as it fills. Anthropic's September 2025 guidance \citep{anthropic2025context} names three strategies that have become standard vocabulary: \emph{compaction} (summarise the conversation and restart with the summary), \emph{structured note-taking} (write notes to storage outside the window and pull them back when needed), and \emph{sub-agent architectures} (delegate a sub-task to a fresh context and return a short summary). The same month Anthropic shipped a server-side context-editing API that clears old tool results automatically and a file-based memory tool \citep{anthropic2025memorytool}, and Claude Code's ``auto memory'' \citep{anthropic2026claudecode} loads the first 200 lines or 25~KB of agent-written notes at the start of every session. These are vendor documents, but they describe the baseline against which research systems are now compared.
+
+\subsection{Hierarchical virtual context: MemGPT}
+
+MemGPT \citep{packer2023memgpt} is the founding paper of this family and the most cited design in the production literature. It treats the context window as RAM and external storage as disk. The ``main context'' holds system instructions, a small editable ``working context,'' and a FIFO message queue; ``external context'' comprises recall storage (the full message history, searchable) and archival storage (arbitrary documents). The key move is that the LLM itself issues function calls to page information in and out, edit its working context, and search external storage, and the system raises ``interrupts'' (for example, a warning when the queue is nearly full) that prompt the model to act. MemGPT outperformed fixed-context baselines on a deep-memory-retrieval (DMR) benchmark and on document QA; Letta is its productised successor. \citet{kumar2026agentmemory} observes that the vocabulary every 2026 vendor uses is MemGPT's.
+
+The idea's durability comes from a property that later work keeps rediscovering: a capable model given simple, well-known tools and told to manage its own memory does well, and the harness's rules about what loads and when matter as much as the store \citep{letta2025filesystem,wooders2026plugin}.
+
+\subsection{Compaction and its failure modes}
+
+Compaction is lossy by construction, and three papers quantify the damage.
+
+ACE \citep{zhang2025ace} identifies two pathologies of iteratively rewritten contexts: \emph{brevity bias}, where summarisers drop domain-specific heuristics in favour of concise generalities, and \emph{context collapse}, where repeated rewriting erodes detail over time. ACE's remedy is a generator/reflector/curator loop that makes incremental, itemised updates to a structured ``playbook'' rather than rewriting it wholesale, reporting +10.6\% on agent benchmarks and +8.6\% on finance tasks over strong baselines.
+
+ACON \citep{kang2025acon} treats the compression prompt as something to optimise: it analyses cases where a compressed context led to failure while the full context succeeded, refines natural-language compression guidelines accordingly, and distils the resulting compressor into a smaller model. It reports 26 to 54\% peak-token reduction while preserving task performance on AppWorld, OfficeBench, and multi-objective QA.
+
+TierMem \citep{zhu2026tiermem} names the structural problem: a \emph{write-before-query barrier}. Summaries are produced before the system knows what a future query will hinge on, so decisive constraints (their example is a peanut allergy summarised as ``dietary restrictions'') can be dropped and the omission is unverifiable. Their design keeps summaries as the fast path, keeps the raw log as immutable fixed-size pages with stable identifiers, routes to the raw log only when a sufficiency check fails, and writes verified findings back as new summary units linked to their raw pages. On LoCoMo this recovers nearly all of raw-only accuracy (0.851 vs.\ 0.873) at 54\% fewer input tokens and 61\% lower latency.
+
+\subsection{Learned compaction}
+
+Rather than prompt a summariser, several systems train the model to maintain a compact state. MEM1 \citep{zhou2025mem1} trains an agent with RL to update a shared internal state at every turn that integrates memory and reasoning, discarding the rest, so context size stays near constant over multi-objective tasks; it reports a 3.5$\times$ memory reduction and a 3.7$\times$ performance improvement over Qwen2.5-14B-Instruct at 16-objective tasks. MemAgent \citep{yu2025memagent} trains an overwritable token-level memory for reading documents far longer than the window, with multi-conversation RL. Both are compaction policies learned end to end, and both are evaluated on tasks where the needed information is bounded and the reward is dense.
+
+\subsection{Assessment}
+
+Context-resident memory is unavoidable and well understood. The literature's consensus points are that compaction must be anchored (keep structure and raw evidence reachable), incremental (edit rather than rewrite), and verifiable (link summaries to sources), and that the harness, not the model, should own the policy for when compaction and note-taking happen. The write-before-query barrier is the clearest argument for retaining the full event log: it is the only way to make summaries correctable after the fact.
+
+\section{External Retrieval-Based Memory}
+\label{sec:retrieval}
+
+This is the largest family and the one where most products live. The four structures of \citet{jiang2026anatomy} organise it well: lightweight semantic, entity-centric, episodic and reflective, and structured and hierarchical. A fifth, filesystems and wikis, has become prominent enough since 2025 to treat separately.
+
+\subsection{Lightweight semantic stores}
+
+The simplest design embeds text units and retrieves the top-$k$ by cosine similarity. Generative Agents \citep{park2023generative} is the canonical early example and introduced a retrieval score that combines \emph{recency}, \emph{importance} (an LLM-rated salience), and \emph{relevance}, plus periodic \emph{reflection} that synthesises higher-level observations from recent memories. These three scoring signals and the reflection step have been reused in dozens of systems since.
+
+Mem0 \citep{chhikara2025mem0} is the most widely deployed modern instance. Its pipeline has two phases: an extraction LLM reads each new message pair with a rolling summary and recent messages and proposes candidate facts; an update LLM compares each candidate against similar existing memories and chooses ADD, UPDATE, DELETE, or NOOP. The authors' own LoCoMo results (gpt-4o-mini as answer model, LLM judge) were 66.9 for Mem0 and 68.4 for the graph variant Mem0g, against 72.9 for the full conversation in context; the pitch was cost, with Mem0 using roughly 1.8k tokens and 1.4~s p95 per query against about 26k tokens and 17~s for full context \citep{chhikara2025mem0,kumar2026agentmemory}. The paper is a preprint and its comparative numbers were disputed, as Section~\ref{sec:credibility} discusses.
+
+Strengths of this structure are simplicity and generality. Weaknesses are documented repeatedly: no relational structure, so multi-hop questions require the model to reassemble facts; no model of time, so stale and current facts compete with near-identical similarity; and dependence on the extraction prompt for what is remembered at all. \citet{jiang2026anatomy} find this structure the most backbone-sensitive.
+
+\subsection{Entity-centric, graph, and temporal stores}
+
+Knowledge-graph memory addresses multi-hop and temporal questions by storing entities and typed relations.
+
+HippoRAG \citep{gutierrez2024hipporag} builds an open-information-extraction KG over passages and retrieves by Personalized PageRank seeded from query entities, reporting large gains on multi-hop QA at lower cost than iterative retrieval. HippoRAG~2 \citep{gutierrez2025hipporag2}, subtitled ``From RAG to Memory,'' adds deeper passage integration and online LLM use, and positions the system as non-parametric continual learning that handles factual, sense-making, and associative tasks in one framework. GraphRAG \citep{edge2024graphrag} adds community detection and pre-computed community summaries for global, sense-making questions; LightRAG \citep{guo2024lightrag} offers a cheaper dual-level variant.
+
+Zep \citep{rasmussen2025zep} is the production system most explicit about time. Its Graphiti engine maintains a \emph{bi-temporal} graph: each edge carries the time the fact was true in the world and the time it was recorded or invalidated in the system, so a contradiction does not delete the old edge but closes its validity interval. The graph has episode, semantic-entity, and community layers. On the DMR benchmark Zep reported 94.8\% against MemGPT's 93.4\%; on LongMemEval with gpt-4o it reported 71.2\% against 60.2\% for full context, with latency falling from 28.9~s to 2.6~s and prompt size from about 115k tokens to 1.6k. The same table shows where graph memory loses: on single-session questions about what the assistant itself said, accuracy fell from 94.6\% to 80.4\%, because extraction can miss the assistant's own statements \citep{rasmussen2025zep,kumar2026agentmemory}.
+
+AMA-Agent \citep{zhao2026amabench} extends the graph idea to agent trajectories rather than dialogue, constructing a \emph{causality graph} over states, actions, and observations with tool-augmented retrieval. Its motivation, from the AMA-Bench study, is that existing systems ``fail to capture causal and objective information and rely heavily on lossy similarity-based retrieval.'' Kumiho \citep{park2026kumiho} goes furthest in formalisation: a property-graph memory with an Item--Revision--Tag model (each item points to an ordered sequence of immutable revisions; mutable tags such as \texttt{latest} select the current one), typed dependency edges, and URI addressing with version pinning. Its operational semantics are shown to satisfy the AGM belief-revision postulates (K*2--K*6) and Hansson's belief-base postulates. It also introduces \emph{prospective indexing}, indexing LLM-generated implications of a memory at write time so that implicit constraints can be found later, and reports 93.3\% judge accuracy on LoCoMo-Plus, with an independent reproduction by the benchmark authors in the mid-80\% range.
+
+The consistent finding is that graphs win on temporal and multi-hop questions and on explainability (edges can be cited), and cost more to build and maintain; \citet{jiang2026anatomy} measure the ingestion latency and throughput overhead and find it is often omitted from papers.
+
+\subsection{Episodic, reflective, and hierarchical stores}
+
+A third structure keeps records of what happened and layers abstractions over them.
+
+MemoryBank \citep{zhong2023memorybank} stored dialogue, daily summaries, and a user-personality profile, with Ebbinghaus-style decay. A-MEM \citep{xu2025amem} borrows the Zettelkasten method: each memory is a note with LLM-generated keywords, tags, and a contextual description; on insertion the system retrieves related notes, creates links, and may \emph{evolve} existing notes' descriptions in light of the new one. HiMem \citep{zhang2026himem} segments the interaction stream into episodes using topic shifts and ``surprise,'' extracts stable ``note memory'' from them, links the two layers, and performs conflict-aware reconsolidation driven by retrieval feedback. LightMem \citep{fang2025lightmem} pushes the consolidation step offline (``sleep-time update'') and reports large token and call reductions relative to Mem0-style per-turn pipelines.
+
+Hindsight \citep{latimer2025hindsight} organises memory into four logical networks: a \emph{World} network of objective facts, an \emph{Experience} network of the agent's own first-person history, an \emph{Opinion} network of the agent's judgements with confidence scores and timestamps, and an \emph{Observation} network of preference-neutral entity summaries. A retrieval component (TEMPR) extracts two to five self-contained narrative facts per conversation chunk with entity resolution and temporal links, and a reasoning component (CARA) answers and updates beliefs traceably. The authors' stated motivation is that current systems ``blur the line between evidence and inference.'' That separation of what was observed from what was inferred is the design point most relevant to auditability, and it is rare in the literature. Hindsight reports 91.4\% on LongMemEval and 89.6\% on LoCoMo with a large backbone, in the authors' own runs.
+
+MIRIX \citep{wang2025mirix} and MemOS \citep{li2025memos} are the maximalist designs. MIRIX has six memory components (core, episodic, semantic, procedural, resource, knowledge vault), each managed by a dedicated agent under a meta-manager, with active retrieval, and extends to screenshots. MemOS proposes a ``MemCube'' abstraction unifying plaintext, activation (KV), and parametric memory with lifecycle scheduling and governance. Both are preprints with author-run evaluations; their contribution is architectural vocabulary more than measured gains.
+
+\subsection{Filesystems, notes, and agent-maintained wikis}
+\label{sec:filesystems}
+
+The most consequential empirical finding of 2025 in this family came from \citet{letta2025filesystem}. Lacking a native way to ingest LoCoMo, they placed each conversation into a file, gave a gpt-4o-mini agent \texttt{grep}, semantic \texttt{search\_files}, \texttt{open}, and \texttt{close}, constrained it to search before answering, and scored 74.0\%, above Mem0's then-reported 68.4\% for its best variant and above the full-context baseline. Their explanation: models post-trained on coding use filesystem tools fluently, generate their own queries, and iterate until they find the evidence, whereas purpose-built memory tools designed for single-hop retrieval are less effective. \citet{kumar2026agentmemory} reports a related 2026 result in which BM25 over raw transcripts outperformed every dedicated memory product tested. \citet{wooders2026plugin} generalises the point in an essay arguing that ``memory isn't a plugin'' because the harness already controls what loads, compacts, and persists.
+
+Vendors moved the same way. Anthropic's memory tool is a directory of files the model reads and writes \citep{anthropic2025memorytool}; Claude Code's auto memory is per-repository notes the agent writes from user corrections, distinct from the human-written \texttt{CLAUDE.md}/\texttt{AGENTS.md} instruction files that act as procedural memory \citep{anthropic2026claudecode}.
+
+\citet{karpathy2026wiki} articulates the strongest version. Rather than RAG over raw documents, in which ``the LLM is rediscovering knowledge from scratch on every question,'' the agent incrementally builds and maintains a wiki of interlinked markdown pages. There are three layers: immutable raw sources (the source of truth, never modified by the LLM), the wiki (owned entirely by the LLM), and a schema file that defines conventions and workflows. Three operations: \emph{ingest} a source (touching 10 to 15 pages), \emph{query} (with the insight that good answers should be filed back as pages so explorations compound), and \emph{lint} (find contradictions, stale claims, orphan pages, missing cross-references). The pattern was adopted by several teams within months \citep{mem0_2026wikis,akita2026}, and \citet{ming2026llmwiki} formalise it as ``retrieval as reasoning'': LLM-Wiki compiles documents into structured pages with bidirectional links and source references, exposes search, read, and link-following as tools, and keeps an ``Error Book'' of recurring construction mistakes that constrains later compilations. It outperforms HippoRAG~2, LightRAG, and GraphRAG by 2.0 to 8.1 F1 on HotpotQA, MuSiQue, and 2WikiMultiHopQA.
+
+Why this works deserves a careful statement, because it cuts against the research trend toward complex stores. Three reasons are supported by the evidence above. First, capability is in the model: iterative search with self-generated queries over raw or compiled text recovers from retrieval misses, while one-shot top-$k$ cannot. Second, human-readable artifacts can be reviewed, corrected, and version-controlled with existing tools. Third, the wiki's ``compile once, keep current'' discipline directly attacks the staleness and contradiction problems that similarity stores cannot see (Section~\ref{sec:temporal}). The costs are equally clear: a wiki is only as good as its maintainer's lint discipline, there is no retrieval log unless one is added, and nothing in the pattern prevents a poisoned source from being compiled into a confident page.
+
+\subsection{Assessment}
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[
+  layer/.style={draw, rounded corners=2pt, text width=10.6cm, minimum height=1.0cm, align=center, font=\small, inner sep=5pt},
+  lbl/.style={font=\scriptsize\itshape, text=black!60, align=center},
+  node distance=0.3cm
+]
+\node[layer, fill=blue!5] (synth) {\textbf{Synthesis}: reflections, lessons, wiki pages, beliefs\\ (Hindsight Opinion network, ReasoningBank, LLM-Wiki)};
+\node[layer, fill=blue!10, below=of synth] (ent) {\textbf{Entities and time}: typed relations with validity intervals, supersession, dependency edges\\ (Zep/Graphiti, Kumiho, MemStrata, StateMem)};
+\node[layer, fill=blue!15, below=of ent] (facts) {\textbf{Extracted facts and summaries}: the fast path, each unit linked to its evidence\\ (Mem0, TierMem Tier-1, A-MEM notes)};
+\node[layer, fill=blue!20, below=of facts] (raw) {\textbf{Raw evidence}: immutable events, transcripts, tool calls and results\\ (TierMem Tier-2, Karpathy's raw sources, an append-only event ledger)};
+\draw[-{Latex[length=2mm]}, thick, black!60] ([xshift=-0.5cm]raw.north west) -- ([xshift=-0.5cm]synth.south west) node[midway, left, lbl] {derive,\\consolidate};
+\draw[-{Latex[length=2mm]}, thick, black!60] ([xshift=0.5cm]synth.south east) -- ([xshift=0.5cm]raw.north east) node[midway, right, lbl] {cite,\\escalate,\\correct};
+\end{tikzpicture}
+\caption{The layered view that the better-performing 2026 systems converge on. Higher layers are caches derived from lower ones; every unit keeps a link to the evidence it came from so that answers can be cited, summaries escalated when insufficient, and errors corrected after the fact.}
+\label{fig:layers}
+\end{figure}
+
+Across the structures the evidence supports a layered view rather than a winner (Figure~\ref{fig:layers}). Raw evidence (transcripts, events) must be retained for grounding and correction; summaries and extracted facts are the fast path; entities and time-aware relations are needed when questions are temporal or multi-hop; and agent-maintained synthesis (reflections, wiki pages) is where accumulated understanding lives. The systems that perform best on the harder 2026 benchmarks combine these (Hindsight, AMA-Agent, TierMem, Kumiho, LLM-Wiki) and keep links between layers. Systems that keep only one layer, especially only extracted facts, show the documented failures: missed assistant statements, stale facts, unverifiable omissions.
+
+\section{Experiential and Procedural Memory}
+\label{sec:experiential}
+
+\citet{luo2026storage} frame the field's evolution as Storage (keep trajectories), Reflection (refine them), Experience (abstract across them). This section covers the Reflection and Experience stages: memory whose content is \emph{lessons} rather than facts.
+
+\subsection{Verbal reinforcement and insight extraction}
+
+Reflexion \citep{shinn2023reflexion} had an agent write a natural-language self-reflection after each failed attempt and store it in an episodic buffer that is prepended on the next attempt, improving HumanEval pass@1 to 91\% and ALFWorld success substantially. ExpeL \citep{zhao2023expel} generalised from within-task to cross-task: it collects trajectories, compares successful and failed ones, and extracts ``insights'' that are added, upvoted, downvoted, or edited in a persistent list. Voyager \citep{wang2023voyager} built a skill library of verified executable code for Minecraft, retrieved by embedding of the skill's description, which is procedural memory in CoALA's sense.
+
+\subsection{Workflows, cheatsheets, and strategy banks}
+
+Agent Workflow Memory \citep{wang2024awm} induces reusable sub-routines (``workflows'') from past trajectories and adds them to the agent's memory, either offline from training examples or online from the agent's own successes; on WebArena and Mind2Web it improved success by 24.6\% and 51.1\% relative, and generalised better than baselines as the train--test gap widened. Dynamic Cheatsheet \citep{suzgun2025cheatsheet} maintains a persistent, curated memory of strategies and code snippets that the model updates at test time, more than doubling accuracy on AIME 2024 for Claude 3.5 Sonnet and giving large gains on Game of 24. ReasoningBank \citep{ouyang2025reasoningbank} distils generalisable \emph{reasoning strategies} from both successes and failures (self-judged), retrieves them for new tasks, and adds \emph{memory-aware test-time scaling} (MaTTS), in which parallel or sequential attempts at the same task generate richer contrast for memory synthesis; it reports up to 34.2\% relative gains in effectiveness and 16\% fewer steps on WebArena, Mind2Web, and SWE-Bench-Verified.
+
+\subsection{Case-based reasoning and curated contexts}
+
+Memento \citep{zhou2025memento} frames continual adaptation as case-based reasoning over a memory-based MDP: a case bank of past (state, action, reward) triples, a learned Q-function that selects which cases to retrieve, and no update to the LLM. It reports top-1 on GAIA validation (87.9\%) and strong results on DeepResearcher and SimpleQA. ACE (Section~\ref{sec:context}) belongs here as well: its playbook is procedural memory, and its contribution is a curation discipline that avoids collapse.
+
+\subsection{Skills: from lessons to reusable procedures}
+
+The newest form of experiential memory packages lessons as \emph{skills}: named, documented procedures that a harness loads on demand, which \citet{huang2026secondhalf} describe as an emerging ecosystem of portable, shareable agent capabilities. Human-written skills (\texttt{AGENTS.md} files, vendor skill libraries) are procedural memory authored outside the loop; the research question is whether agents can author and refine them. Trace2Skill \citep{ni2026trace2skill} consolidates many execution trajectories in parallel, through inductive reasoning over successes and failures, into a skill directory, and can both deepen human-written skills and grow usable skills from weak LLM-generated drafts. Its evaluations span office workflows, mathematical reasoning, and visual QA; skills evolved from a 35B model's trajectories improved a 122B model by up to 57.65 percentage points on WikiTableQuestions, and the authors report that the skills outperform sequential skill editing and ReasoningBank-style retrieval memories, compress recurring failures and workarounds into standard operating procedures, and transfer across model scales, model families, and out-of-distribution settings without parameter updates or test-time retrieval. The transfer result is the important one: it is the first substantial evidence against the within-distribution caution that applies to most of this family.
+
+REM \citep{chen2026rem} addresses experience memory for repository-level coding agents and argues that the bottleneck is lifecycle governance rather than retrieval. It makes three explicit decisions: \emph{what to store} (each trajectory is consolidated into a phase-structured document two orders of magnitude smaller than the trajectory), \emph{when to recall} (the document is injected at task start, while the costlier implementation record is withheld until an in-loop gate detects that the agent is struggling), and \emph{what to forget} (the record is evicted after one exposure). On SWE-ContextBench Lite it retrieves the related trajectory more accurately than the memory systems it compares against (68.7\% vs.\ 55.6\% match@1) and improves resolution in every replicate (27.6\% vs.\ 24.9\%) at 17\% lower cost, whereas injecting the same experience as a summary or raw trajectory, even oracle-retrieved, does not help. This is a workshop paper, but it is one of very few experiential-memory results on a realistic coding benchmark with ablations over the lifecycle decisions.
+
+\subsection{Assessment}
+
+Experiential memory is where the ``self-evolving agent'' promise lives, and the measured gains on repeated-task distributions are real and large. Three cautions recur. First, the gains are mostly evaluated on task streams drawn from the same distribution as the experiences; transfer to new domains is weaker (\citet{wang2024awm} measure it; most do not), with Trace2Skill's cross-model and out-of-distribution results the notable exception and REM's finding that \emph{how} experience is injected matters more than whether it is retrieved the notable complication. Second, failure-derived lessons require a judge of failure, and self-judgement is noisy; ReasoningBank uses an LLM judge and notes this. Third, a wrong lesson is a persistent wrong lesson: \citet{du2026memory} lists ``trustworthy reflection'' as an open challenge, and the security literature (Section~\ref{sec:security}) treats experiential stores as a prime injection target because one planted ``lesson'' influences every future task. Provenance for lessons (which trajectories they came from, who judged them) is almost never recorded in these systems, and the skills ecosystem makes this worse by design, since a skill is meant to travel.
+
+
+\section{Learned Memory-Management Policies}
+\label{sec:rl}
+
+The newest family trains the memory controller rather than prompting it. \citet{du2026memory} calls it ``policy-learned management'' and \citet{hu2025memoryage} list RL integration as a frontier.
+
+Memory-R1 \citep{yan2025memoryr1} trains two components: a Memory Manager that chooses ADD, UPDATE, DELETE, or NOOP for each extracted fact, and an Answer Agent that filters retrieved memories before answering, using PPO or GRPO with outcome rewards. It reports state-of-the-art results on LoCoMo from only 152 training question--answer pairs, with transfer across backbones. Mem-$\alpha$ \citep{wang2025memalpha} trains an agent to construct a multi-component memory (core, episodic, semantic) with RL and reports generalisation from 30k-token training instances to 400k-token evaluations. AgeMem \citep{yu2026agemem} unifies long- and short-term management as tool actions (store, retrieve, update, summarise, discard) within the agent's own policy, trained by a three-stage curriculum with step-wise GRPO to handle sparse rewards. MEM1 and MemAgent (Section~\ref{sec:context}) are the context-compaction instances.
+
+The Proactive Memory Agent \citep{wu2026proactive} is a different shape: a separate memory agent runs alongside an unmodified action agent, maintains a structured memory bank from the trajectory, and decides whether to inject a reminder or stay silent. It names the failure mode it targets, ``behavioral state decay,'' and reports +8.3~pp pass@1 on Terminal-Bench 2.0 and +6.8~pp on $\tau^2$-Bench, with ablations showing that \emph{selective} intervention beats always-on injection and passive exposure of the bank. The authors also train an open-weight memory policy (Qwen3.5-27B) with SFT and GRPO, with partial transfer.
+
+Sleep-time compute \citep{lin2025sleeptime} is complementary: it uses idle time between interactions to pre-process context into a learned context, reporting about 5$\times$ reduction in test-time compute at matched accuracy on Stateful GSM-Symbolic and AIME, and amortisation across queries about the same context. LightMem's offline consolidation and Karpathy's lint step are the same idea in different clothing.
+
+\paragraph{Learning to read, not only to write.} Two 2026 systems extend training from the write path to the read path. NapMem \citep{xu2026napmem} organises user history into a linked multi-granularity pyramid (raw conversations, typed memory records, topic tracks, user profiles) connected by provenance relations, exposes each level as a tool, and trains the agent with memory-tool RL to navigate between granularities before answering, on the argument that passive retrieval makes the model ``a consumer of pre-selected evidence.'' It is competitive on PersonaMem-v2, LongMemEval, and LoCoMo while, on the authors' evaluation, preserving general reasoning and tool use. MemCalib \citep{cao2026memcalib} isolates a different problem: given a fixed set of retrieved propositions, frontier models systematically \emph{over-use} some (importing an irrelevant preference) and \emph{under-use} others (ignoring a binding constraint); standard post-training (GRPO, on-policy self-distillation) improves one direction while worsening the other. MemCalib-RL assigns credit separately for over- and under-use by ablating each proposition and localising its effect to response tokens, and reports balanced gains across Qwen3-8B, Ministral-3-8B, and Qwen3.5-35B-A3B that transfer to external benchmarks. Over-personalisation, measured by OP-Bench \citep{hu2026opbench}, is the same over-use failure seen from the user's side (Section~\ref{sec:personalization}).
+
+\paragraph{Experience memory inside the loop.} REM (Section~\ref{sec:experiential}) is a learned-free but policy-explicit instance: its in-loop gate decides when to release costly experience to a struggling agent. Its ablations, which show that removing any of the store, recall, or forget decisions reduces resolution, make the general point that a memory \emph{policy} is a first-class component whether it is learned or hand-designed.
+
+\paragraph{Assessment.} Learned controllers address a real weakness of prompted pipelines, which make the same kind of errors regardless of outcome. The evidence base is young: most results are on dialogue QA benchmarks with dense rewards; data-efficiency claims (152 examples) deserve replication; and the trained policy inherits the benchmark's notion of what is worth remembering. The Proactive Memory Agent is notable for evaluating on agentic benchmarks and for ablating against the obvious alternatives, and MemCalib for measuring a failure that no retrieval metric can see. \citet{jiang2026anatomy} warn that RL-optimised compression tends to leave memory ``largely unstructured and textual,'' which trades auditability for efficiency; NapMem's provenance-linked pyramid shows that a structured store and a learned policy are compatible, which is the combination Section~\ref{sec:directions} argues for.
+
+\section{Personalisation: User-Centric Memory}
+\label{sec:personalization}
+
+\citet{huang2026secondhalf} make the \emph{memory subject} a top-level axis: user-centric memory models a person (preferences, history, goals) so that an assistant can personalise, while agent-centric memory models the agent's own experience so that it can improve. Most of the systems above serve both, but personalisation has its own benchmarks, failure modes, and governance, and the consumer products that most people encounter (ChatGPT's memory, Claude's memory) are personalisation systems first.
+
+\subsection{Products and the user-controllable store}
+
+ChatGPT's memory \citep{openai2026memory} saves facts and preferences across chats, lets users view, edit, and delete individual memories or disable the feature, and, since 2025, also draws on chat history; its help documentation states that turning memory off does not delete past chats and that memories may be re-created from retained history if the feature is re-enabled, which is a concrete instance of the deletion gap (Section~\ref{sec:security}). Claude's project memory and auto memory \citep{anthropic2026claudecode} are file-based and user-readable. These are vendor documents, but they establish the design that users now expect: a memory the user can inspect and edit in plain language, with a per-chat opt-out. No research system reviewed here evaluates the usability of memory controls, which is a gap given how much of the governance literature assumes a user who can review what is stored.
+
+\subsection{Benchmarks for personalisation}
+
+The dialogue benchmarks of Section~\ref{sec:eval} (LoCoMo, LongMemEval) are personalisation benchmarks in effect, since their questions concern a simulated user. Three 2025--2026 benchmarks target the harder parts. PersonaMem-v2 \citep{jiang2025personamem2} simulates 1,000 user--chatbot interactions over 300 scenarios with 20,000 preferences, most revealed \emph{implicitly}, in 128k-token histories; frontier models reach only 37--48\% accuracy on implicit personalisation, a reinforcement-fine-tuned Qwen3-4B reaches 53\%, and the authors' agentic memory, a single human-readable memory of about 2k tokens that grows per user, reaches 55\% with 16$\times$ fewer input tokens than the 32k-token full history. KnowMe-Bench \citep{wu2026knowme} builds on long autobiographical narratives rather than dialogues and asks evidence-linked questions spanning factual recall, subjective-state attribution, and principle-level reasoning; retrieval-augmented systems improve factual accuracy but errors persist on temporally grounded explanations and higher-level inferences, which the authors read as a need for ``memory mechanisms beyond retrieval.'' OP-Bench \citep{hu2026opbench} measures the opposite failure, \emph{over-personalisation}, formalised as irrelevance, repetition, and sycophancy, over 1,700 verified instances; it finds the problem widespread once memory is added, traces it to agents retrieving and over-attending to user memories when unnecessary, and proposes a lightweight filtering step (Self-ReCheck) that reduces it without losing personalisation.
+
+\subsection{Mechanisms specific to personalisation}
+
+Systems built for personalisation share a profile-plus-facts design: a compact, continuously updated user profile for the fast path, atomic facts with time for precision, and episodes for grounding. AtomMem \citep{yao2026atommem} extracts high-value atomic facts, organises them into hierarchical event structures and \emph{temporal profiles} that track evolving user attributes, and retrieves through an associative graph, reporting state-of-the-art LoCoMo results. EverMemOS \citep{hu2026evermemos} implements an engram-inspired lifecycle (episodic trace formation into ``MemCells'' with atomic facts and time-bounded ``Foresight'' signals; semantic consolidation into thematic ``MemScenes'' that update a profile; reconstructive, scene-guided retrieval) and reports state-of-the-art results on LoCoMo and LongMemEval plus a profile study on PersonaMem-v2. Zep's user-centric temporal graph and Mem0's per-user extraction (Section~\ref{sec:retrieval}) are the production equivalents.
+
+\paragraph{Assessment.} Personalisation inherits every finding of the preceding sections and adds two. First, the implicit case is unsolved: when preferences must be inferred rather than read, accuracy is near 50\% for every approach tested. Second, more memory is not monotonically better: over-use, over-personalisation, and sycophancy are measured harms, and the first systems to address them do so by filtering at read time, which Sections~\ref{sec:rl} and \ref{sec:directions} argue should become a trained, calibrated capability. The governance stakes are also highest here, because the subject of the memory is a person with rights over it.
+
+\section{Multi-Agent and Shared Memory}
+\label{sec:multiagent}
+
+When several agents, or several harnesses driven by one user or one organisation, share memory, new problems appear that single-agent designs do not face: who may write, whose writes are trusted, how conflicting writes are reconciled, and how far a bad write propagates. \citet{huang2026secondhalf} treat multi-agent memory operations as a distinct topology, and \citet{hu2025memoryage} list shared memory as a frontier.
+
+\subsection{Architectures}
+
+Three architectures recur. In \emph{hierarchical shared memory}, agents write to a common structured store with levels of abstraction: G-Memory \citep{zhang2025gmemory} organises multi-agent memory as a three-tier graph (insight, query, interaction) inspired by organisational memory theory, so that a team's accumulated insights sit above the specific queries and raw interactions that produced them. In \emph{memory as a multi-agent system}, the memory itself is maintained by specialised agents: MIRIX's six managers (core, episodic, semantic, procedural, resource, knowledge vault) coordinate through a meta-manager, and the Proactive Memory Agent (Section~\ref{sec:rl}) runs a memory agent alongside an unmodified action agent. In \emph{organisational memory}, many agents and people contribute to a store that outlives any of them: \citet{dhanyamraju2026orgmemory} report a production deployment for enterprise coding agents that captures task-adjacent experience with contributor approval, curates it into reusable question--answer memories, gates security and privacy risks before admission, and retrieves for future agents; the effects on coding outcomes were still under evaluation at publication, but the lifecycle (capture with consent, curate, gate, retrieve) is the clearest published description of how shared memory is actually operated.
+
+\subsection{Governance of shared writes}
+
+MemTX \citep{li2026memtx} makes the governance argument directly: in shared memory ``one agent's write becomes another agent's premise, and eventually a tool call with real side effects,'' so a write should not be a belief commit. It identifies six failure families: tool-result pollution (untrusted output written as fact), stale late writes (a slow agent overwriting a newer state), dirty reads of tentative state, semantic conflict between concurrent writers, permission laundering (a restricted fact re-emerging in an unrestricted summary), and cascading-rollback failures (retracting a belief without retracting what was derived from it). Its remedy stages writes in snapshot-isolated transactions carrying evidence, permissions, provenance, and validity; gates irreversible tool calls on in-flight belief state; and cascades repair when a belief is retracted. Two invariants are checked by property-based testing over 5.5 million protocol states. Portable Agent Memory \citep{ravindran2026portable} addresses the cross-vendor case with content-addressed entries in a Merkle-DAG provenance graph, capability-scoped disclosure, and an injection-resistant ``rehydration'' step for moving memory between GPT, Claude, Gemini, and Llama agents. Both are preprints and neither has been evaluated with multiple real harnesses under load.
+
+\subsection{Assessment}
+
+The architectures are mature enough to deploy; the governance is specified but untested. The convergent view, which the security literature shares (Section~\ref{sec:security}), is that shared memory needs transactional semantics, provenance, and trust levels per writer, because the blast radius of a bad write is every reader. The empirical gap is that no benchmark exercises multiple writers: MemoryArena and AMA-Bench are single-agent, and the multi-agent evaluations in G-Memory and MIRIX measure task success rather than conflict rate, repair latency, or propagation of a planted error. Section~\ref{sec:directions} returns to this.
+
+\section{Evaluation}
+\label{sec:eval}
+
+\subsection{Metrics}
+
+\citet{zhang2024survey} distinguish \emph{direct} evaluation, which inspects the memory itself, from \emph{indirect} evaluation, which measures the agent's downstream performance. Almost all published results are indirect, which is why disputes about them (Section~\ref{sec:credibility}) are hard to settle.
+
+\paragraph{Indirect: answer quality.} The dominant metrics are exact match or token F1 against a gold answer, and \emph{LLM-as-judge} correctness, in which a model compares the agent's answer to the gold answer. The two can disagree by tens of points on the same outputs, since F1 penalises paraphrase and judges vary with the judge model, prompt, and version \citep{jiang2026anatomy}. Agentic benchmarks replace answer correctness with task success (resolution rate, pass@1), which is harder to game but conflates memory with every other capability.
+
+\paragraph{Indirect: efficiency.} Input tokens per query, end-to-end latency, and number of model calls are reported inconsistently. \citet{omri2026systems} argue for attributing cost separately to the \emph{construction} (write), \emph{retrieval}, and \emph{generation} phases, since a system can look cheap on the read path while being expensive to build, and \citet{jiang2026anatomy} find ingestion latency and throughput routinely omitted.
+
+\paragraph{Direct: memory quality.} Direct metrics are rarer and newer: precision and recall of extracted facts against a planted ground truth \citep{spencer2026groundtruth}; retrieval match@$k$ against the trajectory that should have been recalled \citep{chen2026rem}; contradiction-detection AUROC \citep{yadav2026memstrata}; state-tracking accuracy \citep{fan2026statemem}; calibration of memory use, in which over- and under-use are scored per proposition \citep{cao2026memcalib}; and unlearning metrics, in which forgetting is measured against a paired control that was never told the fact \citep{xie2026bemula}. These are the metrics that isolate what a memory system did, and their adoption is the clearest sign of methodological maturity in the 2026 literature.
+
+\paragraph{Validity of the instrument.} Separately from the metric, benchmarks differ in how ground truth was produced. Most generate conversations first and extract answers afterwards, with documented label errors and contamination; \citet{spencer2026groundtruth} inverts the order so that gold answers are correct by construction. A metric is only as good as its labels.
+
+\subsection{Benchmarks}
+
+Tables~\ref{tab:bench} and \ref{tab:bench2} list the benchmarks that appear most in the literature, grouped by what they are designed to isolate. The grouping itself tells the field's story: until 2025 nearly every benchmark measured conversational recall; the 2026 additions measure validity, use, personalisation, prospective memory, deletion, and behaviour in agentic tasks.
+
+\begin{table}[tp]
+\centering\scriptsize
+\caption{Benchmarks used to evaluate agent memory (part 1: recall, validity, use, and personalisation). \emph{Size} is as reported in the source; ``--'' means not recorded in the sources consulted. \emph{Isolates} names the memory property the benchmark is designed to measure separately from general capability.}
+\label{tab:bench}
+\begin{tabularx}{\textwidth}{L{2.2cm} L{1.2cm} X L{2.4cm} L{2.0cm} L{2.7cm}}
+\toprule
+\textbf{Benchmark} & \textbf{Year, venue} & \textbf{What it tests} & \textbf{Size} & \textbf{Isolates} & \textbf{Notes} \\
+\midrule
+\multicolumn{6}{l}{\emph{Conversational recall}} \\
+DMR \citep{packer2023memgpt} & 2023 & Recall of a fact from a prior session & -- & Cross-session recall & Near-saturated (Zep 94.8\%) \\
+LoCoMo \citep{maharana2024locomo} & 2024, ACL & Single-hop, multi-hop, temporal, open-domain, adversarial QA over multi-session conversations & 10 conversations, $\sim$300 turns each; 1,986 questions & Recall and temporal reasoning over dialogue & Each conversation fits in a 2026 window; category 5 lacks usable ground truth; speaker-attribution errors \citep{zep2025rebuttal} \\
+LongMemEval \citep{wu2024longmemeval} & 2024, ICLR 2025 & Information extraction, multi-session reasoning, temporal reasoning, knowledge updates, abstention & 500 questions; S $\sim$115k tokens, M $\sim$500 sessions & Updates and abstention, not only recall & Assistants drop $\sim$30\% over sustained interaction \\
+Memory\-Agent\-Bench \citep{hu2025memoryagentbench} & 2025, ICLR 2026 & Accurate retrieval, test-time learning, long-range understanding, conflict resolution & Four competencies over adapted datasets & Incremental ingestion (no bulk pre-load) & All systems under 45 on the retrieval split \citep{kumar2026agentmemory} \\
+BEAM \citep{tavakoli2025beam} & 2025 & Recall and reasoning over very long conversations & Up to 10M tokens & Scale beyond any window & High evaluation cost \\
+LoCoMo-Plus \citep{li2026locomoplus} & 2026 & Implicit constraints under cue--trigger semantic disconnect & -- & Implicit constraints & String-match metrics shown misaligned \\
+\midrule
+\multicolumn{6}{l}{\emph{Validity, state, and use}} \\
+STALE \citep{chao2026stale} & 2026 & State resolution, premise resistance, implicit policy adaptation & 400 scenarios, 1,200 queries, to 150k tokens & Implicit conflict and propagated invalidation & Best model 55.2\% overall \\
+StateMemBench \citep{fan2026statemem} & 2026 & State tracking under supersession and dependency & -- & Current vs.\ superseded state & Best memory system 0.149--0.233 gold rate \\
+MemCalib \citep{cao2026memcalib} & 2026 & Appropriate weighting of each retrieved proposition & -- & Over- and under-use, given fixed retrieval & Post-training skews one direction \\
+OP-Bench \citep{hu2026opbench} & 2026, EMNLP & Irrelevant, repetitive, or sycophantic use of user memory & 1,700 verified instances & Over-personalisation & Widespread once memory is added \\
+PM-Bench \citep{liu2026pmbench} & 2026, COLM & Executing deferred intentions at the right cue during ongoing activity & Simulated 7-day week; 8 models $\times$ 8 configurations & Prospective memory & Best 65.1\% F1; no strategy dominates \\
+\midrule
+\multicolumn{6}{l}{\emph{Personalisation}} \\
+PersonaMem-v2 \citep{jiang2025personamem2} & 2025 & Implicit preference inference from long histories & 1,000 interactions, 300+ scenarios, 20k preferences, 128k tokens & Implicit personalisation & Frontier models 37--48\% \\
+KnowMe-Bench \citep{wu2026knowme} & 2026 & Factual recall, subjective-state attribution, principle-level reasoning over autobiographical narratives & -- & Person understanding beyond retrieval & RAG improves facts, not explanations \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\begin{table}[tp]
+\centering\scriptsize
+\caption{Benchmarks used to evaluate agent memory, continued: agentic, longitudinal, and downstream benchmarks. Columns as in Table~\ref{tab:bench}.}
+\label{tab:bench2}
+\begin{tabularx}{\textwidth}{L{2.2cm} L{1.2cm} X L{2.4cm} L{2.0cm} L{2.7cm}}
+\toprule
+\textbf{Benchmark} & \textbf{Year, venue} & \textbf{What it tests} & \textbf{Size} & \textbf{Isolates} & \textbf{Notes} \\
+\midrule
+\multicolumn{6}{l}{\emph{Agentic and longitudinal}} \\
+AMA-Bench \citep{zhao2026amabench} & 2026 & Memory over agent trajectories (states, actions, observations, tool outputs) & Real and synthetic, any length & Trajectory memory and causal structure & Best system 57.2\% \\
+MemoryArena \citep{he2026memoryarena} & 2026, ICML & Interdependent multi-session agentic tasks: web, planning, search, formal reasoning & -- & Use of memory in action across sessions & Systems near-saturated on LoCoMo ``perform poorly'' \\
+Ground Truth First \citep{spencer2026groundtruth} & 2026 & As-of-date questions, trust by channel, injection probes, two horizons & $\sim$380 questions, 15 types; 3- and 9-week histories & Label validity and tenure effects & Rankings invert between horizons \\
+Bemula \citep{xie2026bemula} & 2026 & Memory unlearning: storage, removal, preservation, relearning, extraction resistance & 135 requests, 1,742 questions; 50 dialogues, paired controls & Deletion, separated from never-stored & No system passes $>$1.5\% end to end \\
+Letta Leaderboard \citep{letta2025filesystem} & 2025 & Model's memory-management ability & -- & Model, with harness and tools fixed & Vendor-run \\
+Terminal-Bench 2.0, $\tau^2$-Bench, SWE-Bench Verified, SWE-ContextBench & 2025--26 & Downstream agentic tasks used to measure memory's effect on action & -- & Outcome effect of memory & Used by ReasoningBank, Proactive Memory Agent, REM \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+Two shifts are visible. From recall to action: MemoryArena, AMA-Bench, and the use of Terminal-Bench test whether memory improves decisions, not whether a fact can be found, and current systems score far lower there. From storage to lifecycle: LongMemEval's knowledge-update and abstention categories, MemoryAgentBench's conflict resolution, STALE and StateMemBench's state tracking, and Bemula's forgetting test the operations that \citet{du2025rethinking} enumerated and that most 2024 systems ignored.
+
+\subsection{The credibility problem}
+\label{sec:credibility}
+
+The comparative evidence in this field is unusually weak, and the weakness is documented by the participants themselves.
+
+Mem0's April 2025 paper reported LoCoMo scores for competitors. Zep's rebuttal \citep{zep2025rebuttal} identified three errors in how Zep had been run: both speakers ingested as the user, timestamps appended to message text rather than set in the \texttt{created\_at} field, and sequential rather than parallel searches; rerun, Zep scored 75.1 against the 66.0 Mem0 had reported for it. \citet{letta2025filesystem} stated that the MemGPT numbers in the same paper could not have been produced without a code path that did not exist, and that Mem0 did not respond to requests for the modified implementation. By 2026, Mem0's managed platform reported 92.5 on LoCoMo and 94.4 on LongMemEval \citep{mem0_2026state}, Hindsight reported 89.6, and MemOS 88.8; none of these used the same answer model, judge, or question subset as the 2025 rows, and only Zep's and Letta's numbers were produced to check someone else's \citep{kumar2026agentmemory}. \citet{jiang2026anatomy} formalise the pathologies: benchmark saturation, judge sensitivity and metric validity (LoCoMo-Plus shows string matching misaligned with the construct), backbone-dependent accuracy, and omitted ingestion cost. A 2026 essay titled ``The Benchmark Theatre'' \citep{bloomind2026} argues that almost no published memory score should be compared with another.
+
+The practical consequence is stated plainly by \citet{letta2025filesystem}: ``Comparing agent frameworks and agent memory tools is like comparing apples to oranges, as you can always mix and match frameworks and tools (and, of course, models).'' A defensible comparison fixes the model, the judge, the ingestion path, and the question set, and reports token and latency cost alongside accuracy. Few papers do all four.
+
+\subsection{What good evaluation looks like}
+
+From the methodological papers \citep{hu2025memoryagentbench,jiang2026anatomy,he2026memoryarena,zhao2026amabench,xie2026bemula,fan2026statemem}, a checklist emerges:
+\begin{itemize}
+\item Incremental ingestion, not a pre-loaded corpus, so the write path is tested.
+\item Interleaved memory and action, so use of memory is tested, not only recall.
+\item Knowledge updates and contradictions in the data, with questions whose correct answer changed, and grading that distinguishes a stale answer from other errors.
+\item Abstention items, so hallucinated recall is penalised.
+\item Forget requests with paired controls.
+\item Cost reported: tokens per query, ingestion latency, storage growth.
+\item Fixed backbone and judge across compared systems, with the judge validated against human labels.
+\item Several backbones, because rankings change with the model.
+\end{itemize}
+
+\section{Resources: Frameworks, Products, and Platform Features}
+\label{sec:resources}
+
+Agent memory is unusual among research topics in that most of the systems people use are products, and several of the most cited papers are vendor papers. Table~\ref{tab:resources} lists the open-source frameworks, commercial products, platform features, and research systems with released code that appear most in the literature, characterised by the properties this review has argued matter: what structure the store has, who writes to it, whether it models time, and whether a stored unit can be traced to the raw evidence it came from. The table is a snapshot as of October 2026; the vendor rows describe shipped behaviour as documented by the vendors and should be read with the evidence grading of Section~\ref{sec:method} in mind.
+
+\begin{table}[tp]
+\centering\scriptsize
+\caption{Frameworks, products, and platform features. Write path: P = per-turn extraction pipeline; A = agent-directed through tools; H = human-written; O = offline consolidation. Time: B = bi-temporal validity; T = timestamps only; -- = none modelled. Provenance: whether a stored unit links to the raw evidence it was derived from.}
+\label{tab:resources}
+\begin{tabularx}{\textwidth}{L{2.2cm} L{1.5cm} X L{0.9cm} L{0.85cm} L{1.3cm} L{2.2cm}}
+\toprule
+\textbf{System} & \textbf{Kind} & \textbf{Store structure} & \textbf{Write} & \textbf{Time} & \textbf{Prov.} & \textbf{Evidence} \\
+\midrule
+Mem0, Mem0g \citep{chhikara2025mem0} & OSS + hosted & Extracted facts in vector index; optional entity graph & P & T & partial & Vendor paper; disputed comparisons \\
+Zep, Graphiti \citep{rasmussen2025zep} & OSS engine + hosted & Bi-temporal knowledge graph: episode, entity, community layers & P & B & yes (episodes) & Vendor paper \\
+Letta, MemGPT \citep{packer2023memgpt,letta2025filesystem} & OSS + hosted & Core blocks, recall (messages), archival; filesystem variant & A & T & yes (recall) & Paper + vendor benchmark \\
+MemOS \citep{li2025memos} & OSS & ``MemCube'' unifying plaintext, KV, parametric memory with scheduling & P/O & T & partial & Preprint, author-run \\
+LightMem \citep{fang2025lightmem} & Research, code & Sensory filter, topic-segmented short-term, offline long-term & O & T & partial & ICLR 2026 \\
+Hindsight \citep{latimer2025hindsight} & OSS (Vectorize) & Four networks: World, Experience, Opinion, Observation; TEMPR retrieval & P/O & T & yes & Vendor paper \\
+A-MEM \citep{xu2025amem} & Research, code & Zettelkasten notes with links; note evolution & P & T & partial & NeurIPS 2025 \\
+HippoRAG 2 \citep{gutierrez2025hipporag2} & Research, code & Knowledge graph + passages with Personalized PageRank & P & -- & yes (passages) & ICML 2025 \\
+MIRIX \citep{wang2025mirix} & Research, code & Six components under a meta-manager; screenshots & A & T & partial & Preprint \\
+Cognee \citep{cognee2026} & OSS + hosted & Graph + vector + relational, self-hosted & P & T & partial & Vendor docs only \\
+EverMemOS \citep{hu2026evermemos} & Research, code & MemCells to MemScenes to profile; Foresight signals & P/O & T & yes & Preprint \\
+AtomMem \citep{yao2026atommem} & Research, code & Atomic facts, event hierarchy, temporal profiles & P & T & partial & Preprint \\
+TierMem \citep{zhu2026tiermem} & Research & Summaries over immutable raw pages with stable identifiers & P & T & yes & Preprint \\
+LLM-Wiki \citep{ming2026llmwiki}; LLM Wiki pattern \citep{karpathy2026wiki} & Research; practice & Agent-maintained Markdown wiki over raw sources, with lint & A/O & -- & yes (sources) & Preprint; gist \\
+Claude memory tool, auto memory \citep{anthropic2025memorytool,anthropic2026claudecode} & Platform feature & Files the agent reads and writes; auto-loaded notes & A/H & -- & no & Vendor docs \\
+ChatGPT memory \citep{openai2026memory} & Product feature & Saved memories plus chat-history reference; user view/edit/delete & P & -- & no & Vendor docs \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+Three observations follow from the table. First, the write path is still dominated by per-turn extraction pipelines, which Sections~\ref{sec:retrieval} and \ref{sec:crosscutting} found to be the most expensive and the most prone to missing what the prompt did not anticipate; offline consolidation is spreading but is not yet the default. Second, bi-temporal validity is rare: Zep is the only widely deployed system that models it, which is consistent with the stale-fact failures measured in Section~\ref{sec:security}. Third, provenance to raw evidence is present in the research systems that perform best on the harder 2026 benchmarks (TierMem, Hindsight, EverMemOS, LLM-Wiki) and absent from the platform features most people use. The platform features compensate with legibility: a user or developer can read the files. The research question those two facts pose, whether legible files or provenance-linked structure scales better, is unresolved.
+
+\section{Applications}
+\label{sec:applications}
+
+The memory functions an agent needs depend on what it does. This section describes the main application settings and the functions each stresses, with the systems and benchmarks that target them.
+
+\paragraph{Personal assistants and companions.} The original and largest setting: remember who the user is and what they said. It stresses semantic memory about the user, temporal validity (preferences change), and governance (the subject has rights). Section~\ref{sec:personalization} covers it; the measured state is that explicit recall is near-solved, implicit inference is near 50\%, and over-use is a measured harm.
+
+\paragraph{Coding agents.} Coding agents run for hours over a repository and return to the same codebase across sessions. They stress procedural memory (conventions, build commands, past fixes), working-memory management under compaction (a dropped constraint is a wrong edit), and prospective memory (``run the tests after the migration''). The shipped designs are file-based: \texttt{AGENTS.md} and \texttt{CLAUDE.md} as human-written procedural memory, auto memory as agent-written notes \citep{anthropic2026claudecode}, and practitioner systems that index transcripts \citep{akita2026}. The research results are newer: REM \citep{chen2026rem} shows that governed experience reuse improves resolution on SWE-ContextBench Lite, and \citet{dhanyamraju2026orgmemory} describe a deployed organisational memory for enterprise coding. Coding is also the setting in which outcome-linked evaluation is most feasible, because tests, reverts, and user corrections are observable.
+
+\paragraph{Web, computer-use, and tool agents.} Agents that operate interfaces stress episodic memory of trajectories and procedural memory of workflows. Agent Workflow Memory and ReasoningBank (Section~\ref{sec:experiential}) were evaluated on WebArena and Mind2Web; the Proactive Memory Agent on Terminal-Bench and $\tau^2$-Bench; MemoryArena and AMA-Bench (Section~\ref{sec:eval}) were built to measure memory in exactly these interdependent, multi-session tasks, and current systems score far lower on them than on dialogue recall.
+
+\paragraph{Deep research and long-horizon reasoning.} Research agents accumulate findings over hundreds of steps and must not lose or contradict them. Memento's case bank and GAIA results \citep{zhou2025memento}, MEM1's constant-size state over multi-objective tasks, and sleep-time compute's amortisation over repeated queries about a context \citep{lin2025sleeptime} target this setting. It stresses working-memory compaction and the write-before-query barrier most directly, since the question a finding will answer is unknown when it is recorded.
+
+\paragraph{Multi-agent and enterprise systems.} Teams of agents, and organisations in which many agents and people share one store, stress governance over everything else (Section~\ref{sec:multiagent}): trust per writer, transactional writes, provenance, and permission boundaries that survive summarisation.
+
+\paragraph{Embodied, multimodal, and simulation agents.} Most of the field is text. Voyager's skill library for Minecraft \citep{wang2023voyager} and G-Memory's embodied tasks \citep{zhang2025gmemory} are the procedural and multi-agent instances; Generative Agents \citep{park2023generative} introduced the memory stream with recency, importance, and relevance scoring that many later systems adopted, in a social-simulation setting. Multimodal memory is beginning: MIRIX ingests screenshots \citep{wang2025mirix}, and \citet{luo2026storage} and \citet{hu2025memoryage} both flag multimodal and world-model memory as frontiers. The specific challenges are that non-text evidence cannot be summarised into text without loss that the write-before-query barrier makes unverifiable, that embeddings for retrieval across modalities are weaker than text embeddings, and that the volume of raw evidence (video, screen recordings) makes raw retention expensive. None of the benchmarks in Section~\ref{sec:eval} is multimodal, so there is at present no measured state of the art.
+
+\section{Security, Temporal Validity, Provenance, and Forgetting}
+\label{sec:security}
+
+The 2026 literature's most important development is the recognition that memory is a governance problem. \citet{lin2026security} characterise the threat landscape by three properties that distinguish it from prompt-level security: \emph{persistence} (a bad write survives the session), \emph{statefulness} (it changes future behaviour), and \emph{propagation} (it spreads to other agents and sessions). Their Memory Lifecycle Framework crosses six phases (Write, Store, Retrieve, Execute, Share \& Propagate, Forget \& Rollback) with four objectives (Integrity, Confidentiality, Availability, Governance) and concludes that security ``cannot be retrofitted at retrieval or execution time alone, but must be anchored in storage-time provenance, versioning, and policy-aware retention from the outset.'' They propose Verifiable Memory Governance as five architectural primitives for auditable, recoverable control of memory state.
+
+\subsection{Poisoning}
+
+AgentPoison \citep{chen2024agentpoison} showed that a small number of planted entries in an agent's RAG store or memory can act as a backdoor triggered by optimised query patterns, with high success at under 0.1\% poisoning rate; it assumed write access to the store. MINJA \citep{dong2025minja} removed that assumption: through ordinary user queries alone, an attacker induces the agent to write ``indication prompts'' into its own memory that later steer other users' sessions, reporting over 95\% injection success and 70\% attack success under idealised conditions. \citet{sunil2026poisoning} replicate MINJA on EHR agents over MIMIC-III with three models and find that realistic conditions, a store already populated with legitimate memories, ``dramatically reduce attack effectiveness''; they evaluate two defences, composite trust scoring at input/output and memory sanitisation with trust-aware retrieval and temporal decay, and find that thresholds must be calibrated to avoid both rejecting everything and missing subtle attacks. The SSGM framework \citep{lam2026ssgm} proposes decoupling memory evolution from execution, with consistency verification, temporal decay, and access control enforced before consolidation.
+
+The design implication accepted across this literature is that writes should carry a trust level determined by their source (user statement, agent inference, tool output, import), that tool-derived content is the main injection channel and should be quarantined pending review, and that retrieval should be able to filter on trust and status.
+
+\subsection{Confidentiality and leakage}
+
+\citet{lam2026ssgm} names ``topology-induced knowledge leakage,'' where sensitive context from one setting is consolidated into long-term memory and resurfaces in another; MemTX's ``permission laundering'' is the same failure seen from the access-control side \citep{li2026memtx}. \citet{hu2025memoryage} list trustworthiness and privacy as frontier issues. Production guidance converges on redaction before storage (API keys, credentials, personal data), scoping memory by project and user, and recording what was redacted so audits can account for gaps.
+
+\subsection{Defenses across the lifecycle}
+\label{sec:defenses}
+
+The defense literature is organised most usefully by \emph{where in the lifecycle a mechanism acts}, because, as \citet{lin2026security} argue, attacks exploit the sequence (seed at Write, amplify at Store, reactivate at Retrieve, spread at Share) and ``no single intervention point [is] sufficient to break the full attack chain.'' They group defenses into \emph{prevention} (keep untrusted content out), \emph{containment} (limit what admitted content can do), and \emph{recovery} (trace, roll back, delete). Table~\ref{tab:defenses} maps mechanisms to phases and records how much evidence exists for each. The lifecycle organisation and the selection of mechanisms follow \citet{lin2026security}; descriptions and evidence status are taken from the primary sources.
+
+\begin{table}[p]
+\centering\footnotesize
+\caption{Defenses by lifecycle phase. Evidence: \emph{evaluated} = at least one quantitative evaluation against an attack; \emph{specified} = architecture or protocol described, with at most formal or property-based verification; \emph{sparse} = named as a need, little published work.}
+\label{tab:defenses}
+\begin{tabularx}{\textwidth}{L{1.4cm} L{2.05cm} X L{2.5cm}}
+\toprule
+\textbf{Phase} & \textbf{Objective} & \textbf{Representative mechanisms} & \textbf{Evidence} \\
+\midrule
+Write & Prevention & Trust scoring of candidates from orthogonal signals \citep{sunil2026poisoning}; expert-curated seed memory plus post-hoc human fact-checking of accumulated memories before deployment, treating memory as an alignment surface \citep{nguyen2025verificagent}; source, version, sensitivity, and temporal metadata attached at write \citep{li2025memos}; staged, snapshot-isolated belief commit with evidence and permissions \citep{li2026memtx}; decoupling evolution from execution with verification before consolidation \citep{lam2026ssgm} & Evaluated for trust scoring (with calibration cost) and VerificAgent (OSWorld); specified for the rest \\
+Store & Recovery substrate & Versioned snapshots and write logs; content-addressed, Merkle-linked records \citep{ravindran2026portable}; immutable raw pages with stable identifiers \citep{zhu2026tiermem}; W3C PROV-style lineage \citep{wang2026traces} & Specified; \citet{lin2026security} call store-time defenses ``comparatively underdeveloped'' \\
+Retrieve & Containment & Trust-aware retrieval with temporal decay and pattern filtering \citep{sunil2026poisoning}; isolate-then-aggregate generation with certifiable robustness \citep{xiang2024robustrag}; cluster filtering plus model self-assessment \citep{zhou2025trustrag}; semantic and cluster filtering guided by entity--intent--relation extraction, then conflict-free generation \citep{si2025seconrag}; poison detection from the model's activations \citep{tan2025revprag}; memory-native defense that validates by consensus across reasoning paths from related memories and stores detected failures as separate ``lessons'' \citep{wei2025amemguard} & Evaluated; the most developed phase. A-MemGuard cuts attack success by over 95\% on agent memory; the rest are evaluated on static RAG corpora \\
+Execute & Containment & Information-flow control: extracting control and data flow from the trusted query so untrusted data cannot alter program flow, with capabilities against exfiltration \citep{debenedetti2025camel}; taint tracking of confidentiality and integrity labels with deterministic policy enforcement \citep{costa2025fides}; runtime monitoring against user-specified Datalog policies over event graphs \citep{palumbo2026pcas}; privilege policies as symbolic rules over tool names and arguments \citep{shi2025progent}; execution isolation between apps and system \citep{wu2025isolategpt}; gating irreversible tool calls on belief commit state \citep{li2026memtx} & Evaluated for prompt-injection settings; specified for memory-gated execution \\
+Share & Containment & Multi-user, multi-agent memory with asymmetric, time-evolving access encoded as bipartite user--agent--resource graphs \citep{rezazadeh2025collaborative}; unsupervised detection of malicious agents from inter-agent message structure, without attack labels \citep{miao2026blindguard}; capability-scoped disclosure and injection-resistant rehydration \citep{ravindran2026portable} & Evaluated for BlindGuard (multi-agent); specified for memory access control \\
+Forget, rollback & Recovery & Iterative traceback of the poisoned texts responsible for an attack \citep{zhang2025ragforensics}; snapshot and rollback primitives; descendant enumeration over provenance; paired-control deletion testing \citep{xie2026bemula} & Sparse; traceback shown for static RAG only; the one end-to-end deletion evaluation is negative \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+Three observations follow. First, effort is concentrated at retrieval, where the techniques are inherited from RAG security and where several carry formal or certifiable guarantees \citep{xiang2024robustrag}; A-MemGuard \citep{wei2025amemguard} is the one defense built for agent memory specifically, and its two mechanisms, consensus across reasoning paths and a separate store of distilled lessons, are themselves memory operations. But retrieval-time filtering is exactly the point at which \citet{lin2026security} and \citet{li2026memtx} argue defense arrives too late for a persistent store: a poisoned memory that is filtered today is still present tomorrow, and still propagates. Second, write-time prevention is the phase the governance literature prioritises and the one with the least quantitative evidence; the one evaluated mechanism, composite trust scoring, shows that the cost is a calibration problem, since thresholds that stop subtle attacks also reject legitimate writes \citep{sunil2026poisoning}, and no study reports the false-quarantine rate on realistic traffic. Third, recovery is almost unstudied for dynamically updated memory: traceback has been demonstrated only for static RAG corpora \citep{zhang2025ragforensics}, there is no published evaluation of rollback, and the only deletion evaluation finds every system failing.
+
+\paragraph{Verifiable Memory Governance.} \citet{lin2026security} distil the requirements into five primitives, cast as predicates over the memory store, which are useful as a checklist for any design: \emph{write authorization} (every entry is attributable to an authenticated source and passed an explicit authorization check before consolidation); \emph{provenance visibility} (every entry carries queryable, lineage-complete provenance back to its originating write, surviving summarisation and merging); \emph{principal-scoped retrieval} (retrieval returns only entries whose authorized scope includes the requesting principal); \emph{rollbackability} (snapshots and write logs sufficient to restore any prior state); and \emph{verified forgetting} (after deletion, the probability that any probing query re-exposes the target from any substrate, raw logs, summaries, indexes, or copies, is bounded by a small $\varepsilon$). Measured against this checklist, the systems in Table~\ref{tab:resources} mostly satisfy none of the five formally; the research systems with provenance (TierMem, Kumiho, MemTX, Portable Agent Memory) satisfy the second and, by construction, much of the fourth; and Bemula's result is a direct measurement that the fifth is unmet everywhere. The checklist also makes clear why an append-only record is the natural substrate: it provides rollbackability and provenance visibility for free and makes write authorization a matter of recording the writer, while leaving verified forgetting as the one primitive it cannot provide alone.
+
+\subsection{Temporal validity, contradiction, and state tracking}
+\label{sec:temporal}
+
+The clearest negative result in the field concerns similarity search. \citet{yadav2026memstrata} shows on a calibrated dataset that cosine similarity distinguishes a \emph{contradicting} fact from a \emph{rephrased duplicate} with AUROC 0.59, near chance, because contradictions are often more similar to the original than paraphrases are. The consequence: a vector store presented with ``the API is now \texttt{v2}'' and ``the API is \texttt{v1}'' retrieves both with near-identical scores, and when forced to answer serves the stale value 15 to 40\% of the time. MemStrata's remedy is a deterministic (subject, relation, object) supersession rule into a \emph{bi-temporal ledger} (the SQL:2011 distinction between the time a fact was true and the time the system learned it), with no similarity threshold and no LLM call, reducing stale-fact errors to about zero at retrieval latency. Zep's Graphiti reached the same bi-temporal design from engineering practice \citep{rasmussen2025zep}, and MemTX types contradiction-resolution heuristics as bitemporal write-time operators \citep{li2026memtx}.
+
+Two 2026 benchmarks show that explicit contradiction is the easy case. STALE \citep{chao2026stale} studies \emph{implicit conflict}, where a later observation invalidates an earlier memory without negation: a user who mentioned a cycling commute and later mentions a broken leg. It distinguishes co-referential conflicts (a new value for the same attribute) from propagated conflicts (a change in one attribute invalidates a dependent one) and finds that even the best evaluated model achieves 55.2\% overall, with models routinely accepting outdated presuppositions embedded in the user's query. StateMemBench \citep{fan2026statemem} grades whether an answer reflects the current state, a superseded state, or neither, and finds dense retrieval and existing memory systems reach gold rates of 0.15 to 0.21; their StateMem method, which extracts state units with ``derived from'' links, marks superseded units inactive, and deterministically flags dependents for recomputation, improves this 1.6 to 1.8$\times$. HiMem's reconsolidation and Karpathy's lint step attack staleness from the agent side.
+
+The general lesson is that staleness is a modelling problem, not a retrieval-tuning problem. The store must know that a fact has a validity interval, that a later fact can close it, that dependent facts may be invalidated in turn, and it must keep the closed fact for audit.
+
+\subsection{Provenance and belief revision}
+
+Several 2026 systems treat provenance as a first-class structure. TierMem links every summary unit to its immutable raw pages and escalates to them when summaries are insufficient \citep{zhu2026tiermem}. Kumiho gives every belief a URI, a revision history, provenance edges to evidence, and an immutable audit trail, and proves AGM postulate satisfaction for its revision operations \citep{park2026kumiho}. Hindsight separates evidence from inference in distinct networks \citep{latimer2025hindsight}. MemTX requires evidence, permissions, provenance, and validity on every record, and gates side effects on commit state \citep{li2026memtx}. Portable Agent Memory uses content addressing and Merkle-DAG parent hashes for tamper evidence \citep{ravindran2026portable}. \citet{wang2026traces} survey evidence tracing and execution provenance for agents and relate it to W3C PROV. These are preprints, and their benchmark scores are not the point. Their shared claim, supported by the failure analyses in Sections~\ref{sec:context} and~\ref{sec:temporal}, is that a memory system without provenance cannot explain, correct, or safely share what it remembers.
+
+\subsection{Forgetting and deletion}
+
+Forgetting appears in the surveys as an atomic operation \citep{du2025rethinking} and in early systems as decay \citep{zhong2023memorybank}. Deletion on request is different: it is a correctness requirement with legal weight. Bemula \citep{xie2026bemula} tests it directly with 135 forget requests of six types targeting 269 facts across 50 multi-session dialogues, each paired with a control version so that only systems that stored the target can score, and five suites for storage, removal, preservation of unrelated memories, relearning, and extraction resistance. Across six mainstream memory systems and three backbones, ``no system passes more than 1.5\% of forget requests end to end, and most pass none at all'': systems either leave the information extractable under simple attacks or delete far more than requested. The authors note that one fact typically survives in several forms (raw dialogue, extracted facts, compressed notes), so deleting one copy leaves the others. \citet{wang2026unlearning} identify ``backflow,'' where content deleted from explicit memory is reintroduced from the model's parameters, and \citet{lin2026forget} extend unlearning evaluation to agent settings. Deletion is, on this evidence, unsolved.
+
+An append-only design interacts with this in a specific way. It cannot delete; it can retire, supersede, and exclude from retrieval, which satisfies ``stop using this'' but not ``erase this.'' Content erasure requires an out-of-band administrative operation, and the audit log must then record that a redaction occurred without recording what was redacted. The ``Forget \& Rollback'' phase of \citet{lin2026security} names exactly this tension.
+
+\section{Cross-Cutting Analysis}
+\label{sec:crosscutting}
+
+\subsection{Harness versus store}
+
+The single most consequential empirical pattern across Sections~\ref{sec:context}, \ref{sec:retrieval}, and \ref{sec:eval} is that the harness matters more than the store. Letta's filesystem result, the BM25 results reported by \citet{kumar2026agentmemory}, the ablations in the Proactive Memory Agent showing that \emph{when} to inject matters more than \emph{what} is stored, and the vendors' convergence on file-based memory all point the same way. MemGPT's original insight, that a capable model managing simple tools does well, has held for three years. This does not mean stores are irrelevant: on temporal and multi-hop questions graphs win, and at 10M-token scale indexing is unavoidable. It means that evaluations which vary the store while holding the harness fixed, or vice versa, are the only ones that isolate anything.
+
+\subsection{Lossy versus lossless}
+
+Every system makes a lossy choice somewhere: extraction drops what the prompt did not ask for, summarisation drops detail, embeddings drop structure, decay drops the unreinforced. The write-before-query barrier \citep{zhu2026tiermem} explains why this is not fixable by better prompts. The systems that recover are those that keep raw evidence immutable and reachable (TierMem, Kumiho, Karpathy's raw sources layer, Hindsight's experience network) and treat everything else as a cache over it. Full-context baselines keep winning on recall benchmarks for the same reason; memory systems win on cost and on long horizons where full context is impossible or rots.
+
+\subsection{Who writes}
+
+Control policy is the least evaluated axis. Pipelines that run an extraction LLM on every turn (Mem0, Zep) are consistent and expensive and remember what the prompt was written to notice. Agent-directed writes (MemGPT, memory tools, auto memory) are cheaper and adaptive and depend on the model's judgement of salience, which \citet{wu2026proactive} show decays over long trajectories. Learned policies (Section~\ref{sec:rl}) are promising and young. Human-written procedural memory (\texttt{AGENTS.md}) is the most reliable and the least scalable. No paper compares all four on the same task.
+
+\subsection{Cost}
+
+\citet{jiang2026anatomy} find that ingestion latency and throughput are routinely omitted from papers and can dominate in production. The per-turn extraction pipelines are the most expensive; LightMem reports two orders of magnitude fewer LLM calls by consolidating offline. Sleep-time compute and nightly lint are the field's answer: do the expensive consolidation when no one is waiting.
+
+\subsection{Strength of evidence by claim}
+
+\begin{itemize}
+\item \emph{Memory systems reduce tokens and latency versus full context by an order of magnitude}: strong, replicated across vendors and independent runs.
+\item \emph{A specific memory product beats others on recall}: weak; see Section~\ref{sec:credibility}.
+\item \emph{Graph or temporal structure helps temporal and multi-hop questions}: moderate; consistent across Zep, HippoRAG, AMA-Agent, Kumiho, with mostly author-run evaluations.
+\item \emph{Experiential memory improves repeated-task performance}: strong within distribution; weak out of distribution.
+\item \emph{Similarity search cannot detect contradiction}: strong, with a calibrated measurement (AUROC 0.59) and two independent benchmarks showing low state-tracking accuracy.
+\item \emph{Deletion is unsolved}: strong, one benchmark, negative across all systems tested.
+\item \emph{Memory poisoning is practical}: strong for idealised conditions; moderate evidence that realistic stores reduce it.
+\item \emph{Provenance-based governance improves outcomes}: argued, formalised, and partially verified (MemTX property tests; Kumiho's independent reproduction); not yet shown on shared agentic benchmarks.
+\end{itemize}
+
+\section{Where the Field Is Heading}
+\label{sec:trajectory}
+
+The preceding sections describe the field as it stands. This section reads the direction of travel from the same evidence: which ideas are gaining adherents, which are being abandoned, and where the 2026 literature places its own frontier. Each trend is stated with the evidence behind it and a note on how confident the reading is.
+
+\subsection{From storage to self-evolution}
+
+The framing of memory has shifted from ``how does an agent remember'' to ``how does an agent improve.'' \citet{luo2026storage} describe the evolution as Storage, Reflection, Experience. \citet{huang2026secondhalf}, a TMLR survey with over sixty authors, argue that AI research has entered a ``second half'' in which utility on long-horizon, user-dependent work (agentic coding, deep research, computer use) matters more than benchmark scores, and that memory is ``the substrate through which agents self-evolve'': short-term memory gates what is perceived, long-term memory consolidates it into reusable knowledge and skills, and the loop between them is how an agent learns from its own experience. \citet{gao2026selfevolving} place memory alongside models, tools, and architecture as one of the things that can evolve, and organise the literature by \emph{what}, \emph{when}, and \emph{how} it evolves. The same framing underlies the ``portable, shareable agent skills'' ecosystem that \citet{huang2026secondhalf} describe, in which a lesson distilled by one agent is packaged for reuse by others.
+
+The reading is confident: three independent surveys in 2026 converge on it. The caution is that Section~\ref{sec:experiential} found experiential memory strong within distribution and weak outside it, so the field's aspiration has outrun its evidence. The next few years will test whether memory-mediated self-improvement generalises or whether it mostly overfits an agent to the tasks it has seen.
+
+\subsection{Memory management as a trained capability, including how much to trust each memory}
+
+Section~\ref{sec:rl} documented controllers trained to decide what to write and when. The frontier is moving one step further, to how memory is \emph{used} once retrieved. NapMem \citep{xu2026napmem} exposes a provenance-linked memory pyramid (raw conversations, typed records, topic tracks, profiles) as a set of tools and trains the agent, with memory-tool RL, to navigate between granularities before answering, arguing that passive retrieval makes the model ``a consumer of pre-selected evidence.'' MemCalib \citep{cao2026memcalib} isolates a problem that retrieval benchmarks cannot see: given a set of retrieved propositions, frontier models systematically \emph{over-use} some (importing an irrelevant preference) and \emph{under-use} others (ignoring a binding constraint), and standard post-training (GRPO, on-policy self-distillation) improves one direction while worsening the other. Their MemCalib-RL assigns credit separately for over- and under-use through per-proposition ablation and reports balanced gains that transfer to external benchmarks.
+
+Together these mark a shift of attention from the store to the policy, and within the policy from writing to reading. The likely consequence is that ``memory'' and ``agent'' stop being separable components: the memory system supplies structure and provenance, and the model is trained to exploit both. \citet{wooders2026plugin} make the same point from the vendor side under the slogan that memory ``isn't a plugin.'' Confidence is moderate: the results are preprints on dialogue benchmarks, but they address a measured failure that no amount of better retrieval would fix.
+
+\subsection{Memory becomes a data-systems problem}
+
+The strongest 2026 designs borrow from databases and classical AI rather than from information retrieval. Bi-temporal validity (Zep, MemStrata), transactional belief commit with snapshot isolation and cascading repair (MemTX), formal belief-revision semantics over versioned items (Kumiho), dependency-propagated invalidation (StateMem), and provenance graphs with typed source relations (TierMem, Hindsight) are the vocabulary of temporal databases \citep{snodgrass1999temporal}, truth maintenance systems \citep{doyle1979tms}, and the AGM theory of belief change \citep{alchourron1985agm}, applied to memories written by language models. NeuSymMS \citep{sultan2026neusymms} goes furthest, pairing neural fact extraction with a CLIPS rule engine that classifies, deduplicates, and reconciles subject--relation--value triples under explicit lifecycle rules in a relational database. \citet{huang2026belief} survey the same territory from decision theory and argue that what an agent carries between steps is a \emph{belief} with three parts, a state, a transition across actions, and a likelihood that scores new observations against it, and that memory research has supplied the first, post-training the second, and almost nobody the third.
+
+A parallel move treats memory as a workload. \citet{omri2026systems} present the first systems characterisation of agent memory: a phase-aware profiling harness that attributes cost to construction, retrieval, and generation across ten systems, showing that external memory moves work rather than removing it (Mem0's serving time per query is under 0.1~s against about 38~s for a 360k-token long-context baseline, but only once the construction phase is excluded) and deriving recommendations on construction scheduling, capability floors, amortisation across query volume, freshness-versus-latency trade-offs, and fleet-scale management. Confidence is high that this is where serious systems are going: it is where the measured failures (contradiction, staleness, unverifiable summaries, poisoning) all have known remedies.
+
+\subsection{Evaluation shifts from recall to behaviour, time, and tenure}
+
+Section~\ref{sec:eval} showed recall benchmarks saturating and agentic benchmarks appearing. Three further moves are visible in 2026. First, \emph{new memory functions} are being isolated: PM-Bench \citep{liu2026pmbench} measures \emph{prospective} memory, the ability to execute a deferred intention when its cue arrives while doing something else, adapting the Virtual Week paradigm from cognitive psychology; the best configuration (a GPT-5.4 agent) reaches 65.1\% F1, no strategy dominates across models, and the failure is one of timely retrieval rather than knowledge. MemCalib measures use rather than recall. STALE and StateMemBench measure validity tracking. Second, \emph{ground truth is being constructed before text}: \citet{spencer2026groundtruth} samples a life script of facts with validity intervals, volatility classes, and source channels, renders chat and email from it, verifies every planted fact, and instantiates questions mechanically, so that gold answers are correct by construction and as-of-date questions and injection probes are possible. Third, \emph{tenure} is being measured: in that instrument the ranking of five memory architectures inverts between a three-week and a nine-week history (a budgeted curated-map memory falls from 96\% to 72\% as it evicts content, while a provenance-typed graph rises to 90\%), write-stage quality predicts downstream quality (weakly written facts fail 24\% of the time against 2\%), and injection resistance tracks whether provenance boundaries survive representation.
+
+The direction is confident even though the individual results are preprints: every methodological critique in Section~\ref{sec:credibility} is being answered by a benchmark designed around it. The practical consequence is that systems which lead today's short-horizon leaderboards may not lead the longitudinal ones.
+
+\subsection{Governance moves to write time; deletion becomes a system-level claim}
+
+The security and governance literature (Section~\ref{sec:security}) has converged on two positions that are now shaping designs. The first is that filtering at retrieval is too late: provenance, versioning, trust levels, and admission control must be applied when a memory is written \citep{lin2026security,li2026memtx}. The second is that forgetting must be argued at the level of the whole system. \citet{xu2026unlearningsurvey} introduce the notion of a \emph{claim boundary}: a model-level unlearning claim covers parameters and checkpoints, a system-level claim covers the retrieval stores, caches, summaries, memories, tool effects, and shared state in which the target may also live, and present evidence from model evaluations does not establish removal across external state or later updates. Bemula's negative result and the backflow effect of \citet{wang2026unlearning} are concrete instances. The field is moving towards treating deletion as a dependency-tracing and recovery-testing problem rather than a weight-update problem, which is also the only framing in which an append-only ledger with redaction can make a defensible claim. Portability protocols \citep{ravindran2026portable} and the ``skills'' ecosystem raise the stakes, because memory that moves between vendors and agents carries its provenance, or its poison, with it.
+
+\subsection{Memory moves partly back into the model}
+
+Test-time learning (Titans, Nested Learning), trained KV caches (Cartridges), and memory layers are maturing in parallel with everything above, and \citet{huang2026secondhalf} treat parametric state as one of two substrates rather than as future work. The plausible end state is hybrid: a token-level, auditable ledger as the source of record, with stable knowledge periodically compiled into parameters or caches for speed, and a revocation path when the ledger changes. No surveyed agent system has closed this loop (Section~\ref{sec:directions}), and the auditability arguments of Section~\ref{sec:security} will keep the ledger primary. Confidence that parametric consolidation will appear in production agents within a few years is moderate; confidence that it will replace token-level memory is low.
+
+\subsection{Baselines commoditise, differentiation moves to the harness}
+
+Finally, the vendor record shows file-based memory, auto-loaded notes, context editing, and sleep-time consolidation becoming default features of agent platforms rather than products in themselves \citep{anthropic2025memorytool,anthropic2026claudecode,letta2025filesystem}. Combined with the harness-versus-store finding (Section~\ref{sec:crosscutting}), the implication is that a memory store will be judged less on its retrieval scores and more on what it lets a harness do: cite, correct, quarantine, supersede, explain, and delete. That is a different competition from the one the LoCoMo leaderboards describe, and it favours systems designed as governed records over systems designed as better indexes.
+
+\section{Open Problems and Promising Research Directions}
+\label{sec:directions}
+
+On the evidence reviewed, nine problems remain unsolved: causally grounded retrieval over trajectories; continual consolidation without collapse; trustworthy reflection; learned forgetting and verified deletion; implicit state tracking; evaluation that isolates components; shared and portable memory with transactional semantics; parametric consolidation that keeps the token-level record authoritative; and multimodal and embodied memory, where there is as yet no measured state of the art (Section~\ref{sec:applications}). This section argues which lines of attack the evidence makes promising, and for each states the research question, the measured gap that motivates it, and what a convincing result would look like. Table~\ref{tab:agenda} summarises. The directions are grouped by the part of the memory lifecycle they address.
+
+\subsection{Memory as a governed record}
+
+\paragraph{Explicit temporal and dependency semantics, tested on validity benchmarks.}
+The AUROC 0.59 result \citep{yadav2026memstrata} and the low state-tracking rates in STALE and StateMemBench are the clearest measured gaps in the field, and deterministic bi-temporal supersession already fixes the explicit cases \citep{yadav2026memstrata,rasmussen2025zep}. The open question is the \emph{implicit} and \emph{derived} cases: when an observed change invalidates conclusions that were drawn from the old value, and nothing in the text says so. Dependency edges between derived memories and their evidence \citep{fan2026statemem,park2026kumiho} make propagation possible, but no system has been shown to do it at scale with LLM-written edges, whose precision is unknown. A convincing result would report STALE and StateMemBench accuracy for a store that maintains dependency edges, with the precision and recall of the edges themselves measured, and an ablation that removes propagation. Truth maintenance systems \citep{doyle1979tms} solved this for symbolic assertions four decades ago; the research problem is doing it when the assertions and their justifications are extracted by a model that is sometimes wrong.
+
+\paragraph{Belief revision with a likelihood.}
+\citet{huang2026belief} observe that memory research has given agents a belief state and post-training has given them a transition, but almost nothing scores a new observation against existing beliefs. MemTX's staged commit and Kumiho's revision semantics are admission policies without a likelihood. The direction is to attach calibrated confidence to memories, derived from source trust, corroboration count, age, and consistency with other memories, and to update it on evidence in a principled way (AGM-style contraction and revision \citep{alchourron1985agm} is the formal reference point). Success would be measured not by recall but by decision quality under contradiction: a benchmark in the style of StateMem where the correct action depends on which of two conflicting memories is believed, with calibration curves rather than a single accuracy.
+
+\paragraph{Verifiable deletion across copies.}
+Bemula's finding that no system deletes correctly \citep{xie2026bemula}, backflow from parameters \citep{wang2026unlearning}, and the claim-boundary framing of \citet{xu2026unlearningsurvey} together define the problem: a deletion request names a fact, but the fact lives in raw events, extracted memories, summaries, wiki pages, embeddings, caches, and possibly fine-tuned weights, and each copy has dependents. The promising path is dependency tracing over a provenance graph (which copies and derivatives descend from the target), followed by recovery testing (does the target's influence reappear after later writes or consolidation). An append-only design cannot erase, but it can enumerate exactly which records descend from a target, exclude them, and log the exclusion; whether that constitutes deletion is a policy question that the field has not yet framed precisely. A convincing study would run Bemula-style paired controls on a provenance-tracing store and report both immediate and delayed (post-consolidation) leakage.
+
+\subsection{Retrieval and use}
+
+\paragraph{Retrieval that follows structure rather than similarity.}
+AMA-Bench's diagnosis \citep{zhao2026amabench} is that agentic questions need causal and temporal structure over trajectories; LLM-Wiki \citep{ming2026llmwiki} and NapMem \citep{xu2026napmem} show that letting the agent reason its way through a structured store beats one-shot vector retrieval; the BM25 and filesystem results show that iterative search over raw text is already strong. The open question is whether learned navigation policies transfer across stores and tasks or must be retrained per store. A convincing result would train a navigation policy on one store and benchmark pair and evaluate it, without retraining, on a different store with the same interface, on agentic benchmarks (MemoryArena, AMA-Bench) rather than dialogue QA.
+
+\paragraph{Memory calibration and metamemory.}
+MemCalib \citep{cao2026memcalib} shows that models mis-weight retrieved memories in both directions and that naive RL fixes one direction at the expense of the other; STALE \citep{chao2026stale} shows they do not notice when memories have expired. Both are failures of \emph{metamemory}: knowing what one knows, how reliable it is, and whether it is still current. Promising ingredients exist separately: per-memory provenance and status exposed to the model at recall time, counterfactual credit assignment during training, and abstention when memories conflict. Nobody has combined them. The test is a joint benchmark on which a system must answer, qualify, or abstain depending on memory trust and freshness, scored by calibration and by downstream action quality.
+
+\paragraph{Prospective memory and proactive injection.}
+PM-Bench \citep{liu2026pmbench} shows that even strong agents execute deferred intentions at the right moment only about two thirds of the time, and the Proactive Memory Agent \citep{wu2026proactive} shows that \emph{selective} injection beats both always-on injection and passive exposure. This is the memory function that long-running coding and operations agents most obviously lack: ``run the migration after the tests pass,'' ``tell the user before touching production,'' ``revisit this when the upstream fix lands.'' The research questions are how to represent intentions with their triggering conditions (time, state, event), how to monitor for triggers cheaply across a long trajectory, and how to avoid the interruption cost of false alarms. A convincing result would improve PM-Bench F1 substantially with a trigger-monitoring harness that is also evaluated on a long-horizon agentic benchmark, with interruption rate reported.
+
+\subsection{Learning and consolidation}
+
+\paragraph{Consolidation that abstracts without destroying.}
+ACE's brevity bias and context collapse \citep{zhang2025ace} and TierMem's write-before-query barrier \citep{zhu2026tiermem} define the failure; incremental itemised edits, raw-evidence links, and offline lint \citep{karpathy2026wiki,fang2025lightmem} are the current remedies. What is missing is a measurement: no metric quantifies how much a consolidation step has lost relative to the evidence it summarised, so there is nothing to optimise. A promising direction is to define consolidation loss directly, as the fraction of held-out questions answerable from the evidence but not from the summary, and to treat consolidation schedules (what to merge, when, how aggressively) as an optimisation problem with that loss and with token cost as the objectives, following the construction-scheduling recommendations of \citet{omri2026systems}.
+
+\paragraph{Learned write and forget policies that preserve structure and transfer.}
+RL-trained controllers (Section~\ref{sec:rl}) learn what to keep but tend to produce unstructured text \citep{jiang2026anatomy} and are trained on dense QA rewards. Two refinements look promising. First, constrain the action space to structured operations with provenance (add fact with source; supersede fact; link evidence; retire), so the learned policy produces an auditable record, as NapMem does for reading. Second, derive rewards from downstream task outcomes in agentic settings rather than from answer accuracy, which the retrieval logs proposed in Section~\ref{sec:implications} make possible: every injected memory can be credited or blamed against the outcome of the action it preceded. The transfer test is the same as for retrieval policies: train on one benchmark, evaluate on another without retraining.
+
+\paragraph{Closing the parametric loop.}
+Cartridges \citep{eyuboglu2025cartridges}, memory layers \citep{berges2024memorylayers}, and test-time learning \citep{behrouz2024titans} offer speed; the token-level ledger offers auditability. The unexplored design compiles the stable, high-trust portion of a ledger into a cache or adapter on a schedule, keeps the ledger as the source of record, and revokes or recompiles when the ledger changes. The research questions are which memories are worth compiling (frequency of retrieval, stability over time), how to detect drift between compiled and ledger state, and whether backflow \citep{wang2026unlearning} can be bounded when a compiled memory is retired. A convincing result would show matched accuracy at lower cost on a long-horizon benchmark, with a measured revocation latency and leakage after revocation.
+
+\subsection{Evaluation science}
+
+\paragraph{Ground-truth-first, longitudinal, component-isolating benchmarks.}
+The credibility problem (Section~\ref{sec:credibility}) is a methodological one and the remedies are known: fixed answerer and judge, incremental ingestion, interleaved action, cost accounting across construction, retrieval, and generation \citep{jiang2026anatomy,hu2025memoryagentbench,omri2026systems}. \citet{spencer2026groundtruth} adds three ingredients that should become standard: ground truth generated before text so labels are correct by construction, validity intervals and as-of-date questions so temporal reasoning is tested, and multiple horizons so tenure effects appear. The field also lacks \emph{paired} designs, varying the store with the harness fixed and the harness with the store fixed, which are the only designs that attribute credit. A shared evaluation harness that enforces these would do more for the field than another leaderboard.
+
+\paragraph{Outcome-linked evaluation on real traffic.}
+Every benchmark above is synthetic. The alternative is to instrument deployed agents: record what was retrieved, what was injected, and what happened next, and measure whether memory changed behaviour for the better. No published system logs retrieval in a form that makes this possible (Section~\ref{sec:implications}). A promising contribution would be an open instrument for retrieval logging with a privacy-preserving export, and a first longitudinal study of memory utility in coding agents, where outcomes (tests passing, reverts, user corrections) are observable.
+
+\subsection{Security, sharing, and portability}
+
+\paragraph{Write-time admission with calibrated trust.}
+The attack literature \citep{chen2024agentpoison,dong2025minja} and the lifecycle survey \citep{lin2026security} agree that retrieval-time filtering is insufficient, yet Table~\ref{tab:defenses} shows that retrieval is where nearly all evaluated defenses sit; MemTX formalises admission as a transaction. The gaps are empirical: trust-aware retrieval has been evaluated on idealised stores \citep{sunil2026poisoning}, and admission policies have been verified by property tests but not shown on shared agentic benchmarks. The direction is an end-to-end evaluation in which a provenance-typed store with admission control faces adaptive poisoning across sessions, with task success, attack success, and quarantine false-positive rate reported together. \citet{spencer2026groundtruth}'s finding that injection resistance tracks whether provenance survives representation is the hypothesis to test.
+
+\paragraph{Shared memory for teams of agents and people.}
+MemTX's six failure families and Portable Agent Memory's rehydration step describe the problem; neither has been evaluated with multiple real harnesses writing to one store under realistic load. Questions include per-writer trust that adapts to a writer's track record, conflict resolution when two harnesses supersede the same key, and disclosure control when memory crosses organisational or vendor boundaries. A multi-harness ledger (Section~\ref{sec:implications}) is a natural testbed, and the measurements that matter are conflict rate, repair latency, and whether a bad write from one harness ever reaches an irreversible action in another.
+
+\subsection{Theory and cognitive-science transfer}
+
+\paragraph{Formalising the write-before-query barrier.}
+TierMem names the barrier; nobody has formalised it. A rate--distortion treatment, in which the distortion is defined over a distribution of future queries and the rate is the summary's token budget, would say when lossy compaction can be safe (query distribution known and narrow) and when raw retention is necessary (query distribution broad or shifting), and would give consolidation a principled objective. The consolidation-loss metric proposed above is the empirical counterpart.
+
+\paragraph{Cognitive science as benchmark design, not metaphor.}
+The field has borrowed cognitive vocabulary freely (Section~\ref{sec:foundations}) but has only recently borrowed cognitive \emph{methods}: PM-Bench adapts Virtual Week, and the sleep-time and lint work rediscovers consolidation. Other paradigms with established experimental designs translate directly: reconsolidation (a retrieved memory becomes labile and can be updated, which is what supersession-on-recall would be), schema effects (what is remembered depends on existing structure, which bears on extraction prompts), interference (similar memories compete, which bears on dedupe), and metamemory judgements (feeling-of-knowing, which bears on calibration and abstention). Each would yield a benchmark with a human baseline and a decades-old literature on what the results mean.
+
+\begin{table}[tp]
+\centering\small
+\caption{Research agenda: direction, the measured gap that motivates it, and what a convincing result would show.}
+\label{tab:agenda}
+\begin{tabularx}{\textwidth}{L{3.4cm} X X}
+\toprule
+\textbf{Direction} & \textbf{Motivating evidence} & \textbf{Convincing result} \\
+\midrule
+Temporal and dependency semantics & AUROC 0.59 for contradiction; STALE 55\%; StateMem 0.15--0.36 & Dependency-propagating store evaluated on STALE and StateMem with edge precision reported \\
+Belief revision with likelihood & Belief surveys: state and transition exist, likelihood absent & Calibration curves on decision-under-contradiction tasks \\
+Verifiable deletion & Bemula $\le$1.5\%; backflow; claim boundaries & Paired-control leakage, immediate and post-consolidation, on a provenance-tracing store \\
+Structured retrieval policies & AMA-Bench; LLM-Wiki; NapMem; BM25 and filesystem results & Navigation policy transfers across stores on agentic benchmarks \\
+Calibration and metamemory & MemCalib over/under-use; STALE & Answer/qualify/abstain benchmark scored by calibration and action quality \\
+Prospective memory & PM-Bench 65.1\% F1; selective injection wins & Trigger-monitoring harness improves PM-Bench with interruption rate reported \\
+Consolidation loss & Brevity bias, collapse, write-before-query & Defined loss metric; schedules optimised against it and token cost \\
+Structured learned policies & RL output unstructured; dense QA rewards & Provenance-preserving action space; outcome-derived rewards; cross-benchmark transfer \\
+Parametric loop & Cartridges, memory layers unused in agents & Matched accuracy at lower cost with measured revocation latency and leakage \\
+Evaluation harness & Credibility problem; tenure crossover & Ground-truth-first, multi-horizon, paired store/harness designs with cost \\
+Outcome-linked evaluation & No system logs retrieval & Longitudinal study on coding agents using retrieval and outcome logs \\
+Write-time admission & Poisoning practical; retrieval filtering late & Adaptive poisoning vs.\ admission control with task, attack, and false-positive rates \\
+Shared memory & MemTX failure families untested at scale & Multi-harness testbed reporting conflict rate and repair latency \\
+Theory & Barrier named, not formalised & Rate--distortion account of compaction over query distributions \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\section{Design Recommendations for Auditable Memory, with a Case Study}
+\label{sec:implications}
+
+This section turns the review's findings into design recommendations for anyone building a memory system that must be inspectable, correctable, and shared across more than one agent harness. Each recommendation names the evidence behind it. The second half tests the recommendations against a concrete design: a local, append-only ledger to which several coding-agent harnesses write.
+
+\subsection{Recommendations}
+
+\paragraph{Keep the raw record; it is the layer the literature says cannot be reconstructed.} The write-before-query barrier (Section~\ref{sec:context}), the Letta and BM25 results (Section~\ref{sec:filesystems}), TierMem, and the tenure crossover of \citet{spencer2026groundtruth} all argue that an immutable record of what happened, with tool calls and results linked, is the foundation. Extracted memories, summaries, and wiki pages are caches that must link back to it. Make the raw record a first-class recall path (full-text search over events), not only a provenance pointer, because iterative search over raw text is the most robust retrieval behaviour measured.
+
+\paragraph{Admit writes; do not treat a write as a belief.} MINJA and AgentPoison make tool output and query-induced writes the main poisoning channels; trust-aware retrieval is the defence \citet{sunil2026poisoning} evaluate; MemTX's refinement is that a write should not become an actionable belief until admitted, and irreversible actions should be gated on belief state. Record a trust level per writer and per source, quarantine tool-derived memories by default, and expose admission status to the reader so an agent can see that a memory is unreviewed. This is the write-authorization primitive of Verifiable Memory Governance (Section~\ref{sec:defenses}).
+
+\paragraph{Model temporal validity explicitly; do not infer it from similarity.} The AUROC 0.59 result means dedupe and contradiction detection by embedding similarity will not distinguish a correction from a paraphrase. Use a bi-temporal record (validity interval in world time, recording time in system time) with a supersession link that closes the earlier interval. Deterministic supersession on a (scope, key) pair, as MemStrata does on (subject, relation), should be primary; dependency flags for derived memories, as in StateMem, propagate invalidation; similarity is a secondary signal for review queues.
+
+\paragraph{Separate evidence from inference.} Hindsight's four networks and Kumiho's belief graph distinguish what was observed from what was concluded. Type the relation between a memory and its sources (stated by the user, derived from evidence, supported by, contradicted by), and surface the type wherever memory is rendered, so a reader can see whether a statement is an observation or an inference.
+
+\paragraph{Log retrieval, not only storage.} No surveyed system records what was retrieved, with what scores, and whether it was injected, which is why ``why did the agent say that'' is unanswerable in most of them. Record retrievals, ranked items, and what entered the context, and make it possible to ask what a memory's status was at recall time and what it is now.
+
+\paragraph{Consolidate offline.} LightMem, sleep-time compute, the wiki lint step, and the construction-scheduling recommendations of \citet{omri2026systems} all move expensive synthesis out of the interaction loop. Quality work (dedupe, contradiction review, projection into human-readable form) belongs in a scheduled job over an export rather than in per-turn model calls.
+
+\paragraph{Plan for the deletion gap honestly.} No system deletes correctly today \citep{xie2026bemula}, and a system-level deletion claim must cover every copy and derivative \citep{xu2026unlearningsurvey}. Provide an administrative redaction path that enumerates descendants through the provenance graph, logs the redaction as an event with counts rather than content, and is tested with paired controls.
+
+\paragraph{Evaluate on your own traffic.} Given the credibility problem, external benchmark scores for extraction or recall components will not be comparable. A system that logs retrieval and outcomes enables the evaluation the methodological papers ask for: incremental ingestion is the capture path, interleaved action is the agents' real work, and injected memories joined to later outcomes measure whether memory changed behaviour.
+
+\subsection{Case study: an append-only, multi-harness ledger}
+
+The recommendations were developed alongside a concrete design, which serves here as a check that they are implementable together. The design is a single local analytical database, owned by the developer, to which several coding-agent harnesses write through one small API. Its storage has four layers that correspond to the recommendations above.
+
+\emph{Events} are the raw record: every session, message, tool call, and tool result, append-only, with large content in blob storage and full-text search over the text. \emph{Memories} are curated units with a scope and key, a trust level set from the writer and source, a validity interval and recording time, and a supersession link; a derived status view reports whether a memory is active, superseded, expired, or quarantined, and tool-sourced memories are quarantined until admitted. \emph{Sources} link each memory to the events or memories it came from with a typed relation (user-stated, derived-from, supports, contradicts), so evidence and inference are distinguishable and a redaction can enumerate descendants. \emph{Retrievals} record every recall: the query, the ranked candidates with scores, which were injected, and a link from each injected item to the memory and its status at that moment, so that a later ``why'' question can be answered by a join rather than a guess.
+
+Deduplication and contradiction review run as an offline job over an export, as does projection into a Markdown wiki in which every page states its source relations. Deletion is implemented as redaction: an event records that content was removed and how many records it touched, and the removed records are excluded from every view. The open items in the design match the open items in the literature. Dependency-propagated invalidation of derived memories is specified but not yet implemented; the quality of model-written source links has not been measured; and whether redaction-by-exclusion satisfies a deletion request is a policy question the design surfaces rather than settles. The point of the case study is not that the design is right but that the recommendations are jointly satisfiable in a small system, and that the resulting record is itself the instrument the field needs for outcome-linked evaluation.
+
+\section{Conclusion}
+\label{sec:conclusion}
+
+Memory for LLM agents has gone, in three years, from a workaround for short context windows to a field with its own surveys, benchmarks, products, attack literature, and governance proposals. This review organised that field by substrate, function, and control policy, examined five mechanism families and the cross-cutting topics of personalisation and shared memory, and graded the evidence behind each claim.
+
+The findings are not what the leaderboards suggest. No mechanism family dominates, and the harness that decides what loads, compacts, and persists often matters more than the store; a plain filesystem agent and a BM25 index have outscored dedicated products. Recall benchmarks are saturated and poorly predict agentic use of memory, where current systems score far lower, and reported scores on the same benchmark vary by forty points with the evaluation setup. Write-time summarisation creates a barrier that only retention of raw evidence with provenance can remove. Similarity search cannot detect contradiction or staleness, so temporal validity and dependency must be modelled explicitly. Deletion on request is essentially unsolved. And memory is a persistent attack surface that compounds across sessions and agents, which is why the 2026 literature argues for governance at write time.
+
+The field's direction follows from these findings. Memory is becoming a trained capability, with policies learned for writing, reading, and weighting memories; a governed data system, borrowing bi-temporal records, transactions, provenance, and belief revision from databases and classical AI; and the substrate through which agents are meant to improve from experience, a promise that is real within distribution and largely untested outside it. Evaluation is shifting from recall to behaviour, time, and tenure. The research agenda in Section~\ref{sec:directions} names, for each of these, the measured gap and the result that would close it.
+
+For builders, the recommendations are concrete: keep the raw record, admit writes rather than trusting them, model time explicitly, separate evidence from inference, log retrieval, consolidate offline, plan for deletion honestly, and evaluate on real traffic. For researchers, the most valuable contributions in the near term are not new stores but better instruments: ground-truth-first longitudinal benchmarks, component-isolating protocols, direct metrics for memory quality, and outcome-linked evaluation in deployment. The systems that will matter are those designed as governed records of what an agent learned, from where, and with what confidence, rather than as better indexes over text.
+
+\section*{Limitations and acknowledgements}
+
+This review was drafted with AI assistance and is based on abstracts, full texts where accessible, alphaXiv overviews, and vendor publications retrieved on 25 October 2026. Author lists for long author lists are abbreviated in the bibliography. Headline figures for Mem0, Zep, and Letta were cross-checked against the primary publications and an October 2026 practitioner compilation \citep{kumar2026agentmemory}; other reported numbers are taken from the cited papers' abstracts and have not been independently reproduced. Several of the strongest 2026 results are preprints and may change on revision.
+
+\bibliography{references}
+
+\appendix
+
+\section{Search Protocol}
+\label{app:method}
+
+\paragraph{Sources and date.} Searches were run on 25 October 2026 against arXiv (via its listing, abstract, and API endpoints), alphaXiv paper overviews and ``similar papers'' lists, the proceedings of NeurIPS, ICML, ICLR, ACL, EMNLP, COLM, TMLR, and AAAI, and vendor and practitioner publications (engineering blogs, product documentation, GitHub repositories). alphaXiv was used for structured overviews of paper content; author lists and venues were taken from arXiv abstract pages or the arXiv API, because alphaXiv renders author lists client-side.
+
+\paragraph{Queries.} Seed queries combined \{agent memory, LLM memory, long-term memory, episodic memory, memory system\} with \{survey, benchmark, evaluation, security, poisoning, temporal, staleness, provenance, unlearning, deletion, multi-agent, personalization, reinforcement learning, compaction, context engineering, skills, coding agents, prospective memory, calibration, belief revision\}. Each seed hit was snowballed forward through alphaXiv ``similar papers'' and backward through its references, with the eight surveys of Table~\ref{tab:surveys} as the main backward-snowballing roots.
+
+\paragraph{Inclusion.} A work was included if it (i) proposes, evaluates, attacks, or governs a mechanism by which an LLM-based agent carries information across steps or sessions, or (ii) is a benchmark or methodological analysis of such mechanisms, or (iii) is a vendor or practitioner report describing shipped behaviour or reporting measurements of such a system. Works on long-context modelling, static-corpus RAG, and continual pretraining were included only where cited by the agent-memory literature as baselines or ingredients. Pure position papers were included where later work cites their definitions.
+
+\paragraph{Counts and grading.} The reference list contains 134 works: 53 with a peer-reviewed venue recorded, 63 arXiv or SSRN preprints, and 18 vendor, practitioner, or documentation sources. Grading was applied per work; where a preprint was later accepted, the venue is recorded in the reference list and the text treats it as peer-reviewed.
+
+\paragraph{Limitations of the protocol.} The search was conducted by a single reviewer with AI assistance over one day; it is not a systematic review with dual screening. Numbers are taken from abstracts and alphaXiv overviews and were not independently reproduced. Long author lists are abbreviated. Several of the strongest results are preprints and may change on revision.
+
+\section{Representative Systems by Family}
+\label{app:systems}
+
+Tables~\ref{tab:systems} and \ref{tab:systems2} characterise the research systems discussed in the body along the review's three axes and records the evaluation each reports. It complements Table~\ref{tab:resources}, which covers frameworks and products.
+
+\begin{table}[p]
+\centering\scriptsize
+\caption{Representative systems (part 1: parametric, context-resident, and retrieval families). Substrate: P = parametric, L = latent, T = token-level. Function: W = working, E = episodic, S = semantic, Pr = procedural. Control: pipe = fixed extraction pipeline; agent = agent-directed via tools; sep = separate memory agent; RL = learned policy; human = human-written. Evidence: PR = peer-reviewed venue; pre = preprint; vend = vendor paper.}
+\label{tab:systems}
+\begin{tabularx}{\textwidth}{L{2.6cm} L{1.1cm} L{1.0cm} L{1.2cm} X L{1.0cm}}
+\toprule
+\textbf{System} & \textbf{Substr.} & \textbf{Func.} & \textbf{Control} & \textbf{Reported evaluation} & \textbf{Evid.} \\
+\midrule
+\multicolumn{6}{l}{\emph{Parametric and latent (Section~\ref{sec:parametric})}} \\
+Titans \citep{behrouz2024titans} & L & W/E & -- & Needle-in-haystack beyond 2M tokens & pre \\
+Memory Layers \citep{berges2024memorylayers} & P & S & -- & Factual QA at matched compute & pre \\
+Cartridges \citep{eyuboglu2025cartridges} & L & S & offline & 38.6$\times$ memory, 26.4$\times$ throughput vs.\ in-context & pre \\
+M+ \citep{wang2025mplus} & L & S/E & -- & Retention beyond 160k tokens & PR \\
+\midrule
+\multicolumn{6}{l}{\emph{Context-resident and compaction (Section~\ref{sec:context})}} \\
+MemGPT \citep{packer2023memgpt} & T & W/E/S & agent & DMR; document QA & pre \\
+ACE \citep{zhang2025ace} & T & Pr & agent & +10.6\% agent, +8.6\% finance & PR \\
+ACON \citep{kang2025acon} & T & W & pipe & 26--54\% token reduction, AppWorld, OfficeBench & PR \\
+TierMem \citep{zhu2026tiermem} & T & E/S & pipe & LoCoMo 0.851 vs.\ 0.873 raw at 54\% fewer tokens & pre \\
+MEM1 \citep{zhou2025mem1} & T & W & RL & 3.5$\times$ memory reduction, 16-objective tasks & PR \\
+MemAgent \citep{yu2025memagent} & T & W & RL & Long-document QA beyond window & PR \\
+\midrule
+\multicolumn{6}{l}{\emph{External retrieval stores (Section~\ref{sec:retrieval})}} \\
+Mem0 \citep{chhikara2025mem0} & T & S & pipe & LoCoMo 66.9 (author-run; disputed) & vend \\
+Zep \citep{rasmussen2025zep} & T & E/S & pipe & LongMemEval 71.2 vs.\ 60.2 full context & vend \\
+HippoRAG 2 \citep{gutierrez2025hipporag2} & T & S & pipe & Multi-hop and associative QA & PR \\
+A-MEM \citep{xu2025amem} & T & E/S & pipe & LoCoMo; DialSim & PR \\
+Hindsight \citep{latimer2025hindsight} & T & E/S & pipe & LoCoMo (author-run); LongMemEval & vend \\
+MIRIX \citep{wang2025mirix} & T & all & sep & ScreenshotVQA; LoCoMo (author-run) & pre \\
+LightMem \citep{fang2025lightmem} & T & E/S & offline & Large token and call reductions vs.\ Mem0-style & PR \\
+Kumiho \citep{park2026kumiho} & T & E/S & pipe & LoCoMo-Plus, independently reproduced mid-80s & pre \\
+LLM-Wiki \citep{ming2026llmwiki} & T & S & agent & +2.0--8.1 F1 over HippoRAG 2, LightRAG, GraphRAG & pre \\
+Letta filesystem \citep{letta2025filesystem} & T & E & agent & LoCoMo 74.0 & vend \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\begin{table}[p]
+\centering\scriptsize
+\caption{Representative systems, continued: experiential, learned-policy, personalisation, and multi-agent systems. Abbreviations as in Table~\ref{tab:systems}.}
+\label{tab:systems2}
+\begin{tabularx}{\textwidth}{L{2.6cm} L{1.1cm} L{1.0cm} L{1.2cm} X L{1.0cm}}
+\toprule
+\textbf{System} & \textbf{Substr.} & \textbf{Func.} & \textbf{Control} & \textbf{Reported evaluation} & \textbf{Evid.} \\
+\midrule
+\multicolumn{6}{l}{\emph{Experiential and procedural (Section~\ref{sec:experiential})}} \\
+Reflexion \citep{shinn2023reflexion} & T & Pr & agent & HumanEval pass@1 91\% & PR \\
+ExpeL \citep{zhao2023expel} & T & Pr & agent & Cross-task insights, HotpotQA, ALFWorld & PR \\
+AWM \citep{wang2024awm} & T & Pr & agent & WebArena +24.6\%, Mind2Web +51.1\% relative & pre \\
+ReasoningBank \citep{ouyang2025reasoningbank} & T & Pr & agent & Up to 34.2\% relative, WebArena, SWE-Bench-Verified & PR \\
+Memento \citep{zhou2025memento} & T & E & RL & GAIA validation 87.9\% & pre \\
+Trace2Skill \citep{ni2026trace2skill} & T & Pr & offline & Cross-model transfer; +57.65 pp WikiTableQuestions & pre \\
+REM \citep{chen2026rem} & T & E/Pr & gated & SWE-ContextBench Lite 27.6 vs.\ 24.9 resolution & PR (wksp) \\
+\midrule
+\multicolumn{6}{l}{\emph{Learned management policies (Section~\ref{sec:rl})}} \\
+Memory-R1 \citep{yan2025memoryr1} & T & S & RL & LoCoMo SOTA from 152 training pairs & PR \\
+Mem-$\alpha$ \citep{wang2025memalpha} & T & W/E/S & RL & 30k-token training to 400k-token evaluation & pre \\
+AgeMem \citep{yu2026agemem} & T & W/E/S & RL & Unified long/short-term management & PR \\
+Proactive Memory Agent \citep{wu2026proactive} & T & W & sep/RL & Terminal-Bench 2.0 +8.3 pp, $\tau^2$-Bench +6.8 pp & pre \\
+NapMem \citep{xu2026napmem} & T & E/S & RL & PersonaMem-v2, LongMemEval, LoCoMo & pre \\
+MemCalib-RL \citep{cao2026memcalib} & T & use & RL & Balanced over/under-use across three model families & pre \\
+\midrule
+\multicolumn{6}{l}{\emph{Personalisation and multi-agent (Sections~\ref{sec:personalization}, \ref{sec:multiagent})}} \\
+EverMemOS \citep{hu2026evermemos} & T & E/S & pipe & LoCoMo, LongMemEval (author-run) & pre \\
+AtomMem \citep{yao2026atommem} & T & S & pipe & LoCoMo (author-run) & pre \\
+G-Memory \citep{zhang2025gmemory} & T & E/S & sep & Multi-agent embodied and QA tasks & pre \\
+MemTX \citep{li2026memtx} & T & S & gated & Property tests over 5.5M protocol states & pre \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\end{document}

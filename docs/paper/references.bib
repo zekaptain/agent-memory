@@ -1,0 +1,362 @@
+% Surveys
+@article{zhang2024survey, author={Zeyu Zhang and Xiaohe Bo and Chen Ma and Rui Li and Xu Chen and Quanyu Dai and Jieming Zhu and Zhenhua Dong and Ji-Rong Wen}, title={A Survey on the Memory Mechanism of Large Language Model based Agents}, journal={arXiv preprint arXiv:2404.13501}, year={2024}, note={Later published by ACM, 2025}}
+@article{du2025rethinking, author={Yiming Du and Wenyu Huang and Danna Zheng and Zhaowei Wang and Sebastien Montella and Mirella Lapata and Kam-Fai Wong and Jeff Z. Pan}, title={Rethinking Memory in {LLM} based Agents: Representations, Operations, and Emerging Topics}, journal={arXiv preprint arXiv:2505.00675}, year={2025}}
+@article{wu2025humanmemory, author={Yaxiong Wu and Sheng Liang and Chen Zhang and Yichao Wang and Yongyue Zhang and Huifeng Guo and Ruiming Tang and Yong Liu}, title={From Human Memory to {AI} Memory: A Survey on Memory Mechanisms in the Era of {LLMs}}, journal={arXiv preprint arXiv:2504.15965}, year={2025}}
+@article{hu2025memoryage, author={Yuyang Hu and Shichun Liu and Yanwei Yue and Guibin Zhang and others}, title={Memory in the Age of {AI} Agents}, journal={arXiv preprint arXiv:2512.13564}, year={2025}}
+@article{du2026memory, author={Pengfei Du}, title={Memory for Autonomous {LLM} Agents: Mechanisms, Evaluation, and Emerging Frontiers}, journal={arXiv preprint arXiv:2603.07670}, year={2026}}
+@article{jiang2026anatomy, author={Dongming Jiang and Yi Li and Songtao Wei and Jinxin Yang and Ayushi Kishore and Alysa Zhao and Dingyi Kang and Xu Hu and Feng Chen and Qiannan Li and Bingzhe Li}, title={Anatomy of Agentic Memory: Taxonomy and Empirical Analysis of Evaluation and System Limitations}, journal={arXiv preprint arXiv:2602.19320}, year={2026}}
+@inproceedings{luo2026storage, author={Jinghao Luo and Yuchen Tian and Chuxue Cao and Ziyang Luo and Hongzhan Lin and Kaixin Li and Chuyi Kong and Ruichao Yang and Jing Ma}, title={From Storage to Experience: A Survey on the Evolution of {LLM} Agent Memory Mechanisms}, booktitle={Findings of ACL 2026}, year={2026}, note={arXiv:2605.06716}}
+@inproceedings{lin2026security, author={Zehao Lin and Xixuan Hao and Renyu Fu and Shaobo Cui and Kai Chen and Chunyu Li and Zhiyu Li and Feiyu Xiong}, title={A Survey on Long-Term Memory Security in {LLM} Agents: Attacks, Defenses, and Governance Across the Memory Lifecycle}, booktitle={Proceedings of EMNLP 2026}, year={2026}, note={arXiv:2604.16548}}
+@article{wang2026traces, author={Yiqi Wang and Jiaqi Zhang and Zhangkai Wu and Taotao Cai and Zirui Liu and Zequn Sun and others}, title={From Agent Traces to Trust: A Survey of Evidence Tracing and Execution Provenance in {LLM} Agents}, journal={arXiv preprint arXiv:2606.04990}, year={2026}}
+
+% Architectural foundations
+@inproceedings{rae2019compressive, author={Jack W. Rae and Anna Potapenko and Siddhant M. Jayakumar and Timothy P. Lillicrap}, title={Compressive Transformers for Long-Range Sequence Modelling}, booktitle={ICLR}, year={2020}}
+@inproceedings{wu2022memorizing, author={Yuhuai Wu and Markus N. Rabe and DeLesley Hutchins and Christian Szegedy}, title={Memorizing Transformers}, booktitle={ICLR}, year={2022}}
+@inproceedings{bulatov2022rmt, author={Aydar Bulatov and Yuri Kuratov and Mikhail Burtsev}, title={Recurrent Memory Transformer}, booktitle={NeurIPS}, year={2022}}
+@article{munkhdalai2024infini, author={Tsendsuren Munkhdalai and Manaal Faruqui and Siddharth Gopal}, title={Leave No Context Behind: Efficient Infinite Context Transformers with Infini-attention}, journal={arXiv preprint arXiv:2404.07143}, year={2024}}
+@article{yang2024memory3, author={Hongkang Yang and Zehao Lin and Wenjin Wang and Hao Wu and Zhiyu Li and Bo Tang and others}, title={{Memory}$^3$: Language Modeling with Explicit Memory}, journal={Journal of Machine Learning}, volume={3}, pages={300--346}, year={2024}, note={arXiv:2407.01178}}
+@article{liu2023lost, author={Nelson F. Liu and Kevin Lin and John Hewitt and Ashwin Paranjape and Michele Bevilacqua and Fabio Petroni and Percy Liang}, title={Lost in the Middle: How Language Models Use Long Contexts}, journal={Transactions of the Association for Computational Linguistics}, volume={12}, year={2024}}
+@misc{hong2025contextrot, author={Kelly Hong and Anton Troynikov and Jeff Huber}, title={Context Rot: How Increasing Input Tokens Impacts {LLM} Performance}, howpublished={Chroma technical report, 16 July 2025}, year={2025}, note={Vendor research. \url{https://www.trychroma.com/research/context-rot}}}
+@inproceedings{hsieh2024ruler, author={Cheng-Ping Hsieh and Simeng Sun and Samuel Kriman and Shantanu Acharya and Dima Rekesh and Fei Jia and Yang Zhang and Boris Ginsburg}, title={{RULER}: What's the Real Context Size of Your Long-Context Language Models?}, booktitle={COLM}, year={2024}}
+@inproceedings{modarressi2025nolima, author={Ali Modarressi and Hanieh Deilamsalehy and Franck Dernoncourt and Trung Bui and Ryan A. Rossi and Seunghyun Yoon and Hinrich Sch{\"u}tze}, title={{NoLiMa}: Long-Context Evaluation Beyond Literal Matching}, booktitle={ICML}, year={2025}}
+@article{sun2024ttt, author={Yu Sun and Xinhao Li and Karan Dalal and Jiarui Xu and Arjun Vikram and Genghan Zhang and others}, title={Learning to (Learn at Test Time): {RNNs} with Expressive Hidden States}, journal={arXiv preprint arXiv:2407.04620}, year={2024}}
+@article{behrouz2024titans, author={Ali Behrouz and Peilin Zhong and Vahab Mirrokni}, title={Titans: Learning to Memorize at Test Time}, journal={arXiv preprint arXiv:2501.00663}, year={2024}}
+@inproceedings{behrouz2025nested, author={Ali Behrouz and Meisam Razaviyayn and Peilin Zhong and Vahab Mirrokni}, title={Nested Learning: The Illusion of Deep Learning Architectures}, booktitle={NeurIPS}, year={2025}, note={arXiv:2512.24695}}
+@article{berges2024memorylayers, author={Vincent-Pierre Berges and Barlas O{\u{g}}uz and Daniel Haziza and Wen-tau Yih and Luke Zettlemoyer and Gargi Ghosh}, title={Memory Layers at Scale}, journal={arXiv preprint arXiv:2412.09764}, year={2024}}
+@inproceedings{wang2024memoryllm, author={Yu Wang and Yifan Gao and Xiusi Chen and Haoming Jiang and Shiyang Li and Jingfeng Yang and others}, title={{MemoryLLM}: Towards Self-Updatable Large Language Models}, booktitle={ICML}, year={2024}}
+@inproceedings{wang2025mplus, author={Yu Wang and Dmitry Krotov and Yuanzhe Hu and Yifan Gao and Wangchunshu Zhou and Julian McAuley and Dan Gutfreund and Rogerio Feris and Zexue He}, title={{M+}: Extending {MemoryLLM} with Scalable Long-Term Memory}, booktitle={ICML}, year={2025}}
+@inproceedings{das2024larimar, author={Payel Das and Subhajit Chaudhury and Elliot Nelson and Igor Melnyk and Sarath Swaminathan and Sihui Dai and others}, title={Larimar: Large Language Models with Episodic Memory Control}, booktitle={ICML}, year={2024}}
+@article{eyuboglu2025cartridges, author={Sabri Eyuboglu and Ryan Ehrlich and Simran Arora and Neel Guha and Dylan Zinsley and Emily Liu and others}, title={Cartridges: Lightweight and General-Purpose Long Context Representations via Self-Study}, journal={arXiv preprint arXiv:2506.06266}, year={2025}}
+@inproceedings{meng2022rome, author={Kevin Meng and David Bau and Alex Andonian and Yonatan Belinkov}, title={Locating and Editing Factual Associations in {GPT}}, booktitle={NeurIPS}, year={2022}}
+@inproceedings{meng2023memit, author={Kevin Meng and Arnab Sen Sharma and Alex Andonian and Yonatan Belinkov and David Bau}, title={Mass-Editing Memory in a Transformer}, booktitle={ICLR}, year={2023}}
+@inproceedings{gupta2024editing, author={Akshat Gupta and Anurag Rao and Gopala Anumanchipalli}, title={Model Editing at Scale Leads to Gradual and Catastrophic Forgetting}, booktitle={Findings of ACL 2024}, year={2024}}
+
+% Cognitive framing and early agents
+@article{sumers2023coala, author={Theodore R. Sumers and Shunyu Yao and Karthik Narasimhan and Thomas L. Griffiths}, title={Cognitive Architectures for Language Agents}, journal={Transactions on Machine Learning Research}, year={2024}, note={arXiv:2309.02427}}
+@article{pink2025episodic, author={Mathis Pink and Qinyuan Wu and Vy Ai Vo and Javier Turek and Jianing Mu and Alexander Huth and Mariya Toneva}, title={Position: Episodic Memory is the Missing Piece for Long-Term {LLM} Agents}, journal={arXiv preprint arXiv:2502.06975}, year={2025}}
+@inproceedings{zhong2023memorybank, author={Wanjun Zhong and Lianghong Guo and Qiqi Gao and He Ye and Yanlin Wang}, title={{MemoryBank}: Enhancing Large Language Models with Long-Term Memory}, booktitle={AAAI}, year={2024}}
+@inproceedings{park2023generative, author={Joon Sung Park and Joseph C. O'Brien and Carrie J. Cai and Meredith Ringel Morris and Percy Liang and Michael S. Bernstein}, title={Generative Agents: Interactive Simulacra of Human Behavior}, booktitle={UIST}, year={2023}}
+
+% Context-resident memory
+@misc{anthropic2025context, author={{Anthropic}}, title={Effective Context Engineering for {AI} Agents}, howpublished={Anthropic engineering blog, 29 September 2025}, year={2025}, note={Vendor publication. \url{https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents}}}
+@misc{anthropic2025memorytool, author={{Anthropic}}, title={Managing Context on the {Claude} Developer Platform: Context Editing and the Memory Tool}, howpublished={Product announcement and documentation, 29 September 2025}, year={2025}, note={Vendor publication. \url{https://www.anthropic.com/news/context-management}}}
+@misc{anthropic2026claudecode, author={{Anthropic}}, title={How {Claude} Remembers Your Project: {CLAUDE.md}, {AGENTS.md}, and Auto Memory}, howpublished={Claude Code documentation}, year={2026}, note={Vendor publication, accessed 25 October 2026. \url{https://code.claude.com/docs/en/memory}}}
+@article{packer2023memgpt, author={Charles Packer and Sarah Wooders and Kevin Lin and Vivian Fang and Shishir G. Patil and Ion Stoica and Joseph E. Gonzalez}, title={{MemGPT}: Towards {LLMs} as Operating Systems}, journal={arXiv preprint arXiv:2310.08560}, year={2023}}
+@inproceedings{zhang2025ace, author={Qizheng Zhang and Changran Hu and Shubhangi Upasani and Boyuan Ma and Fenglu Hong and Vamsidhar Kamanuru and others}, title={Agentic Context Engineering: Evolving Contexts for Self-Improving Language Models}, booktitle={ICLR}, year={2026}, note={arXiv:2510.04618}}
+@inproceedings{kang2025acon, author={Minki Kang and Wei-Ning Chen and Dongge Han and Huseyin A. Inan and Lukas Wutschitz and Yanzhi Chen and others}, title={{ACON}: Optimizing Context Compression for Long-horizon {LLM} Agents}, booktitle={ICML}, year={2026}, note={arXiv:2510.00615}}
+@article{zhu2026tiermem, author={Qiming Zhu and Shunian Chen and Rui Yu and Zhehao Wu and Benyou Wang}, title={From Lossy to Verified: A Provenance-Aware Tiered Memory for Agents}, journal={arXiv preprint arXiv:2602.17913}, year={2026}}
+@inproceedings{zhou2025mem1, author={Zijian Zhou and Ao Qu and Zhaoxuan Wu and Sunghwan Kim and Alok Prakash and Daniela Rus and others}, title={{MEM1}: Learning to Synergize Memory and Reasoning for Efficient Long-Horizon Agents}, booktitle={ICLR}, year={2026}, note={arXiv:2506.15841}}
+@inproceedings{yu2025memagent, author={Hongli Yu and Tinghong Chen and Jiangtao Feng and Jiangjie Chen and Weinan Dai and Qiying Yu and others}, title={{MemAgent}: Reshaping Long-Context {LLM} with Multi-Conv {RL}-based Memory Agent}, booktitle={ICLR}, year={2026}, note={Oral. arXiv:2507.02259}}
+
+% Retrieval-based memory
+@article{chhikara2025mem0, author={Prateek Chhikara and Dev Khant and Saket Aryan and Taranjeet Singh and Deshraj Yadav}, title={{Mem0}: Building Production-Ready {AI} Agents with Scalable Long-Term Memory}, journal={arXiv preprint arXiv:2504.19413}, year={2025}, note={Vendor research}}
+@inproceedings{gutierrez2024hipporag, author={Bernal Jim{\'e}nez Guti{\'e}rrez and Yiheng Shu and Yu Gu and Michihiro Yasunaga and Yu Su}, title={{HippoRAG}: Neurobiologically Inspired Long-Term Memory for Large Language Models}, booktitle={NeurIPS}, year={2024}}
+@inproceedings{gutierrez2025hipporag2, author={Bernal Jim{\'e}nez Guti{\'e}rrez and Yiheng Shu and Weijian Qi and Sizhe Zhou and Yu Su}, title={From {RAG} to Memory: Non-Parametric Continual Learning for Large Language Models}, booktitle={ICML}, year={2025}}
+@article{edge2024graphrag, author={Darren Edge and Ha Trinh and Newman Cheng and Joshua Bradley and Alex Chao and Apurva Mody and Steven Truitt and Dasha Metropolitansky and Robert Osazuwa Ness and Jonathan Larson}, title={From Local to Global: A Graph {RAG} Approach to Query-Focused Summarization}, journal={arXiv preprint arXiv:2404.16130}, year={2024}}
+@inproceedings{guo2024lightrag, author={Zirui Guo and Lianghao Xia and Yanhua Yu and Tu Ao and Chao Huang}, title={{LightRAG}: Simple and Fast Retrieval-Augmented Generation}, booktitle={Findings of EMNLP 2025}, year={2025}}
+@article{rasmussen2025zep, author={Preston Rasmussen and Pavlo Paliychuk and Travis Beauvais and Jack Ryan and Daniel Chalef}, title={Zep: A Temporal Knowledge Graph Architecture for Agent Memory}, journal={arXiv preprint arXiv:2501.13956}, year={2025}, note={Vendor research}}
+@article{zhao2026amabench, author={Yujie Zhao and Boqin Yuan and Junbo Huang and Haocheng Yuan and Zhongming Yu and Haozhou Xu and Lanxiang Hu and Abhilash Shankarampeta and Zimeng Huang and Wentao Ni and Yuandong Tian and Jishen Zhao}, title={{AMA-Bench}: Evaluating Long-Horizon Memory for Agentic Applications}, journal={arXiv preprint arXiv:2602.22769}, year={2026}}
+@article{park2026kumiho, author={Young Bin Park}, title={Graph-Native Cognitive Memory for {AI} Agents: Formal Belief Revision Semantics for Versioned Memory Architectures}, journal={arXiv preprint arXiv:2603.17244}, year={2026}}
+@inproceedings{xu2025amem, author={Wujiang Xu and Zujie Liang and Kai Mei and Hang Gao and Juntao Tan and Yongfeng Zhang}, title={{A-MEM}: Agentic Memory for {LLM} Agents}, booktitle={NeurIPS}, year={2025}, note={arXiv:2502.12110}}
+@article{zhang2026himem, author={Ningning Zhang and Xingxing Yang and Zhizhong Tan and Weiping Deng and Wenyong Wang}, title={{HiMem}: Hierarchical Long-Term Memory for {LLM} Long-Horizon Agents}, journal={arXiv preprint arXiv:2601.06377}, year={2026}}
+@inproceedings{fang2025lightmem, author={Jizhan Fang and Xinle Deng and Haoming Xu and Ziyan Jiang and Yuqi Tang and Ziwen Xu and others}, title={{LightMem}: Lightweight and Efficient Memory-Augmented Generation}, booktitle={ICLR}, year={2026}, note={arXiv:2510.18866}}
+@article{latimer2025hindsight, author={Chris Latimer and Nicol{\'o} Boschi and Andrew Neeser and Chris Bartholomew and Gaurav Srivastava and Xuan Wang and others}, title={Hindsight is 20/20: Building Agent Memory that Retains, Recalls, and Reflects}, journal={arXiv preprint arXiv:2512.12818}, year={2025}, note={Vendor research (Vectorize)}}
+@article{wang2025mirix, author={Yu Wang and Xi Chen}, title={{MIRIX}: Multi-Agent Memory System for {LLM}-Based Agents}, journal={arXiv preprint arXiv:2507.07957}, year={2025}}
+@article{li2025memos, author={Zhiyu Li and Chenyang Xi and Chunyu Li and Ding Chen and Boyu Chen and Shichao Song and others}, title={{MemOS}: A Memory {OS} for {AI} System}, journal={arXiv preprint arXiv:2507.03724}, year={2025}}
+@misc{letta2025filesystem, author={{Letta}}, title={Benchmarking {AI} Agent Memory: Is a Filesystem All You Need?}, howpublished={Letta research blog, 12 August 2025}, year={2025}, note={Vendor research. \url{https://www.letta.com/blog/benchmarking-ai-agent-memory/}}}
+@misc{kumar2026agentmemory, author={Ajay Kumar}, title={Agent Memory in 2026: Vendors Claim 92.5 on {LoCoMo}, a Plain Filesystem Scored 74, and Every Memory Product Lost to {BM25}}, howpublished={Blog post, 5 October 2026}, year={2026}, note={Practitioner analysis. \url{https://www.ajayk.sh/blog/agent-memory-systems-2026/}}}
+@misc{wooders2026plugin, author={Sarah Wooders}, title={Why Memory Isn't a Plugin}, howpublished={Letta blog, 3 April 2026}, year={2026}, note={Vendor publication. \url{https://www.letta.com/blog/why-memory-isnt-a-plugin/}}}
+@misc{karpathy2026wiki, author={Andrej Karpathy}, title={{LLM} Wiki}, howpublished={GitHub gist, April 2026}, year={2026}, note={\url{https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f}}}
+@article{ming2026llmwiki, author={Haoliang Ming and Feifei Li and Xiaoqing Wu and Wenhui Que}, title={Retrieval as Reasoning: Self-Evolving Agent-Native Retrieval via {LLM-Wiki}}, journal={arXiv preprint arXiv:2605.25480}, year={2026}}
+@misc{mem0_2026wikis, author={{Mem0}}, title={The State of Agent Wikis}, howpublished={Article, 21 July 2026}, year={2026}, note={Vendor publication. \url{https://x.com/mem0ai/article/2079585032587694582}}}
+@misc{akita2026, author={Fabio Akita}, title={ai-memory: Long-Term Memory for Agent Coding {CLIs}}, howpublished={GitHub repository and research notes, 2026}, year={2026}, note={Practitioner. \url{https://github.com/akitaonrails/ai-memory}}}
+
+% Experiential and procedural memory
+@inproceedings{shinn2023reflexion, author={Noah Shinn and Federico Cassano and Edward Berman and Ashwin Gopinath and Karthik Narasimhan and Shunyu Yao}, title={Reflexion: Language Agents with Verbal Reinforcement Learning}, booktitle={NeurIPS}, year={2023}}
+@inproceedings{zhao2023expel, author={Andrew Zhao and Daniel Huang and Quentin Xu and Matthieu Lin and Yong-Jin Liu and Gao Huang}, title={{ExpeL}: {LLM} Agents Are Experiential Learners}, booktitle={AAAI}, year={2024}}
+@article{wang2023voyager, author={Guanzhi Wang and Yuqi Xie and Yunfan Jiang and Ajay Mandlekar and Chaowei Xiao and Yuke Zhu and Linxi Fan and Anima Anandkumar}, title={Voyager: An Open-Ended Embodied Agent with Large Language Models}, journal={Transactions on Machine Learning Research}, year={2024}}
+@article{wang2024awm, author={Zora Zhiruo Wang and Jiayuan Mao and Daniel Fried and Graham Neubig}, title={Agent Workflow Memory}, journal={arXiv preprint arXiv:2409.07429}, year={2024}}
+@article{suzgun2025cheatsheet, author={Mirac Suzgun and Mert Yuksekgonul and Federico Bianchi and Dan Jurafsky and James Zou}, title={Dynamic Cheatsheet: Test-Time Learning with Adaptive Memory}, journal={arXiv preprint arXiv:2504.07952}, year={2025}}
+@inproceedings{ouyang2025reasoningbank, author={Siru Ouyang and Jun Yan and I-Hung Hsu and Yanfei Chen and Ke Jiang and Zifeng Wang and others}, title={{ReasoningBank}: Scaling Agent Self-Evolving with Reasoning Memory}, booktitle={ICLR}, year={2026}, note={arXiv:2509.25140}}
+@article{zhou2025memento, author={Huichi Zhou and Yihang Chen and Siyuan Guo and Xue Yan and Kin Hei Lee and Zihan Wang and others}, title={Memento: Fine-tuning {LLM} Agents without Fine-tuning {LLMs}}, journal={arXiv preprint arXiv:2508.16153}, year={2025}}
+
+% Learned memory control
+@inproceedings{yan2025memoryr1, author={Sikuan Yan and Xiufeng Yang and Zuchao Huang and Ercong Nie and Zifeng Ding and Zonggen Li and others}, title={{Memory-R1}: Enhancing Large Language Model Agents to Manage and Utilize Memories via Reinforcement Learning}, booktitle={Proceedings of ACL 2026}, year={2026}, note={arXiv:2508.19828}}
+@article{wang2025memalpha, author={Yu Wang and Ryuichi Takanobu and Zhiqi Liang and Yuzhen Mao and Yuanzhe Hu and Julian McAuley and Xiaojian Wu}, title={Mem-$\alpha$: Learning Memory Construction via Reinforcement Learning}, journal={arXiv preprint arXiv:2509.25911}, year={2025}}
+@inproceedings{yu2026agemem, author={Yi Yu and Liuyi Yao and Yuexiang Xie and Qingquan Tan and Jiaqi Feng and Yaliang Li and Libing Wu}, title={Agentic Memory: Learning Unified Long-Term and Short-Term Memory Management for Large Language Model Agents}, booktitle={Proceedings of ACL 2026}, year={2026}, note={SAC Highlight. arXiv:2601.01885}}
+@article{wu2026proactive, author={Yifan Wu and Lizhu Zhang and Yuhang Zhou and Mingyi Wang and Bo Peng and Serena Li and Xiangjun Fan and Zhuokai Zhao}, title={Remember When It Matters: Proactive Memory Agent for Long-Horizon Agents}, journal={arXiv preprint arXiv:2607.08716}, year={2026}}
+@article{lin2025sleeptime, author={Kevin Lin and Charlie Snell and Yu Wang and Charles Packer and Sarah Wooders and Ion Stoica and Joseph E. Gonzalez}, title={Sleep-time Compute: Beyond Inference Scaling at Test-time}, journal={arXiv preprint arXiv:2504.13171}, year={2025}}
+
+% Multi-agent and shared memory
+@article{zhang2025gmemory, author={Guibin Zhang and Muxin Fu and Guancheng Wan and Miao Yu and Kun Wang and Shuicheng Yan}, title={{G-Memory}: Tracing Hierarchical Memory for Multi-Agent Systems}, journal={arXiv preprint arXiv:2506.07398}, year={2025}}
+@article{li2026memtx, author={Xiaoyang Li and Yiqi Wang and Haohui Lu and Zhi Chen and Mo Li and Pingan Song and Mingkai Zheng and Taotao Cai}, title={{MemTX}: Transactional Belief Commit for Stateful Agent Memory}, journal={arXiv preprint arXiv:2607.23929}, year={2026}}
+@article{ravindran2026portable, author={Santhosh Kumar Ravindran}, title={Portable Agent Memory: A Protocol for Cryptographically-Verified Memory Transfer Across Heterogeneous {AI} Agents}, journal={arXiv preprint arXiv:2605.11032}, year={2026}}
+
+% Evaluation
+@inproceedings{maharana2024locomo, author={Adyasha Maharana and Dong-Ho Lee and Sergey Tulyakov and Mohit Bansal and Francesco Barbieri and Yuwei Fang}, title={Evaluating Very Long-Term Conversational Memory of {LLM} Agents}, booktitle={Proceedings of ACL 2024}, year={2024}}
+@inproceedings{wu2024longmemeval, author={Di Wu and Hongwei Wang and Wenhao Yu and Yuwei Zhang and Kai-Wei Chang and Dong Yu}, title={{LongMemEval}: Benchmarking Chat Assistants on Long-Term Interactive Memory}, booktitle={ICLR}, year={2025}}
+@inproceedings{hu2025memoryagentbench, author={Yuanzhe Hu and Yu Wang and Julian McAuley}, title={Evaluating Memory in {LLM} Agents via Incremental Multi-Turn Interactions}, booktitle={ICLR}, year={2026}, note={arXiv:2507.05257}}
+@article{tavakoli2025beam, author={Mohammad Tavakoli and Alireza Salemi and Carrie Ye and Mohamed Abdalla and Hamed Zamani and J. Ross Mitchell}, title={Beyond a Million Tokens: Benchmarking and Enhancing Long-Term Memory in {LLMs}}, journal={arXiv preprint arXiv:2510.27246}, year={2025}}
+@article{li2026locomoplus, author={Yifei Li and Weidong Guo and Lingling Zhang and Rongman Xu and Muye Huang and Hui Liu and others}, title={{LoCoMo-Plus}: Beyond-Factual Cognitive Memory Evaluation Framework for {LLM} Agents}, journal={arXiv preprint arXiv:2602.10715}, year={2026}}
+@inproceedings{he2026memoryarena, author={Zexue He and Yu Wang and Churan Zhi and Yuanzhe Hu and Tzu-Ping Chen and Lang Yin and Ze Chen and Tong Arthur Wu and Siru Ouyang and Zihan Wang and Jiaxin Pei and Julian McAuley and Yejin Choi and Alex Pentland}, title={{MemoryArena}: Benchmarking Agent Memory in Interdependent Multi-Session Agentic Tasks}, booktitle={ICML}, year={2026}, note={arXiv:2602.16313}}
+@article{xie2026bemula, author={Bofan Xie and Chaokun Wang and Guanchen Ge and Songyao Wang and Fang Niu and Hang Zhang and others}, title={Can Agents Forget When Asked? A Benchmark for Memory Unlearning in {LLM} Agents}, journal={arXiv preprint arXiv:2610.18052}, year={2026}}
+@misc{zep2025rebuttal, author={{Zep}}, title={Lies, Damn Lies, and Statistics: Is {Mem0} Really {SOTA} in Agent Memory?}, howpublished={Zep blog, 6 May 2025}, year={2025}, note={Vendor publication. \url{https://www.getzep.com/blog/lies-damn-lies-statistics-is-mem0-really-sota-in-agent-memory/}}}
+@misc{mem0_2026state, author={{Mem0}}, title={State of {AI} Agent Memory 2026: Benchmarks and Trends}, howpublished={Mem0 blog, updated 10 October 2026}, year={2026}, note={Vendor publication. \url{https://mem0.ai/blog/state-of-ai-agent-memory-2026}}}
+@misc{bloomind2026, author={{Bloo-mind}}, title={The Benchmark Theatre: Why Almost Nothing You've Read About Agent Memory Scores Is Comparable}, howpublished={Essay, 20 May 2026}, year={2026}, note={Practitioner analysis. \url{https://essays.bloo-mind.ai/posts/2026-05-20-mem-eval/}}}
+@article{chao2026stale, author={Hanxiang Chao and Yihan Bai and Rui Sheng and Tianle Li and Yushi Sun}, title={{STALE}: Can {LLM} Agents Know When Their Memories Are No Longer Valid?}, journal={arXiv preprint arXiv:2605.06527}, year={2026}}
+@article{fan2026statemem, author={Xinyi Fan and Miri Liu and Ruozhen Yang and Siru Ouyang and Jiawei Han}, title={Can Agent Memory Systems Track Evolving State?}, journal={arXiv preprint arXiv:2608.19652}, year={2026}}
+@inproceedings{chen2024agentpoison, author={Zhaorun Chen and Zhen Xiang and Chaowei Xiao and Dawn Song and Bo Li}, title={{AgentPoison}: Red-teaming {LLM} Agents via Poisoning Memory or Knowledge Bases}, booktitle={NeurIPS}, year={2024}}
+@article{dong2025minja, author={Shen Dong and Shaochen Xu and Pengfei He and Yige Li and Jiliang Tang and Tianming Liu and Hui Liu and Zhen Xiang}, title={Memory Injection Attacks on {LLM} Agents via Query-Only Interaction}, journal={arXiv preprint arXiv:2503.03704}, year={2025}, note={Earlier title: A Practical Memory Injection Attack against LLM Agents}}
+@article{sunil2026poisoning, author={Balachandra Devarangadi Sunil and Isheeta Sinha and Piyush Maheshwari and Shantanu Todmal and Shreyan Mallik and Shuchi Mishra}, title={Memory Poisoning Attack and Defense on Memory Based {LLM}-Agents}, journal={arXiv preprint arXiv:2601.05504}, year={2026}}
+@article{lam2026ssgm, author={Chingkwun Lam and Jiaxin Li and Lingfei Zhang and Kuo Zhao}, title={Governing Evolving Memory in {LLM} Agents: Risks, Mechanisms, and the Stability and Safety Governed Memory ({SSGM}) Framework}, journal={arXiv preprint arXiv:2603.11768}, year={2026}}
+@article{yadav2026memstrata, author={Neeraj Yadav}, title={Temporal Validity in Retrieval Memory: Eliminating Stale-Fact Errors for {AI} Agents over Evolving Knowledge}, journal={arXiv preprint arXiv:2606.26511}, year={2026}}
+@article{wang2026unlearning, author={Bin Wang and Fan Wang and Pingping Wang and Jinyu Cong and Yang Yu and Yilong Yin and others}, title={Agentic Unlearning: When {LLM} Agent Meets Machine Unlearning}, journal={arXiv preprint arXiv:2602.17692}, year={2026}}
+@article{lin2026forget, author={Junkai Lin and Ge Xu and Zheng Xu and Junkai Chen and Xiangyuan Lan}, title={Can Agents Truly Forget? Explore Machine Unlearning for {LLM} Agents}, journal={arXiv preprint arXiv:2610.17659}, year={2026}}
+
+% --- Added for the trajectory and research-directions sections ---
+@article{huang2026secondhalf,
+  author={Wei-Chieh Huang and Weizhi Zhang and Yueqing Liang and Yuanchen Bei and Yankai Chen and Tao Feng and others},
+  title={A Survey of Agent Memory in the Second Half: Towards Self-Evolving and Long-Horizon Agents},
+  journal={Transactions on Machine Learning Research},
+  year={2026},
+  note={Survey Certification. arXiv:2602.06052}
+}
+@article{gao2026selfevolving,
+  author={Huan-ang Gao and Jiayi Geng and Wenyue Hua and Mengkang Hu and Xinzhe Juan and Hongzhang Liu and others},
+  title={A Survey of Self-Evolving Agents: What, When, How, and Where to Evolve on the Path to Artificial Super Intelligence},
+  journal={Transactions on Machine Learning Research},
+  year={2026},
+  note={arXiv:2507.21046}
+}
+@inproceedings{liu2026pmbench,
+  author={Genglin Liu and Saadia Gabriel},
+  title={{PM-Bench}: Evaluating Prospective Memory in {LLM} Agents},
+  booktitle={COLM},
+  year={2026},
+  note={arXiv:2607.12385}
+}
+@article{cao2026memcalib,
+  author={Ruike Cao and Fanyu Zhao and Fugen Yao and Liang Dong and Jian Xu and Yifei Zhao and Han Zhang and others},
+  title={{MemCalib}: Benchmarking and Optimizing Memory Use in {LLM} Agents},
+  journal={arXiv preprint arXiv:2609.24259},
+  year={2026}
+}
+@article{xu2026napmem,
+  author={Yue Xu and Yutao Sun and Yihao Liu and Mengyu Zhou and Jiayi Qiao and Lu Ma and others},
+  title={From Passive Retrieval to Active Memory Navigation: Learning to Use Memory as a Structured Action Space},
+  journal={arXiv preprint arXiv:2607.05794},
+  year={2026}
+}
+@article{omri2026systems,
+  author={Yasmine Omri and Ziyu Gan and Zachary Broveak and Robin Geens and Zexue He and Alex Pentland and Marian Verhelst and Tsachy Weissman and Thierry Tambe},
+  title={Agent Memory: Characterization and System Implications of Stateful Long-Horizon Workloads},
+  journal={arXiv preprint arXiv:2606.06448},
+  year={2026}
+}
+@article{spencer2026groundtruth,
+  author={Quentin Spencer},
+  title={Ground Truth First: A Longitudinal Evaluation Instrument for Agent Memory, and the Tenure Crossover in Memory-Architecture Rankings},
+  journal={arXiv preprint arXiv:2607.21962},
+  year={2026}
+}
+@article{sultan2026neusymms,
+  author={Mujahid Sultan and Sri Thuraisamy and Daya Rajaratnam},
+  title={{NeuSymMS}: A Hybrid Neuro-Symbolic Memory System for Persistent, Self-Curating {LLM} Agents},
+  journal={arXiv preprint arXiv:2605.17596},
+  year={2026}
+}
+@article{huang2026belief,
+  author={Jimin Huang and Yuyan Wang and Xueqing Peng and Sophia Ananiadou and Junichi Tsujii},
+  title={From Memory to Belief: A Survey of State Maintenance and Belief Revision in {LLM} Decision Agents},
+  journal={SSRN preprint 7493158},
+  year={2026}
+}
+@article{xu2026unlearningsurvey,
+  author={Xiaoyu Xu and Minxin Du and Li Bai and Junxu Liu and Yaxin Xiao and Kun Fang and others},
+  title={Machine Unlearning for Large Language Models: Foundations, Advances, and Agentic Extensions},
+  journal={arXiv preprint arXiv:2609.30909},
+  year={2026}
+}
+@article{doyle1979tms,
+  author={Jon Doyle},
+  title={A Truth Maintenance System},
+  journal={Artificial Intelligence},
+  volume={12},
+  number={3},
+  pages={231--272},
+  year={1979}
+}
+@article{alchourron1985agm,
+  author={Carlos E. Alchourr{\'o}n and Peter G{\"a}rdenfors and David Makinson},
+  title={On the Logic of Theory Change: Partial Meet Contraction and Revision Functions},
+  journal={Journal of Symbolic Logic},
+  volume={50},
+  number={2},
+  pages={510--530},
+  year={1985}
+}
+@book{snodgrass1999temporal,
+  author={Richard T. Snodgrass},
+  title={Developing Time-Oriented Database Applications in {SQL}},
+  publisher={Morgan Kaufmann},
+  year={1999}
+}
+
+% --- Added for personalisation, applications, resources ---
+@article{jiang2025personamem2,
+  author={Bowen Jiang and Yuan Yuan and Maohao Shen and Zhuoqun Hao and Zhangchen Xu and Zichen Chen and others},
+  title={{PersonaMem-v2}: Towards Personalized Intelligence via Learning Implicit User Personas and Agentic Memory},
+  journal={arXiv preprint arXiv:2512.06688},
+  year={2025}
+}
+@inproceedings{hu2026opbench,
+  author={Yulin Hu and Zimo Long and Jiahe Guo and Xingyu Sui and Xing Fu and Weixiang Zhao and Yanyan Zhao and Bing Qin},
+  title={{OP-Bench}: Benchmarking Over-Personalization for Memory-Augmented Personalized Conversational Agents},
+  booktitle={Proceedings of EMNLP 2026},
+  year={2026},
+  note={arXiv:2601.13722}
+}
+@article{wu2026knowme,
+  author={Tingyu Wu and Zhisheng Chen and Ziyan Weng and Shuhe Wang and Chenglong Li and Shuo Zhang and others},
+  title={{KnowMe-Bench}: Benchmarking Person Understanding for Lifelong Digital Companions},
+  journal={arXiv preprint arXiv:2601.04745},
+  year={2026}
+}
+@article{ni2026trace2skill,
+  author={Jingwei Ni and Yihao Liu and Xinpeng Liu and Yutao Sun and Mengyu Zhou and Pengyu Cheng and others},
+  title={{Trace2Skill}: Distill Trajectory-Local Lessons into Transferable Agent Skills},
+  journal={arXiv preprint arXiv:2603.25158},
+  year={2026}
+}
+@article{hu2026evermemos,
+  author={Chuanrui Hu and Xingze Gao and Zuyi Zhou and Dannong Xu and Yi Bai and Xintong Li and others},
+  title={{EverMemOS}: A Self-Organizing Memory Operating System for Structured Long-Horizon Reasoning},
+  journal={arXiv preprint arXiv:2601.02163},
+  year={2026}
+}
+@article{yao2026atommem,
+  author={Yanyu Yao and Shangze Li and Zhi Zheng and Hui Zheng and Qi Liu and Tong Xu and Enhong Chen},
+  title={{AtomMem}: Building Simple and Effective Memory System for {LLM} Agents via Atomic Facts},
+  journal={arXiv preprint arXiv:2606.19847},
+  year={2026}
+}
+@article{dhanyamraju2026orgmemory,
+  author={Harsh Rao Dhanyamraju and Leonidas Raghav},
+  title={Shared Organizational Memory for Enterprise Coding Agents: System Design and Deployment Snapshot},
+  journal={arXiv preprint arXiv:2608.00122},
+  year={2026}
+}
+@inproceedings{chen2026rem,
+  author={Xinyi Lisa Chen and Pedro Herrero-Vidal and Xiaohan Chen and Xiaojing Yu and Cris Liu and Bingqing Song and others},
+  title={{REM}: What to Store, When to Recall, What to Forget in Experience Memory for Coding Agents},
+  booktitle={NeurIPS 2026 Workshop on Continual Learning for Enterprise AI Agents},
+  year={2026},
+  note={arXiv:2610.27377}
+}
+@misc{openai2026memory,
+  author={{OpenAI}},
+  title={Memory in {ChatGPT}},
+  howpublished={Help Center article},
+  year={2026},
+  note={Vendor documentation, accessed 25 October 2026. \url{https://help.openai.com/en/articles/8590148-memory-faq}}
+}
+@misc{cognee2026,
+  author={{Cognee}},
+  title={Cognee: Open-Source Agent Memory Platform},
+  howpublished={GitHub repository, \url{https://github.com/topoteretes/cognee}},
+  year={2026},
+  note={Vendor publication, accessed 25 October 2026}
+}
+
+% --- Primary sources for the defenses taxonomy ---
+@article{nguyen2025verificagent,
+  author={Thong Q. Nguyen and Shubhang Desai and Raja Hasnain Anwar and Firoz Shaik and Vishwas Suryanarayanan and Vishal Chowdhary},
+  title={{VerificAgent}: Domain-Specific Memory Verification for Scalable Oversight of Aligned Computer-Use Agents},
+  journal={arXiv preprint arXiv:2506.02539},
+  year={2025}
+}
+@inproceedings{xiang2024robustrag,
+  author={Chong Xiang and Tong Wu and Zexuan Zhong and David Wagner and Danqi Chen and Prateek Mittal},
+  title={Certifiably Robust {RAG} against Retrieval Corruption},
+  booktitle={IEEE Conference on Secure and Trustworthy Machine Learning (SaTML)},
+  year={2026},
+  note={arXiv:2405.15556, 2024}
+}
+@article{zhou2025trustrag,
+  author={Huichi Zhou and Kin-Hei Lee and Zhonghao Zhan and Yue Chen and Zhenhao Li and Zhaoyang Wang and Hamed Haddadi and Emine Yilmaz},
+  title={{TrustRAG}: Enhancing Robustness and Trustworthiness in Retrieval-Augmented Generation},
+  journal={arXiv preprint arXiv:2501.00879},
+  year={2025}
+}
+@inproceedings{si2025seconrag,
+  author={Xiaonan Si and Meilin Zhu and Simeng Qin and Lijia Yu and Lijun Zhang and Shuaitong Liu and others},
+  title={{SeCon-RAG}: A Two-Stage Semantic Filtering and Conflict-Free Framework for Trustworthy {RAG}},
+  booktitle={NeurIPS},
+  year={2025},
+  note={arXiv:2510.09710}
+}
+@inproceedings{tan2025revprag,
+  author={Xue Tan and Hao Luan and Mingyu Luo and Xiaoyan Sun and Ping Chen and Jun Dai},
+  title={{RevPRAG}: Revealing Poisoning Attacks in Retrieval-Augmented Generation through {LLM} Activation Analysis},
+  booktitle={Findings of EMNLP 2025},
+  year={2025},
+  note={arXiv:2411.18948}
+}
+@inproceedings{wei2025amemguard,
+  author={Qianshan Wei and Tengchao Yang and Yaochen Wang and Xinfeng Li and Lijun Li and Zhenfei Yin and others},
+  title={{A-MemGuard}: A Proactive Defense Framework for {LLM}-Based Agent Memory},
+  booktitle={ICML},
+  year={2026},
+  note={arXiv:2510.02373, 2025}
+}
+@article{debenedetti2025camel,
+  author={Edoardo Debenedetti and Ilia Shumailov and Tianqi Fan and Jamie Hayes and Nicholas Carlini and Daniel Fabian and others},
+  title={Defeating Prompt Injections by Design},
+  journal={arXiv preprint arXiv:2503.18813},
+  year={2025}
+}
+@article{costa2025fides,
+  author={Manuel Costa and Boris K{\"o}pf and Aashish Kolluri and Andrew Paverd and Mark Russinovich and Ahmed Salem and others},
+  title={Securing {AI} Agents with Information-Flow Control},
+  journal={arXiv preprint arXiv:2505.23643},
+  year={2025}
+}
+@article{palumbo2026pcas,
+  author={Nils Palumbo and Sarthak Choudhary and Jihye Choi and Guy Amir and Prasad Chalasani and Isil Dillig and Somesh Jha},
+  title={Formal Policy Enforcement for Agentic Systems},
+  journal={arXiv preprint arXiv:2602.16708},
+  year={2026}
+}
+@article{shi2025progent,
+  author={Tianneng Shi and Jingxuan He and Zhun Wang and Hongwei Li and Linyu Wu and Wenbo Guo and Dawn Song},
+  title={Progent: Securing {AI} Agents with Privilege Control},
+  journal={arXiv preprint arXiv:2504.11703},
+  year={2025}
+}
+@inproceedings{wu2025isolategpt,
+  author={Yuhao Wu and Franziska Roesner and Tadayoshi Kohno and Ning Zhang and Umar Iqbal},
+  title={{IsolateGPT}: An Execution Isolation Architecture for {LLM}-Based Agentic Systems},
+  booktitle={Network and Distributed System Security Symposium (NDSS)},
+  year={2025},
+  note={arXiv:2403.04960}
+}
+@article{rezazadeh2025collaborative,
+  author={Alireza Rezazadeh and Zichao Li and Ange Lou and Yuying Zhao and Wei Wei and Yujia Bao},
+  title={Collaborative Memory: Multi-User Memory Sharing in {LLM} Agents with Dynamic Access Control},
+  journal={arXiv preprint arXiv:2505.18279},
+  year={2025}
+}
+@inproceedings{miao2026blindguard,
+  author={Rui Miao and Yixin Liu and Yili Wang and Xu Shen and Yue Tan and Yiwei Dai and Shirui Pan and Xin Wang},
+  title={{BlindGuard}: Safeguarding {LLM}-based Multi-Agent Systems under Unknown Attacks},
+  booktitle={Proceedings of ACL 2026},
+  year={2026},
+  note={arXiv:2508.08127}
+}
+@inproceedings{zhang2025ragforensics,
+  author={Baolei Zhang and Haoran Xin and Minghong Fang and Zhuqing Liu and Biao Yi and Tong Li and Zheli Liu},
+  title={Traceback of Poisoning Attacks to Retrieval-Augmented Generation},
+  booktitle={Proceedings of The Web Conference (WWW)},
+  year={2025},
+  note={arXiv:2504.21668}
+}

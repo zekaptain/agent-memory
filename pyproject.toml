@@ -1,0 +1,52 @@
+[project]
+name = "agent-memory"
+version = "0.1.0"
+description = "Shared, auditable memory ledger for AI coding agents, backed by DuckDB 2.0 and served over Quack."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "duckdb>=2.0.0",
+    # mcp 2.x renamed FastMCP to MCPServer; the 1.x API is not compatible.
+    "mcp>=2,<3",
+    # duckdb's Python client needs pytz to return TIMESTAMPTZ values.
+    "pytz>=2024.1",
+    # Terminal rendering for mem judge (typer already pulls it in; declared because we import it).
+    "rich>=13",
+    "typer>=0.12",
+]
+
+[project.scripts]
+mem = "agent_memory.cli:main"
+mem-mcp = "agent_memory.mcp_server:main"
+
+[dependency-groups]
+dev = [
+    "pyrefly>=1.4.0",
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agent_memory"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "PT", "RUF"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["agent_memory", "tests"]
+
+[tool.pyrefly]
+project-includes = ["src", "tests"]
+search-path = ["src", "."]
+python-version = "3.12"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

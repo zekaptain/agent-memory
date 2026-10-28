@@ -1,0 +1,177 @@
+"""Judge pipeline against a running server: import, candidates, decide, decision events, CLI."""
+
+from __future__ import annotations
+
+import json
+import shutil
+
+import pytest
+
+from agent_memory.cli import main
+from agent_memory.judge.pipeline import (
+    build_candidates,
+    decide_items,
+    import_sessions,
+    purge_run,
+)
+from agent_memory.judge.store import JudgeError, RunStore
+from tests.conftest import FIXTURES
+
+
+@pytest.fixture(scope="module")
+def sessions_dir(tmp_path_factory):
+    root = tmp_path_factory.mktemp("sessions")
+    project = root / "-Users-tester-code-demo"
+    project.mkdir()
+    shutil.copy(FIXTURES / "droid_session_judge.jsonl", project / "judge-session-1.jsonl")
+    (project / "judge-session-1.settings.json").write_text("{}")
+    return root
+
+
+def test_import_candidates_decide_and_ledger_events(live_cfg, live_client, sessions_dir, capsys):
+    first = import_sessions(live_cfg, sessions_dir)
+    assert (first.files, first.skipped_files) == (1, 0)
+    assert first.inserted > 0
+    assert first.errors == []
+    second = import_sessions(live_cfg, sessions_dir)
+    assert (second.files, second.skipped_files) == (0, 1)  # unchanged file, skipped by mtime
+
+    summary = build_candidates(live_cfg, "t1", n=4, seed=1, clean_share=0.25)
+    assert summary.pool == {"T2": 1, "T1": 1, "T3": 1, "T4": 0, "T5": 0, "T0": 1}
+    assert summary.chosen == summary.pool
+    assert summary.pool_callers == {"human": 4, "agent": 0}
+    assert summary.harness_turns == 0
+    store = RunStore(live_cfg, "t1")
+    items = store.read_jsonl(store.items_path)
+    assert len(items) == 4
+    assert {i["split"] for i in items} <= {"calibration", "held_out"}
+    t3 = next(i for i in items if i["stratum"] == "T3")
+    projection = store.read_projection(t3["item_id"])
+    assert "TOOL RESULT (error): mem: memory.duckdb is locked" in projection
+    assert "NEXT MESSAGE (human): No, that's wrong" in projection
+    assert t3["flags"] == ["T3", "T4"]
+    assert t3["facts"]["tools"] == ["Execute"]
+    assert t3["facts"]["repeated_tool_error"] is True
+    assert t3["facts"]["tool_error_count"] == 2
+    assert t3["projection_hash"]
+    assert t3["sidecar"]
+    with pytest.raises(JudgeError, match="already has items"):
+        build_candidates(live_cfg, "t1", n=4)
+
+    written = decide_items(live_cfg, "t1", ["rules"])
+    assert written == {"rules": 4}
+    verdicts = store.read_jsonl(store.verdicts_path("rules"))
+    assert {v["item_id"] for v in verdicts} == {i["item_id"] for i in items}
+    by_item = {v["item_id"]: v for v in verdicts}
+    assert by_item[t3["item_id"]]["answers"]["failed"]["value"] == "yes"
+    assert by_item[t3["item_id"]]["answers"]["category"]["value"] == "tool_misuse"
+    assert "supported" not in by_item[t3["item_id"]]["answers"]  # no drafts yet
+    assert decide_items(live_cfg, "t1", ["rules"]) == {"rules": 0}  # resumable
+
+    _, rows = live_client.query(
+        "SELECT e.content, CAST(e.payload AS JSON)::VARCHAR, s.agent_id, s.project, s.scope "
+        "FROM events e JOIN sessions s USING (session_id) WHERE e.kind = 'decision'"
+    )
+    assert len(rows) == 4
+    for content, payload, agent, project, scope in rows:
+        assert (agent, project, scope) == ("human", "judge-experiment", "judge")
+        judge = json.loads(payload)["judge"]
+        assert judge["run_id"] == "t1"
+        assert judge["backend"] == "rules"
+        assert judge["questions_version"] == "questions_v1"
+        assert judge["projection_hash"]
+        assert judge["action"] in {"write_lesson", "review", "discard"}
+        assert set(judge["answers"]["failed"]) == {"value", "probabilities", "confidence", "method"}
+        for text in (content, payload):
+            assert "memory.duckdb is locked" not in text
+            assert "No, that's wrong" not in text
+    assert decide_items(live_cfg, "t1", ["rules"], record_events=False) == {"rules": 0}
+
+    # A draft arriving later supersedes the Stage-A-only verdict for that item and adds a
+    # second decision event; the other items stay as they were.
+    store.write_jsonl(
+        store.drafts_path,
+        [
+            {
+                "item_id": t3["item_id"],
+                "lesson": "Stop mem serve before using Execute to run mem migrate.",
+            }
+        ],
+    )
+    assert decide_items(live_cfg, "t1", ["rules"]) == {"rules": 1}
+    verdicts = store.read_jsonl(store.verdicts_path("rules"))
+    assert len(verdicts) == 4
+    redone = next(v for v in verdicts if v["item_id"] == t3["item_id"])
+    assert redone["has_draft"] is True
+    assert redone["answers"]["supported"]["value"] == "yes"
+    assert redone["action"] == "write_lesson"
+    _, (count,) = live_client.query(
+        "SELECT count(*) FROM events WHERE e.kind = 'decision'".replace("e.", "")
+    )
+    assert count[0] == 5
+    assert decide_items(live_cfg, "t1", ["rules"]) == {"rules": 0}
+
+    # CLI status on the same run, then purge.
+    code = main(
+        [
+            "--home",
+            str(live_cfg.home),
+            "--port",
+            str(live_cfg.port),
+            "judge",
+            "status",
+            "--run",
+            "t1",
+        ]
+    )
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "verdicts rules" in out
+    assert "frozen" in out
+    assert purge_run(live_cfg, "t1") == 4
+    assert not store.projections_dir.exists()
+
+
+def test_cli_refuses_default_home(capsys, monkeypatch):
+    monkeypatch.delenv("AGENT_MEMORY_HOME", raising=False)
+    code = main(["--home", "~/.agent-memory", "judge", "status", "--run", "x"])
+    err = capsys.readouterr().err
+    assert code == 1
+    assert "refuses to run against the default home" in err
+
+
+def test_cli_decide_without_remote_opt_in(live_cfg, capsys, monkeypatch):
+    monkeypatch.delenv("AGENT_MEMORY_JUDGE_ALLOW_REMOTE", raising=False)
+    store = RunStore(live_cfg, "t2")
+    store.create({})
+    store.write_projection("00000000-0000-0000-0000-000000000001", "state")
+    store.write_jsonl(
+        store.items_path,
+        [
+            {
+                "item_id": "00000000-0000-0000-0000-000000000001",
+                "stratum": "T0",
+                "flags": ["T0"],
+                "facts": {},
+                "turn_event_id": "t",
+                "projection_hash": "h",
+            }
+        ],
+    )
+    code = main(
+        [
+            "--home",
+            str(live_cfg.home),
+            "--port",
+            str(live_cfg.port),
+            "judge",
+            "decide",
+            "--run",
+            "t2",
+            "--backend",
+            "jev",
+        ]
+    )
+    err = capsys.readouterr().err
+    assert code == 1
+    assert "AGENT_MEMORY_JUDGE_ALLOW_REMOTE" in err

@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd agent for `mem serve`. Replace __MEM__ with the absolute path to the
+  mem executable and __HOME__ with your home directory; README.md has a sed
+  one-liner that does both.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.agent-memory.serve</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__MEM__</string>
+        <string>serve</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>AGENT_MEMORY_HOME</key>
+        <string>__HOME__/.agent-memory</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Restart after a crash, but not after a clean stop. -->
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <!-- A failing start (for example, pending migrations) retries at most this often. -->
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+
+    <!-- launchd sends SIGTERM on unload; mem serve stops Quack and checkpoints. -->
+    <key>ExitTimeOut</key>
+    <integer>30</integer>
+
+    <key>StandardOutPath</key>
+    <string>__HOME__/.agent-memory/serve.log</string>
+    <key>StandardErrorPath</key>
+    <string>__HOME__/.agent-memory/serve.log</string>
+</dict>
+</plist>
