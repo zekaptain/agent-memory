@@ -1520,6 +1520,16 @@ def test_labeling_hides_verdicts_and_resumes(tmp_path):
     assert "draft A" in out
     assert "draft B" in out
     assert "closed by" in out
+    # Each run of questions is announced, and a draft is shown again before its own questions.
+    assert "about the turn itself" in out
+    assert "about draft A" in out
+    assert "about draft B" in out
+    assert "the drafts side by side" in out
+    first_item = out[: out.index("item 2/3")]
+    assert first_item.count("DRAFT_LESSON_TEXT") == 2  # the panel, then again before its questions
+    assert (
+        out.index("about the turn itself") < out.index("about draft A") < out.index("about draft B")
+    )
     for hidden in ("0.85", "llm:ref", "probabilities", "backend", "ollama:m", "llamacpp:x"):
         assert hidden not in out
     assert asked[0].startswith("failed? (y/n, u unclear, i incomplete)")

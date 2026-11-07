@@ -93,7 +93,8 @@ RUBRIC = """\
 [bold]error intended[/bold]  Asked when a tool call errored. Was the error expected and used
   (probing for a missing file, a test meant to fail, grep with no match)? [bold]y[/bold] then.
 [bold]per draft[/bold]  Drafts are shown as A, B in a random order; the drafter is hidden.
-  "(no lesson)" means the drafter declined and asks nothing.
+  "(no lesson)" means the drafter declined and asks nothing. A rule before each run of
+  questions says what they are about: the turn itself, draft A, draft B, or both.
   [bold]grounded[/bold]: can every claim in the draft be traced to something in the projection,
   in particular the lines it cites? [bold]n[/bold] if it asserts a cause or rule the evidence
   does not show, or cites nothing relevant.
@@ -298,6 +299,33 @@ def steps_for(
     return steps
 
 
+def _section(step: str) -> str:
+    """What a step is about: the turn itself, one draft (its slot), or the drafts side by side."""
+    if "." in step:
+        return step.partition(".")[0]
+    if step == "preferred":
+        return "preferred"
+    if step == "note":
+        return "note"
+    return "turn"
+
+
+def _announce(console: Console, section: str, drafts: Sequence[DraftView]) -> None:
+    """A cue before a run of questions saying what they are about. A draft is shown again
+    here because its panel has usually scrolled away behind the cited evidence by now."""
+    if section == "turn":
+        console.print(Rule("about the turn itself (not the drafts)", style="cyan"))
+    elif section == "preferred":
+        console.print(Rule("the drafts side by side", style="magenta"))
+    elif section != "note":
+        draft = next((d for d in drafts if d.slot == section), None)
+        console.print(Rule(f"about draft {section}", style="magenta"))
+        if draft is not None:
+            console.print(
+                Panel(Text(draft.lesson or ""), title=f"draft {section}", border_style="magenta")
+            )
+
+
 def _ask_step(step: str, ask: Ask, console: Console, drafts: Sequence[DraftView]) -> str:
     if step == "failed":
         return _answer(ask, "failed? (y/n, u unclear, i incomplete)", _FAILED)
@@ -496,7 +524,11 @@ def label_one(
             answers = {k: v for k, v in base.items() if k not in (only or ())}
             plan = _plan(answers, drafts, has_tool_errors, only)
             i = 0
+            section = None
             while i < len(plan):
+                if _section(plan[i]) != section:
+                    section = _section(plan[i])
+                    _announce(console, section, drafts)
                 try:
                     value = _ask_step(plan[i], ask, console, drafts)
                 except GoBack:
