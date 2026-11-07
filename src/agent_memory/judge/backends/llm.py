@@ -9,7 +9,8 @@ from __future__ import annotations
 import json
 import os
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from ..questions import Question
@@ -19,6 +20,12 @@ from .base import Answer, JudgeInput, answer_from_probabilities
 
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
 MAX_JUDGE_TOKENS = 4096
+# Thinking shares the budget with the answer. A judge cut off mid-thought is asked once more
+# with room before thinking is switched off: at temperature 0 the same budget stops at the
+# same place, and a template with no thinking switch (gpt-oss) makes the no-think retry the
+# same request again. Three times the budget, as for drafts; at gemma4:26b's speed on Ollama
+# that still finishes inside the request timeout.
+RETRY_JUDGE_TOKENS = 3 * MAX_JUDGE_TOKENS
 
 SYSTEM = (
     "You evaluate one turn of an AI coding agent. The evidence is a numbered projection of the "
@@ -113,12 +120,69 @@ def out_of_tokens(content: str, reasoning: str, *, who: str = "judge") -> str:
     return f"{who} ran out of tokens{where}; JSON incomplete: {content[-80:]!r}"
 
 
+def cut_off(exc: JudgeError) -> bool:
+    return "ran out of tokens" in str(exc)
+
+
 def retry_without_thinking(exc: JudgeError) -> bool:
     """The token budget is shared between thinking and the answer. A thinking model that uses
     it all returns empty or cut-off JSON; a server that predates thinking rejects the flag.
     Either way the same question is worth asking again without thinking."""
     message = str(exc).lower()
     return "think" in message or "json" in message
+
+
+@dataclass(frozen=True)
+class Reply:
+    """One completion call: the answer text, the thinking before it, whether the budget ran out
+    first, the model the server says it used, and how long it took."""
+
+    content: str
+    reasoning: str
+    cut_off: bool
+    snapshot: str
+    latency_ms: float
+
+
+def answers_from_replies(
+    replies: Sequence[Reply], questions: Sequence[Question], *, method: str
+) -> dict[str, Answer]:
+    """Answers from the last reply, with every attempt's time billed to them."""
+    last = replies[-1]
+    if last.cut_off:
+        raise JudgeError(out_of_tokens(last.content, last.reasoning))
+    data = parse_judge_json(last.content)
+    spent = sum(r.latency_ms for r in replies)
+    return answers_from_judge_json(
+        data,
+        questions,
+        method=method,
+        latency_ms=spent / max(1, len(questions)),
+        model_snapshot=last.snapshot,
+    )
+
+
+def judge_with_room(
+    ask: Callable[[str], dict[str, Answer]],
+    widen: Callable[[], None],
+    without_thinking: Callable[[JudgeError], None],
+) -> dict[str, Answer]:
+    """Thinking at the normal budget; when cut off, once more with room; when that still fails
+    for a reason thinking can cause, once without it. Three calls at most. `ask` takes the
+    method name to record; `widen` and `without_thinking` adjust the request in place."""
+    try:
+        return ask("llm_json")
+    except JudgeError as exc:
+        if cut_off(exc):
+            widen()
+            try:
+                return ask("llm_json")
+            except JudgeError as again:
+                exc = again
+        if not retry_without_thinking(exc):
+            raise
+        without_thinking(exc)
+        return ask("llm_json_nothink")
 
 
 class LlmJudgeBackend:
@@ -149,13 +213,18 @@ class LlmJudgeBackend:
             body["think"] = False
             return self._ask(body, questions, method="llm_json")
         body["think"] = True
-        try:
-            return self._ask(body, questions, method="llm_json")
-        except JudgeError as exc:
+        replies: list[Reply] = []
+
+        def ask(method: str) -> dict[str, Answer]:
+            replies.append(self._complete(body))
+            return answers_from_replies(replies, questions, method=method)
+
+        def widen() -> None:
+            body["options"]["num_predict"] = RETRY_JUDGE_TOKENS
+
+        def without_thinking(exc: JudgeError) -> None:
             # Answer without thinking and say so in the method, so the report can count how
             # often reasoning was dropped.
-            if not retry_without_thinking(exc):
-                raise
             if "http" in str(exc).lower():
                 # The server rejected the flag itself (it predates thinking): drop it.
                 body.pop("think", None)
@@ -165,19 +234,22 @@ class LlmJudgeBackend:
             # emit whitespace until the budget is gone; free text with the object extracted
             # by regex is the sturdier shape for the retry.
             body.pop("format", None)
-            return self._ask(body, questions, method="llm_json_nothink")
+            body["options"]["num_predict"] = MAX_JUDGE_TOKENS
+
+        return judge_with_room(ask, widen, without_thinking)
 
     def _ask(
         self, body: dict[str, Any], questions: Sequence[Question], *, method: str
     ) -> dict[str, Answer]:
+        return answers_from_replies([self._complete(body)], questions, method=method)
+
+    def _complete(self, body: dict[str, Any]) -> Reply:
         response, latency = http.post_json(f"{self.host}/api/chat", body)
         message = response.get("message") or {}
-        content = str(message.get("content") or "")
-        if response.get("done_reason") == "length":
-            raise JudgeError(out_of_tokens(content, str(message.get("thinking") or "")))
-        data = parse_judge_json(content)
-        snapshot = str(response.get("model") or self.model)
-        per_question = latency / max(1, len(questions))
-        return answers_from_judge_json(
-            data, questions, method=method, latency_ms=per_question, model_snapshot=snapshot
+        return Reply(
+            content=str(message.get("content") or ""),
+            reasoning=str(message.get("thinking") or ""),
+            cut_off=response.get("done_reason") == "length",
+            snapshot=str(response.get("model") or self.model),
+            latency_ms=latency,
         )

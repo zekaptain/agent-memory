@@ -17,12 +17,12 @@ from . import http
 from .base import Answer, JudgeInput
 from .llm import (
     MAX_JUDGE_TOKENS,
+    RETRY_JUDGE_TOKENS,
     SYSTEM,
-    answers_from_judge_json,
+    Reply,
+    answers_from_replies,
     judge_prompt,
-    out_of_tokens,
-    parse_judge_json,
-    retry_without_thinking,
+    judge_with_room,
 )
 
 # 9931 is llama-server's own default port.
@@ -63,20 +63,30 @@ class LlamaCppJudgeBackend:
         # The template kwarg is how Qwen- and Gemma-style templates are switched; templates
         # without the switch ignore it and follow the server's --reasoning setting.
         body["chat_template_kwargs"] = {"enable_thinking": True}
-        try:
-            return self._ask(body, questions, method="llm_json")
-        except JudgeError as exc:
-            if not retry_without_thinking(exc):
-                raise
+        replies: list[Reply] = []
+
+        def ask(method: str) -> dict[str, Answer]:
+            replies.append(self._complete(body))
+            return answers_from_replies(replies, questions, method=method)
+
+        def widen() -> None:
+            body["max_tokens"] = RETRY_JUDGE_TOKENS
+
+        def without_thinking(exc: JudgeError) -> None:
             disable_thinking(body)
+            body["max_tokens"] = MAX_JUDGE_TOKENS
             # Same shape as the Ollama retry: free text with the object extracted by regex,
             # since a constrained grammar with no thinking channel can stall on whitespace.
             body.pop("response_format", None)
-            return self._ask(body, questions, method="llm_json_nothink")
+
+        return judge_with_room(ask, widen, without_thinking)
 
     def _ask(
         self, body: dict[str, Any], questions: Sequence[Question], *, method: str
     ) -> dict[str, Answer]:
+        return answers_from_replies([self._complete(body)], questions, method=method)
+
+    def _complete(self, body: dict[str, Any]) -> Reply:
         try:
             response, latency = http.post_json(f"{self.host}/v1/chat/completions", body)
         except JudgeError as exc:
@@ -84,14 +94,12 @@ class LlamaCppJudgeBackend:
         choices = response.get("choices") or []
         first = choices[0] if choices and isinstance(choices[0], dict) else {}
         message = first.get("message") or {}
-        content = str(message.get("content") or "")
-        if first.get("finish_reason") == "length":
-            raise JudgeError(out_of_tokens(content, str(message.get("reasoning_content") or "")))
-        data = parse_judge_json(content)
-        snapshot = str(response.get("model") or self.model)
-        per_question = latency / max(1, len(questions))
-        return answers_from_judge_json(
-            data, questions, method=method, latency_ms=per_question, model_snapshot=snapshot
+        return Reply(
+            content=str(message.get("content") or ""),
+            reasoning=str(message.get("reasoning_content") or ""),
+            cut_off=first.get("finish_reason") == "length",
+            snapshot=str(response.get("model") or self.model),
+            latency_ms=latency,
         )
 
     def _with_known_models(self, exc: JudgeError) -> JudgeError:

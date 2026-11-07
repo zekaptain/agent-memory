@@ -221,16 +221,22 @@ class DecisionBackend(Protocol):
   prompt, JSON output, thinking on, temperature 0, self-reported probability
   as confidence. Served by Ollama's native `/api/chat` at `OLLAMA_HOST`
   (default `http://localhost:11434`). If the thinking pass runs out of
-  tokens or returns no JSON, the same question is asked once more with
-  thinking off and the grammar dropped, recorded as `llm_json_nothink`.
+  tokens it is asked once more, still thinking, with three times the budget
+  (12,288 tokens; recorded as `llm_json` like any thinking answer). If
+  that is cut off too, or the pass returns no JSON, the same question is
+  asked once more with thinking off and the grammar dropped, recorded as
+  `llm_json_nothink`. Every attempt's latency is billed to the answer.
 - `llamacpp:<model>`: the same reasoning baseline served by llama.cpp's
   `llama-server` over its OpenAI-compatible `/v1/chat/completions` at
   `LLAMACPP_HOST` (default `http://localhost:9931`, llama-server's own
-  default port). Identical prompt, rubric, JSON parsing, and no-thinking
-  retry; the request uses `max_tokens`, `response_format: {"type":
-  "json_object"}`, `reasoning_format: deepseek` (thoughts go to
-  `reasoning_content`, not `content`), and `chat_template_kwargs:
-  {"enable_thinking": ...}` plus `reasoning_effort: none` on the retry.
+  default port). Identical prompt, rubric, JSON parsing, wider-budget
+  retry, and no-thinking retry; the request uses `max_tokens`,
+  `response_format: {"type": "json_object"}`, `reasoning_format: deepseek`
+  (thoughts go to `reasoning_content`, not `content`), and
+  `chat_template_kwargs: {"enable_thinking": ...}` plus `reasoning_effort:
+  none` on the no-thinking retry. Templates without a switch (gpt-oss
+  renders `reasoning_effort` verbatim as `Reasoning: <value>`) ignore
+  both, so for them only the wider budget can rescue a cut-off item.
   `<model>` is an id from the server's `/v1/models`: in router mode (the
   `llama` app's default) it selects and, on first use, loads that model,
   e.g. `llamacpp:ggml-org/Qwen3.8-27B-GGUF:Q8_0`; in single-model mode the
@@ -889,6 +895,23 @@ deviations:
   tokens (same seed; on OpenAI-compatible endpoints reasoning tokens
   share `max_tokens` with the answer), with both attempts' latency and
   cost recorded; the first exp3 openrouter pass hit this on one item.
+- Judge token budget (2026-11-07): the exp3 `llamacpp:…gpt-oss-20b` pass
+  failed Stage A on one item (`5dedfe18`), which lost both drafter rows:
+  `judge ran out of tokens after 19824 chars of reasoning; JSON incomplete:
+  ''`. Reproduced directly: at temperature 0 the model's analysis fell into
+  a repetition loop ("The next message is the same request again?"),
+  recovered on its own, and needed 5,988 tokens against the 4,096 budget.
+  The no-thinking retry sent the identical 19,824 chars: the gpt-oss
+  template has no `enable_thinking` switch and pastes
+  `reasoning_effort` into the system prompt, so `none` is noise and the
+  retry was the same seeded request at the same budget. `reasoning_effort:
+  low` did fit (175 tokens) but changed the verdict (`failed: no` versus
+  `yes` with room), so lowering effort is not a budget fix. Both reasoning
+  judges now follow the drafter: cut off while thinking, once more with
+  12,288 tokens, and only then the no-thinking pass; the no-thinking pass
+  keeps the 4,096 budget it had. Latency is summed over attempts (earlier
+  `llm_json_nothink` rows record only their last call). The rerun judged
+  the item with reasoning kept (`llm_json`, `failed: yes` at 0.97).
 - Labeling: items already labeled but missing answers for a newly drafted
   arm come first and are asked only those steps. `--item ID` relabels in
   full with the current labels shown; `--review` shows them and asks keep

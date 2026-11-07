@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import io
 import os
 import stat
@@ -716,7 +717,7 @@ def test_llm_judge_truncated_json_is_judge_error_and_falls_back_without_thinking
     calls: list[dict] = []
 
     def post(url, body, **k):
-        calls.append(dict(body))
+        calls.append(copy.deepcopy(body))  # `options` is widened in place between calls
         if body.get("think"):
             return {"message": {"content": cut}, "done_reason": "length"}, 100.0
         return {"message": {"content": good}, "done_reason": "stop", "model": "m:1"}, 10.0
@@ -724,12 +725,15 @@ def test_llm_judge_truncated_json_is_judge_error_and_falls_back_without_thinking
     monkeypatch.setattr(judge_http, "post_json", post)
     inp = JudgeInput(item_id="i", state="S", facts={}, flags=())
     answers = LlmJudgeBackend("m").decide(inp, [BY_ID["failed"]])
-    # The retry must say `think: false` outright; Ollama treats a missing flag as "think".
-    assert [c.get("think", "absent") for c in calls] == [True, False]
-    assert [c.get("format") for c in calls] == ["json", None]
+    # Cut off while thinking: once more with room, then without thinking. The last retry must
+    # say `think: false` outright; Ollama treats a missing flag as "think".
+    assert [c.get("think", "absent") for c in calls] == [True, True, False]
+    assert [c["options"]["num_predict"] for c in calls] == [4096, 12288, 4096]
+    assert [c.get("format") for c in calls] == ["json", "json", None]
     assert answers["failed"].value == "no"
     assert answers["failed"].method == "llm_json_nothink"
     assert answers["failed"].model_snapshot == "m:1"
+    assert answers["failed"].latency_ms == pytest.approx(210.0)  # all three attempts billed
 
     # A whole budget spent thinking: the error names it, and the retry still runs.
     calls.clear()
@@ -745,7 +749,7 @@ def test_llm_judge_truncated_json_is_judge_error_and_falls_back_without_thinking
 
     monkeypatch.setattr(judge_http, "post_json", all_thinking)
     answers = LlmJudgeBackend("m").decide(inp, [BY_ID["failed"]])
-    assert [c.get("think", "absent") for c in calls] == [True, False]
+    assert [c.get("think", "absent") for c in calls] == [True, True, False]
     assert answers["failed"].method == "llm_json_nothink"
     with pytest.raises(JudgeError, match="after 15000 chars of reasoning; JSON incomplete: ''"):
         LlmJudgeBackend("m")._ask({"think": True}, [BY_ID["failed"]], method="llm_json")
@@ -805,8 +809,8 @@ def test_llamacpp_judge_speaks_openai_chat_and_falls_back_without_thinking(monke
     assert backend.local
     answers = backend.decide(inp, [BY_ID["failed"]])
 
-    assert [u for u, _ in calls] == ["http://llama.test:8080/v1/chat/completions"] * 2
-    first, second = (b for _, b in calls)
+    assert [u for u, _ in calls] == ["http://llama.test:8080/v1/chat/completions"] * 3
+    first, wider, second = (b for _, b in calls)
     # OpenAI field names, not Ollama's: no `options`, `format`, or `think` keys.
     assert not {"options", "format", "think"} & set(first)
     assert first["model"] == "gemma-4-26b"
@@ -818,15 +822,21 @@ def test_llamacpp_judge_speaks_openai_chat_and_falls_back_without_thinking(monke
     assert "reasoning_effort" not in first
     assert [m["role"] for m in first["messages"]] == ["system", "user"]
     assert "DRAFT LESSON" not in first["messages"][1]["content"]
-    # The retry turns thinking off both ways and drops the grammar.
+    # Cut off while thinking: the same request once more with room, still thinking.
+    assert wider["max_tokens"] == 12288
+    assert wider["chat_template_kwargs"] == {"enable_thinking": True}
+    assert wider["response_format"] == {"type": "json_object"}
+    # The last retry turns thinking off both ways, drops the grammar, and goes back to the
+    # normal budget.
     assert second["chat_template_kwargs"] == {"enable_thinking": False}
     assert second["reasoning_effort"] == "none"
+    assert second["max_tokens"] == 4096
     assert "response_format" not in second
     assert answers["failed"].value == "no"
     assert answers["failed"].p_true == pytest.approx(0.2)
     assert answers["failed"].method == "llm_json_nothink"
     assert answers["failed"].model_snapshot == "gemma-4-26b-it-Q4_K_M.gguf"
-    assert answers["failed"].latency_ms == pytest.approx(10.0)
+    assert answers["failed"].latency_ms == pytest.approx(210.0)  # all three attempts billed
 
     # With thinking off from the start there is one call and nothing to fall back to.
     calls.clear()
@@ -887,6 +897,88 @@ def test_llamacpp_judge_speaks_openai_chat_and_falls_back_without_thinking(monke
         LlamaCppJudgeBackend("typo").decide(inp, [BY_ID["failed"]])
     assert str(excinfo.value).endswith('not found"}}')
     assert "Models this server knows" not in str(excinfo.value)
+
+
+def test_judge_cut_off_while_thinking_gets_room_before_losing_thinking(monkeypatch):
+    """gpt-oss-20b on exp3 item 5dedfe18: greedy reasoning looped past the 4,096-token budget
+    and finished at about 6,000 tokens when given room. Its template has no thinking switch,
+    so the no-think retry was the same request again and failed the same way."""
+    from agent_memory.judge.backends.llm import MAX_JUDGE_TOKENS, RETRY_JUDGE_TOKENS
+
+    good = '{"failed": {"answer": "yes", "probability": 0.95}}'
+    bodies: list[dict] = []
+
+    def gpt_oss(url, body, **k):
+        bodies.append(dict(body))
+        if body["max_tokens"] == MAX_JUDGE_TOKENS:
+            # Budget spent in the analysis channel, nothing in the answer.
+            message = {"content": "", "reasoning_content": "The next message is the same? " * 661}
+            return {
+                "model": "gpt-oss-20b",
+                "choices": [{"finish_reason": "length", "message": message}],
+            }, 100.0
+        message = {"content": good, "reasoning_content": "x" * 28206}
+        return {
+            "model": "gpt-oss-20b",
+            "choices": [{"finish_reason": "stop", "message": message}],
+        }, 200.0
+
+    monkeypatch.setattr(judge_http, "post_json", gpt_oss)
+    inp = JudgeInput(item_id="i", state="S", facts={}, flags=())
+    answers = LlamaCppJudgeBackend("ggml-org/gpt-oss-20b-GGUF:MXFP4").decide(inp, [BY_ID["failed"]])
+    assert [b["max_tokens"] for b in bodies] == [MAX_JUDGE_TOKENS, RETRY_JUDGE_TOKENS]
+    # Still the thinking pass: same switch, same grammar, no reasoning_effort override.
+    assert all(b["chat_template_kwargs"] == {"enable_thinking": True} for b in bodies)
+    assert all(b["response_format"] == {"type": "json_object"} for b in bodies)
+    assert not any("reasoning_effort" in b for b in bodies)
+    assert answers["failed"].value == "yes"
+    assert answers["failed"].method == "llm_json"  # reasoning was kept, not dropped
+    assert answers["failed"].latency_ms == pytest.approx(300.0)
+    assert answers["failed"].model_snapshot == "gpt-oss-20b"
+
+    # Looping past the wider budget too: the no-think pass is still tried (it works for
+    # templates with a switch), and when that is cut off as well the error says how far the
+    # last attempt got. Three calls, no more.
+    bodies.clear()
+
+    def loops(url, body, **k):
+        bodies.append(dict(body))
+        message = {"content": "", "reasoning_content": "again? " * 2832}
+        return {"choices": [{"finish_reason": "length", "message": message}]}, 50.0
+
+    monkeypatch.setattr(judge_http, "post_json", loops)
+    with pytest.raises(JudgeError, match=r"after 19824 chars of reasoning; JSON incomplete: ''"):
+        LlamaCppJudgeBackend("m").decide(inp, [BY_ID["failed"]])
+    assert [b["max_tokens"] for b in bodies] == [
+        MAX_JUDGE_TOKENS,
+        RETRY_JUDGE_TOKENS,
+        MAX_JUDGE_TOKENS,
+    ]
+    assert [b["chat_template_kwargs"]["enable_thinking"] for b in bodies] == [True, True, False]
+
+    # The Ollama judge widens num_predict the same way and keeps thinking on for it.
+    bodies.clear()
+
+    def ollama(url, body, **k):
+        bodies.append(copy.deepcopy(body))
+        if body["options"]["num_predict"] == MAX_JUDGE_TOKENS:
+            return {
+                "message": {"content": "", "thinking": "y" * 15000},
+                "done_reason": "length",
+            }, 100.0
+        return {
+            "message": {"content": good, "thinking": "y" * 20000},
+            "done_reason": "stop",
+            "model": "g",
+        }, 200.0
+
+    monkeypatch.setattr(judge_http, "post_json", ollama)
+    answers = LlmJudgeBackend("g").decide(inp, [BY_ID["failed"]])
+    assert [b["options"]["num_predict"] for b in bodies] == [MAX_JUDGE_TOKENS, RETRY_JUDGE_TOKENS]
+    assert [b["think"] for b in bodies] == [True, True]
+    assert [b["format"] for b in bodies] == ["json", "json"]
+    assert answers["failed"].method == "llm_json"
+    assert answers["failed"].latency_ms == pytest.approx(300.0)
 
 
 def test_llamacpp_judge_end_to_end_over_http():
