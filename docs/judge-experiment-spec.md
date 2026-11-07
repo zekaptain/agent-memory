@@ -817,9 +817,9 @@ shown together in a seeded order as A and B with the drafter hidden:
 `grounded`, `faithful`, `generalizable`, `enforced_by`; then `preferred`
 (A, B, same, neither) once per item. A declined draft is shown as
 "(no lesson)" and asks nothing. An optional free-text `note` closes the
-item. Controls: `b` back one question, `p` to page the full projection, a
-one-line summary before saving with `r` to redo the item, `s` skip, `q`
-quit. `mem judge label --item ID`
+item. Controls: `b` back one question, `p` to page the full projection,
+`?` to page the rubric, a one-line summary before saving with `r` to redo
+the item, `s` skip, `q` quit. `mem judge label --item ID`
 reopens items; `--review` steps through labeled items showing current
 values. A changed label keeps its previous value in a `history` list on
 the row, so the file stays append-only in spirit and the report can count
@@ -920,10 +920,27 @@ deviations:
   questions clears the viewport and draws only what it is about (the turn
   with its projection, one draft with the evidence it cites, the drafts side
   by side for `preferred`), so nothing has to be scrolled back to; `p` at
-  any question pages the full projection. A typed choice wins over a
-  control key, so `b` at `preferred` picks draft B. The rubric is a
-  term/description grid that wraps to the terminal; each screen lists the
-  keys once and prompts name their choices once.
+  any question pages the full projection and `?` the rubric. A typed
+  choice wins over a control key, so `b` at `preferred` picks draft B. The
+  rubric is a term/description grid that wraps to the terminal; it is shown
+  once when the session opens and waits for Enter, because the first item
+  clears the screen. Each screen lists the keys once and prompts name their
+  choices once.
+- Turn screen (2026-11-07): labeling a 12-tool-call item on a 215-column
+  terminal took about 85 lines (rubric, header, the projection as stored),
+  so the question was never on screen with the evidence. The header's facts
+  now sit on one line (project, who started the session, closed by,
+  outcome, tool calls with the error count) and the projection is
+  condensed: the header line and blank lines are dropped, a tool call and
+  its result share one row labeled `[n]→[m]` with the arguments clipped in
+  the middle to 72 characters (the key at the front and the file name at
+  the back say more than the directory between them) and an `ok` result
+  clipped to 100, an error result kept whole and shown in red, and every
+  other entry opens with its kind in bold. Unknown entry shapes and the
+  omission markers are printed as they are. The stored text, which `p`
+  pages, stays the evidence of record and the thing a draft's citations
+  point at. On the recorded item the turn screen went from 60 lines to 42
+  at 215 columns and from 107 to 88 at 100 columns.
 - CLI output: progress lines stay on stdout (dim); problems (a skipped
   draft or verdict, a spooled event batch, import failures grouped at the
   end) go to stderr so they survive a redirect. `draft` counts failures in

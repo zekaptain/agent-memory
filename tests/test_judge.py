@@ -31,7 +31,7 @@ from agent_memory.judge.backends.llm import (
 from agent_memory.judge.backends.readout import ReadoutBackend, _letter_logits, first_letter
 from agent_memory.judge.backends.rules import RulesBackend
 from agent_memory.judge.drafter import draft_hash, make_drafter, parse_draft
-from agent_memory.judge.labeling import SAVE_PROMPT, label_items, order_drafts
+from agent_memory.judge.labeling import SAVE_PROMPT, START_PROMPT, label_items, order_drafts
 from agent_memory.judge.pipeline import assign_splits
 from agent_memory.judge.projection import FullEvent, build_projection, drafter_rendering
 from agent_memory.judge.questions import (
@@ -1599,13 +1599,16 @@ def test_labeling_hides_verdicts_and_resumes(tmp_path):
             for i in items
         ],
     )
-    # failed, category, worth, kind, A x4, B x4, preferred, note, save; then skip; then quit.
+    # Enter past the rubric; failed, category, worth, kind, A x4, B x4, preferred, note, save;
+    # then skip; then quit.
     ask, asked = _scripted(
-        ["y", "2", "y", "3", "y", "y", "1", "1", "n", "y", "0", "1", "a", "", "y", "s", "q"]
+        ["", "y", "2", "y", "3", "y", "y", "1", "1", "n", "y", "0", "1", "a", "", "y", "s", "q"]
     )
     summary = label_items(store, console=console, ask=ask, seed=5)
     out = buffer.getvalue()
     assert (summary.labeled, summary.skipped, summary.remaining) == (1, 1, 2)
+    assert asked[0] == START_PROMPT
+    assert out.index("how to label") < out.index("item 1/3")
     assert "PROJECTION" in out
     assert "DRAFT_LESSON_TEXT" in out
     assert "OTHER_DRAFT_TEXT" in out
@@ -1624,8 +1627,8 @@ def test_labeling_hides_verdicts_and_resumes(tmp_path):
     )
     for hidden in ("0.85", "llm:ref", "probabilities", "backend", "ollama:m", "llamacpp:x"):
         assert hidden not in out
-    assert asked[0].startswith("failed? (y/n, u unclear, i incomplete)")
-    assert "lesson kind" in asked[3]
+    assert asked[1].startswith("failed? (y/n, u unclear, i incomplete)")
+    assert "lesson kind" in asked[4]
     assert asked[-3] == "save? (Enter/y save, r redo, s skip, q quit)"
     labels = store.read_jsonl(store.labels_path)
     assert len(labels) == 1
@@ -1681,10 +1684,10 @@ def test_labeling_redraws_per_section_and_pages_the_projection(tmp_path, monkeyp
     )
     buffer = io.StringIO()
     console = Console(file=buffer, width=100, force_terminal=False)
-    # p at failed, at A.grounded, and at save pages the projection and asks again; b at
-    # preferred picks draft B instead of going back.
+    # Enter past the rubric. p at failed, at A.grounded, and at save pages the projection and
+    # asks again; ? at worth pages the rubric; b at preferred picks draft B instead of going back.
     ask, asked = _scripted(
-        ["p", "n", "n", "p", "y", "y", "1", "1", "y", "y", "1", "1", "b", "", "p", "y"]
+        ["", "p", "n", "?", "n", "p", "y", "y", "1", "1", "y", "y", "1", "1", "b", "", "p", "y"]
     )
     summary = label_items(store, console=console, ask=ask, seed=5)
     out = buffer.getvalue()
@@ -1703,21 +1706,29 @@ def test_labeling_redraws_per_section_and_pages_the_projection(tmp_path, monkeyp
     assert body.count("about the turn itself") == 1
     assert body.count("about draft A") == 1
     assert body.count("about draft B") == 1
-    assert body.count("the drafts side by side") == 1
+    assert body.count("the drafts side by side") == 2  # the rule, and the rubric paged by ?
     # The projection is on the turn screen, then once per p (inline when there is no terminal).
     assert body.count("SENTINEL_STATE_TEXT") == 4
-    assert [q.split("?")[0] for q in asked[:2]] == ["failed", "failed"]
+    # The rubric once at the start, then once for the ?.
+    assert out.count("how to label") == 2
+    assert body.count("how to label") == 1
+    assert [q.split("?")[0] for q in asked[1:3]] == ["failed", "failed"]
+    assert asked[3].startswith("worth remembering")
+    assert asked[4] == asked[3]  # asked again after the rubric
     assert asked[-2:] == [SAVE_PROMPT, SAVE_PROMPT]
     label = store.read_jsonl(store.labels_path)[0]
     drafts = order_drafts(item_id, store.read_drafts()[item_id], seed=5)
     assert label["preferred"] == next(d.drafter for d in drafts if d.slot == "B")
-    # On a terminal every screen after the first clears the viewport.
+    # On a terminal every screen clears the viewport, the first one taking the rubric with it
+    # once Enter has been pressed.
     store.labels_path.unlink()
     buffer = io.StringIO()
     console = Console(file=buffer, width=100, force_terminal=True)
-    ask, _ = _scripted(["n", "n", "y", "y", "1", "1", "y", "y", "1", "1", "a", "", "y"])
+    ask, _ = _scripted(["", "n", "n", "y", "y", "1", "1", "y", "y", "1", "1", "a", "", "y"])
     label_items(store, console=console, ask=ask, seed=5)
-    assert buffer.getvalue().count("\x1b[2J") == 3
+    out = buffer.getvalue()
+    assert out.count("\x1b[2J") == 4
+    assert out.index("how to label") < out.index("\x1b[2J") < out.index("about the turn itself")
 
 
 def test_report_cli_keeps_raw_stdout_clean_and_warns_about_width(tmp_path, capsys, monkeypatch):
@@ -1742,6 +1753,80 @@ def test_report_cli_keeps_raw_stdout_clean_and_warns_about_width(tmp_path, capsy
     assert "written to" not in out
     assert "squeezed into 100 columns and need about 150" in err
     assert "Versions: unknown, unknown, questions_v2" in out
+
+
+def test_labeling_condenses_the_projection_on_the_turn_screen(tmp_path):
+    """The turn screen shows the stored projection rearranged, never rewritten: the header is
+    left to the meta line, a tool call and its result share a row, blank lines go, and `p`
+    still pages the text as stored."""
+    from agent_memory.judge.labeling import Entry, _clip_middle, parse_entries, projection_grid
+
+    projection = (
+        "Coding-agent turn. project=p session_started_by=human closed_by=outcome outcome=completed "
+        "tool_calls=3 tool_errors=1\n"
+        "[1] REQUEST (human): please run the tests\n\nand fix what fails\n"
+        '[2] TOOL CALL Execute: {"command": "uv run pytest tests/test_[bold]x.py"}\n'
+        "[3] TOOL RESULT (error): 3 failed in 0.4s\n"
+        "... 4 tool call(s) omitted ...\n"
+        '[4] TOOL CALL Read: {"file_path": "' + "/very/long/directory/" * 6 + 'target_file.py"}\n'
+        "[5] TOOL RESULT (ok): " + "the file contents go on and on " * 5 + "\n"
+        "[6] TOOL CALL Write: {}\n"
+        "[7] ASSISTANT (final): all green now\n"
+        "[8] OUTCOME: completed\n"
+        "[9] NEXT MESSAGE (human): thanks"
+    )
+    entries = parse_entries(projection)
+    assert entries[0] == Entry(None, "", projection.splitlines()[0])
+    assert entries[1] == Entry(1, "REQUEST (human)", "please run the tests\n\nand fix what fails")
+    assert entries[3] == Entry(3, "TOOL RESULT (error)", "3 failed in 0.4s")
+    assert entries[4] == Entry(None, "", "... 4 tool call(s) omitted ...")
+    assert [e.number for e in entries] == [None, 1, 2, 3, None, 4, 5, 6, 7, 8, 9]
+    assert entries[-1] == Entry(9, "NEXT MESSAGE (human)", "thanks")
+    assert _clip_middle("abcdefghij", 10) == "abcdefghij"
+    assert _clip_middle("abcdefghijk", 9) == "abcd…hijk"
+
+    buffer = io.StringIO()
+    console = Console(file=buffer, width=300, force_terminal=False)  # wide: one row per line
+    console.print(projection_grid(projection))
+    grid = buffer.getvalue()
+    lines = [line.rstrip() for line in grid.splitlines()]
+    assert not any("Coding-agent turn." in line for line in lines)
+    assert lines[0].startswith("    [1] REQUEST (human): please run the tests")
+    assert lines[1].strip() == "and fix what fails"  # the blank line between them is gone
+    assert "[2]→[3] Execute " in lines[2]
+    assert 'tests/test_[bold]x.py"}  │  error: 3 failed in 0.4s' in lines[2]  # markup-safe
+    assert "... 4 tool call(s) omitted ..." in lines[3]
+    assert lines[4].startswith("[4]→[5] Read ")
+    assert "…" in lines[4]
+    assert 'target_file.py"}' in lines[4]  # the file name survives the cut
+    assert "ok: the file contents" in lines[4]
+    assert lines[4].rstrip().endswith("…")
+    assert "[6] Write {}  │  (no result)" in grid
+    assert "[7] ASSISTANT (final): all green now" in grid
+    assert "[8] OUTCOME: completed" in grid
+    assert "[9] NEXT MESSAGE (human): thanks" in grid
+
+    store = synthetic_run(tmp_path, n=1)
+    store.labels_path.unlink()
+    item_id = "00000000-0000-0000-0000-000000000000"
+    store.write_projection(item_id, projection)
+    items = store.read_jsonl(store.items_path)
+    items[0]["facts"]["tool_error_count"] = 1
+    store.write_jsonl(store.items_path, items)
+    buffer = io.StringIO()
+    console = Console(file=buffer, width=160, force_terminal=False)
+    # Enter; failed n; worth n; p pages the stored text; error intended y; A x4; note; save.
+    ask, _ = _scripted(["", "n", "n", "p", "y", "y", "y", "1", "1", "", "y"])
+    label_items(store, console=console, ask=ask, seed=5)
+    out = buffer.getvalue()
+    assert "tool calls 1 (1 error)" in out
+    assert "projection, condensed (p pages the full text)" in out
+    # The stored text appears once, when paged, with its header and the two tool lines apart.
+    assert out.count("Coding-agent turn.") == 1
+    assert out.count("[2] TOOL CALL Execute") == 1
+    assert out.count("[3] TOOL RESULT (error)") == 1
+    assert out.count("[2]→[3]") == 1
+    assert out.index("[2]→[3]") < out.index("[2] TOOL CALL Execute")
 
 
 def test_labeling_shows_rubric_cited_evidence_and_incomplete(tmp_path):
@@ -1776,7 +1861,7 @@ def test_labeling_shows_rubric_cited_evidence_and_incomplete(tmp_path):
     buffer = io.StringIO()
     console = Console(file=buffer, width=100, force_terminal=False)
     # i = incomplete: no category; worth y, kind; one draft so no preferred; a note.
-    ask, asked = _scripted(["i", "y", "1", "y", "y", "2", "2", "misread the result", "y"])
+    ask, asked = _scripted(["", "i", "y", "1", "y", "y", "2", "2", "misread the result", "y"])
     label_items(store, console=console, ask=ask, seed=5)
     out = buffer.getvalue()
     assert "how to label" in out
@@ -1784,7 +1869,12 @@ def test_labeling_shows_rubric_cited_evidence_and_incomplete(tmp_path):
     assert "cites [2] [5]" in out
     assert "cited evidence" in out
     assert "no, the tests fail" in out
-    assert "[3] ASSISTANT" in out  # still in the projection panel
+    # Entries in a shape the condensed view does not know are shown as they are; the header
+    # line is not, since the meta line above the panel carries it.
+    assert "[3]" in out
+    assert "ASSISTANT: all done" in out
+    assert "Coding-agent turn." not in out
+    assert "project p  ·  session started by human  ·  closed by session_end" in out
     assert "preferred" not in " ".join(asked)
     label = store.read_jsonl(store.labels_path)[0]
     assert (label["failed"], label["incomplete"], label["category"]) == (None, True, None)
@@ -1835,7 +1925,7 @@ def test_labeling_backfills_relabels_and_keeps_history(tmp_path):
     console = Console(file=buffer, width=100, force_terminal=False)
     # item 0: the new draft's four answers and preferred; item 1: preferred only (the new draft
     # declined); item 2: error_intended only. Each closes with a save.
-    ask, asked = _scripted(["y", "n", "1", "1", "same", "y", "neither", "y", "n", "y"])
+    ask, asked = _scripted(["", "y", "n", "1", "1", "same", "y", "neither", "y", "n", "y"])
     summary = label_items(store, console=console, ask=ask, seed=5)
     out = buffer.getvalue()
     assert (summary.labeled, summary.skipped, summary.remaining, summary.changed) == (3, 0, 0, 0)
@@ -1866,14 +1956,34 @@ def test_labeling_backfills_relabels_and_keeps_history(tmp_path):
     # --item relabels in full: b steps back, r redoes from the summary, and the changed values
     # land in history. Item 3 was failed/tool_misuse/worth/process.
     ask, asked = _scripted(
-        ["y", "b", "n", "n", "y", "y", "1", "1", "", "r", "n", "n", "y", "y", "1", "1", "slip", "y"]
+        [
+            "",
+            "y",
+            "b",
+            "n",
+            "n",
+            "y",
+            "y",
+            "1",
+            "1",
+            "",
+            "r",
+            "n",
+            "n",
+            "y",
+            "y",
+            "1",
+            "1",
+            "slip",
+            "y",
+        ]
     )
     buffer.truncate(0)
     summary = label_items(store, console=console, ask=ask, seed=5, item_ids=[ids[3]])
     out = buffer.getvalue()
     assert (summary.labeled, summary.changed) == (1, 1)
     assert "current labels" in out
-    assert [q.split("?")[0] for q in asked[:4]] == [
+    assert [q.split("?")[0] for q in asked[1:5]] == [
         "failed",
         "category (number)",
         "failed",
@@ -1905,10 +2015,10 @@ def test_labeling_backfills_relabels_and_keeps_history(tmp_path):
 
     # --review shows current labels and asks keep or redo.
     kept = label_items(
-        store, console=console, ask=_scripted(["k"])[0], seed=5, item_ids=[ids[3]], review=True
+        store, console=console, ask=_scripted(["", "k"])[0], seed=5, item_ids=[ids[3]], review=True
     )
     assert (kept.labeled, kept.changed) == (0, 0)
-    redo, _ = _scripted(["r", "y", "2", "n", "y", "y", "1", "1", "", "y"])
+    redo, _ = _scripted(["", "r", "y", "2", "n", "y", "y", "1", "1", "", "y"])
     redone = label_items(store, console=console, ask=redo, seed=5, item_ids=[ids[3]], review=True)
     assert (redone.labeled, redone.changed) == (1, 1)
     row = {r["item_id"]: r for r in store.read_jsonl(store.labels_path)}[ids[3]]

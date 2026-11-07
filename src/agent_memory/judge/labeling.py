@@ -142,13 +142,18 @@ RUBRIC = (
     ("preferred", "Which draft would you rather keep: a, b, same, or neither."),
     ("note", "Optional free text; Enter for none."),
 )
-KEYS = "b back one question, p page the full projection, s skip this item, q quit"
-RUBRIC_KEYS = (
-    "At any question: b goes back one question, p pages the full projection (q leaves the "
-    "pager), s skips the item (it comes back next session), q stops. A summary is shown before "
-    "saving; r redoes the item. Progress is saved per item. Items labeled before a question or "
-    "a drafter existed come back and ask only what is missing."
+KEYS = (
+    "b back one question, p page the full projection, ? page this rubric, s skip this item, q quit"
 )
+RUBRIC_KEYS = (
+    "At any question: b goes back one question, p pages the full projection, ? pages this "
+    "rubric (q leaves the pager), s skips the item (it comes back next session), q stops. The "
+    "turn screen shows the projection condensed: a tool call and its result on one row, blank "
+    "lines dropped; p has the text as stored. A summary is shown before saving; r redoes the "
+    "item. Progress is saved per item. Items labeled before a question or a drafter existed "
+    "come back and ask only what is missing."
+)
+START_PROMPT = "Enter to start (q quits)"
 _STEP_NAMES = {
     "worth_remembering": "worth remembering",
     "lesson_kind": "lesson kind",
@@ -187,6 +192,17 @@ def describe_steps(steps: Sequence[str]) -> str:
 
 _ENTRY = re.compile(r"^\[(\d+)\] ", re.MULTILINE)
 EXCERPT_CHARS = 320
+# The entry kinds `projection.py` writes; anything else is shown as it is.
+_KIND = re.compile(
+    r"^(REQUEST \([^)]*\)|TOOL CALL \S+|TOOL RESULT \((?:ok|error)\)|ASSISTANT \(final\)|OUTCOME"
+    r"|NEXT MESSAGE(?: \([^)]*\))?): ?(.*)\Z",
+    re.DOTALL,
+)
+_MARKER = re.compile(r"^\.\.\. (?:\d+ tool call\(s\) omitted \.\.\.|\[projection cut\])$")
+_HEADER = "Coding-agent turn."
+# Per row on the turn screen; the stored text keeps 200 and 120.
+TOOL_ARGS_CHARS = 72
+TOOL_OK_CHARS = 100
 
 
 def cited_entries(projection: str, cited: Sequence[int]) -> list[tuple[int, str]]:
@@ -202,6 +218,112 @@ def cited_entries(projection: str, cited: Sequence[int]) -> list[tuple[int, str]
             body = body[:EXCERPT_CHARS].rstrip() + " …"
         out.append((number, body))
     return out
+
+
+@dataclass(frozen=True)
+class Entry:
+    """One projection entry. `number` is None for the header and the omission markers, which
+    carry no citation number; `kind` is empty when the entry is not one `projection.py` writes."""
+
+    number: int | None
+    kind: str
+    body: str
+
+
+def parse_entries(projection: str) -> list[Entry]:
+    out: list[Entry] = []
+    starts = [(int(m.group(1)), m.start(), m.end()) for m in _ENTRY.finditer(projection)]
+    head = projection[: starts[0][1]] if starts else projection
+    out.extend(Entry(None, "", line) for line in head.splitlines() if line.strip())
+    for i, (number, _start, end) in enumerate(starts):
+        stop = starts[i + 1][1] if i + 1 < len(starts) else len(projection)
+        lines = projection[end:stop].rstrip("\n").splitlines()
+        # An omission marker has no number of its own and sits after the entry before it.
+        markers: list[str] = []
+        while lines and _MARKER.match(lines[-1]):
+            markers.insert(0, lines.pop())
+        chunk = "\n".join(lines)
+        match = _KIND.match(chunk)
+        if match:
+            out.append(Entry(number, match.group(1), match.group(2)))
+        else:
+            out.append(Entry(number, "", chunk))
+        out.extend(Entry(None, "", marker) for marker in markers)
+    return out
+
+
+def _prose(body: str) -> str:
+    return "\n".join(line.rstrip() for line in body.splitlines() if line.strip())
+
+
+def _clip_end(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
+def _clip_middle(text: str, limit: int) -> str:
+    """Keeps both ends: for tool arguments the key is at the front and the file name at the
+    back, and both say more than the directory between them."""
+    if len(text) <= limit:
+        return text
+    head = (limit - 1) // 2
+    return text[:head].rstrip() + "…" + text[-(limit - 1 - head) :].lstrip()
+
+
+def projection_grid(projection: str) -> Table:
+    """The projection condensed for the turn screen. The header line is left out (the meta line
+    has it), a tool call and its result share one row with the arguments shortened, blank
+    lines are dropped, and each entry opens with its kind in bold so the request, the errors,
+    and the next message can be found at a glance. The numbers are the ones a draft cites; the
+    stored text, which `p` pages, is the evidence of record."""
+    grid = Table.grid(padding=(0, 1))
+    grid.add_column(justify="right", no_wrap=True, style="dim")
+    grid.add_column(overflow="fold")
+    entries = parse_entries(projection)
+    i = 0
+    while i < len(entries):
+        entry = entries[i]
+        i += 1
+        if entry.number is None:
+            if not entry.body.startswith(_HEADER):
+                grid.add_row("", Text(entry.body, style="dim", overflow="fold"))
+            continue
+        if entry.kind.startswith("TOOL CALL "):
+            name = entry.kind.removeprefix("TOOL CALL ")
+            result = entries[i] if i < len(entries) else None
+            if result is not None and result.number and result.kind.startswith("TOOL RESULT "):
+                i += 1
+                ok = result.kind == "TOOL RESULT (ok)"
+                body = Text(overflow="fold")
+                body.append(f"{name} ", style="bold" if ok else "bold red")
+                body.append(_clip_middle(entry.body, TOOL_ARGS_CHARS))
+                body.append("  │  ", style="dim")
+                if ok:
+                    body.append("ok: " + _clip_end(result.body, TOOL_OK_CHARS))
+                else:
+                    body.append("error: " + result.body, style="red")
+                grid.add_row(f"[{entry.number}]→[{result.number}]", body)
+            else:
+                body = Text(overflow="fold")
+                body.append(f"{name} ", style="bold")
+                body.append(_clip_middle(entry.body, TOOL_ARGS_CHARS))
+                body.append("  │  (no result)", style="dim")
+                grid.add_row(f"[{entry.number}]", body)
+            continue
+        if entry.kind.startswith("TOOL RESULT "):  # a result whose call was omitted
+            ok = entry.kind == "TOOL RESULT (ok)"
+            body = Text(overflow="fold")
+            body.append("tool result ", style="bold" if ok else "bold red")
+            body.append(("ok: " if ok else "error: ") + entry.body, style="" if ok else "red")
+            grid.add_row(f"[{entry.number}]", body)
+            continue
+        body = Text(overflow="fold")
+        if entry.kind:
+            body.append(f"{entry.kind}: ", style="bold")
+            body.append(_prose(entry.body))
+        else:
+            body.append(entry.body)
+        grid.add_row(f"[{entry.number}]", body)
+    return grid
 
 
 @dataclass
@@ -272,13 +394,20 @@ def _answer(
     *,
     back: bool = True,
     page: Callable[[], None] | None = None,
+    rubric: Callable[[], None] | None = None,
 ) -> str:
-    """One answer from the allowed set; `b` goes back, `p` pages the projection and asks again,
-    `s` skips the item, `q` stops. A real choice wins over a key, so `b` at `preferred` picks
-    draft B."""
+    """One answer from the allowed set; `b` goes back, `p` pages the projection and `?` the
+    rubric, then the question is asked again; `s` skips the item, `q` stops. A real choice wins
+    over a key, so `b` at `preferred` picks draft B."""
     keys = [
         k
-        for k in (*(["b"] if back else []), *(["p"] if page else []), "s", "q")
+        for k in (
+            *(["b"] if back else []),
+            *(["p"] if page else []),
+            *(["?"] if rubric else []),
+            "s",
+            "q",
+        )
         if k not in choices
     ]
     allowed = [*choices, *keys]
@@ -295,6 +424,8 @@ def _answer(
             raise SkipItem
         if value == "p" and page is not None:
             page()
+        elif value == "?" and rubric is not None:
+            rubric()
         elif value == "b" and back:
             raise GoBack
 
@@ -310,20 +441,41 @@ def _choice_table(choices: Mapping[str, str]) -> Table:
     return table
 
 
-def _meta(item: Mapping[str, Any]) -> Table:
-    meta = Table.grid(padding=(0, 2))
-    meta.add_row("[bold]project[/bold]", str(item.get("project") or "unknown"))
-    started_by = item.get("facts", {}).get("caller") or item.get("caller") or "human"
-    meta.add_row("[bold]session started by[/bold]", str(started_by))
-    meta.add_row("[bold]closed by[/bold]", closed_by_of(item))
-    meta.add_row("[bold]outcome[/bold]", str(item.get("outcome_reason") or "none"))
-    meta.add_row("[bold]tool calls[/bold]", str(item.get("facts", {}).get("tool_count", 0)))
-    return meta
+def _meta(item: Mapping[str, Any]) -> Text:
+    """The header's facts on one line, so the projection starts near the top of the screen."""
+    facts = item.get("facts", {})
+    started_by = facts.get("caller") or item.get("caller") or "human"
+    calls, errors = facts.get("tool_count", 0), facts.get("tool_error_count", 0)
+    pairs = (
+        ("project", str(item.get("project") or "unknown")),
+        ("session started by", str(started_by)),
+        ("closed by", closed_by_of(item)),
+        ("outcome", str(item.get("outcome_reason") or "none")),
+        (
+            "tool calls",
+            f"{calls} ({errors} error{'' if errors == 1 else 's'})" if errors else str(calls),
+        ),
+    )
+    line = Text(overflow="fold")
+    for k, (label, value) in enumerate(pairs):
+        if k:
+            line.append("  ·  ", style="dim")
+        line.append(f"{label} ", style="bold")
+        line.append(value)
+    return line
 
 
 def _projection_panel(projection: str) -> Panel:
     # Text() keeps bracketed evidence numbers and code from being read as Rich markup.
     return Panel(Text(projection), title="projection", border_style="cyan")
+
+
+def _condensed_panel(projection: str) -> Panel:
+    return Panel(
+        projection_grid(projection),
+        title="projection, condensed (p pages the full text)",
+        border_style="cyan",
+    )
 
 
 def _draft_panel(draft: DraftView) -> Panel:
@@ -382,7 +534,7 @@ class ItemScreen:
     """One item on the terminal. Each run of questions clears the viewport and draws only what
     it is about (the turn, one draft, the drafts side by side), so the reviewer never scrolls
     back to find it; the terminal's scrollback keeps what was cleared, and `p` at any question
-    pages the full projection."""
+    pages the full projection, `?` the rubric."""
 
     console: Console
     index: int
@@ -392,13 +544,9 @@ class ItemScreen:
     drafts: Sequence[DraftView]
     previous: Mapping[str, Any] | None = None
     only: Sequence[str] | None = None
-    # The first draw of a session leaves the screen alone so the rubric just printed stays up.
-    keep: bool = False
 
     def _fresh(self) -> None:
-        if self.keep:
-            self.keep = False
-        elif self.console.is_terminal:  # a pipe or log gets the screens one after another
+        if self.console.is_terminal:  # a pipe or log gets the screens one after another
             self.console.clear()
         self.console.print(
             Rule(f"item {self.index}/{self.total}  [dim]{self.item['item_id']}[/dim]")
@@ -411,7 +559,7 @@ class ItemScreen:
         """Everything at once, for the keep-or-redo decision in review mode."""
         self._fresh()
         self.console.print(_meta(self.item))
-        self.console.print(_projection_panel(self.projection))
+        self.console.print(_condensed_panel(self.projection))
         for draft in self.drafts:
             _print_draft(self.console, self.projection, draft)
         if self.previous is not None:
@@ -425,7 +573,7 @@ class ItemScreen:
         if section == "turn":
             self.console.print(Rule("about the turn itself (not the drafts)", style="cyan"))
             self.console.print(_meta(self.item))
-            self.console.print(_projection_panel(self.projection))
+            self.console.print(_condensed_panel(self.projection))
             if self.previous is not None and self.only is None:
                 self.console.print(_labels_panel(self.previous, self.drafts))
         elif section == "preferred":
@@ -438,9 +586,14 @@ class ItemScreen:
                 _print_draft(self.console, self.projection, draft)
 
     def page_projection(self) -> None:
-        """The full projection in the system pager; inline when there is no terminal to page."""
-        panel = _projection_panel(self.projection)
-        if not self.console.is_terminal:
+        """The full projection as stored, in the system pager."""
+        self._page(_projection_panel(self.projection))
+
+    def page_rubric(self) -> None:
+        self._page(rubric_panel())
+
+    def _page(self, panel: Panel) -> None:
+        if not self.console.is_terminal:  # nothing to page on; print inline
             self.console.print(panel)
             return
         with self.console.pager():
@@ -483,26 +636,29 @@ def _section(step: str) -> str:
 
 
 def _ask_step(step: str, ask: Ask, screen: ItemScreen) -> str:
-    console, drafts, page = screen.console, screen.drafts, screen.page_projection
+    console, drafts = screen.console, screen.drafts
+
+    def answer(question: str, choices: Sequence[str]) -> str:
+        return _answer(
+            ask, question, choices, page=screen.page_projection, rubric=screen.page_rubric
+        )
+
     if step == "failed":
-        return _answer(ask, "failed? (y/n, u unclear, i incomplete)", _FAILED, page=page)
+        return answer("failed? (y/n, u unclear, i incomplete)", _FAILED)
     if step == "category":
         console.print(_choice_table(CATEGORIES))
-        return _answer(ask, "category (number)", _numbers(CATEGORY_ORDER), page=page)
+        return answer("category (number)", _numbers(CATEGORY_ORDER))
     if step == "worth_remembering":
-        return _answer(ask, "worth remembering for future sessions? (y/n)", _YN, page=page)
+        return answer("worth remembering for future sessions? (y/n)", _YN)
     if step == "lesson_kind":
         console.print(_choice_table(LESSON_KINDS))
-        return _answer(ask, "lesson kind (number)", _numbers(LESSON_ORDER), page=page)
+        return answer("lesson kind (number)", _numbers(LESSON_ORDER))
     if step == "error_intended":
-        return _answer(ask, "was the tool error intended and used? (y/n)", _YN, page=page)
+        return answer("was the tool error intended and used? (y/n)", _YN)
     if step == "preferred":
         slots = [d.slot.lower() for d in drafts]
-        return _answer(
-            ask,
-            f"preferred draft? ({'/'.join(slots)}/same/neither)",
-            (*slots, *PREFERRED_OTHER),
-            page=page,
+        return answer(
+            f"preferred draft? ({'/'.join(slots)}/same/neither)", (*slots, *PREFERRED_OTHER)
         )
     if step == "note":
         while True:
@@ -511,35 +667,23 @@ def _ask_step(step: str, ask: Ask, screen: ItemScreen) -> str:
                 raise StopLabeling
             if value.lower() == "b":
                 raise GoBack
-            if value.lower() != "p":
+            if value.lower() == "p":
+                screen.page_projection()
+            elif value == "?":
+                screen.page_rubric()
+            else:
                 return value
-            page()
     slot, _, key = step.partition(".")
     if key == "grounded":
-        return _answer(
-            ask, f"draft {slot}: every claim traceable to the cited evidence? (y/n)", _YN, page=page
-        )
+        return answer(f"draft {slot}: every claim traceable to the cited evidence? (y/n)", _YN)
     if key == "faithful":
-        return _answer(
-            ask,
-            f"draft {slot}: reads the evidence right (cause, error, fact)? (y/n)",
-            _YN,
-            page=page,
-        )
+        return answer(f"draft {slot}: reads the evidence right (cause, error, fact)? (y/n)", _YN)
     if key == "generalizable":
-        return _answer(
-            ask,
-            f"draft {slot}: generalizable? (0 one-off, 1 project, 2 general)",
-            _LEVELS,
-            page=page,
-        )
+        return answer(f"draft {slot}: generalizable? (0 one-off, 1 project, 2 general)", _LEVELS)
     if key == "enforced_by":
         console.print(_choice_table(ENFORCED_BY))
-        return _answer(
-            ask,
-            f"draft {slot}: lesson already enforced by (number)",
-            _numbers(ENFORCED_ORDER),
-            page=page,
+        return answer(
+            f"draft {slot}: lesson already enforced by (number)", _numbers(ENFORCED_ORDER)
         )
     raise JudgeError(f"unknown labeling step {step!r}")
 
@@ -710,7 +854,14 @@ def label_one(ask: Ask, screen: ItemScreen, has_tool_errors: bool = False) -> di
                 i += 1
             row = assemble(answers, drafts, has_tool_errors)
             console.print(Text(summary_line(row, drafts), style="bold"))
-            save = _answer(ask, SAVE_PROMPT, ("y", "r"), back=False, page=screen.page_projection)
+            save = _answer(
+                ask,
+                SAVE_PROMPT,
+                ("y", "r"),
+                back=False,
+                page=screen.page_projection,
+                rubric=screen.page_rubric,
+            )
             if save == "y":
                 return row
     except SkipItem:
@@ -807,17 +958,20 @@ def label_items(
     if limit is not None:
         todo = todo[:limit]
     labeled = skipped = changed = 0
-    if todo:
-        console.print(rubric_panel())
-        if backfill:
-            console.print(
-                Text(
-                    f"{len(backfill)} labeled item(s) come first to answer questions added since "
-                    "they were labeled",
-                    style="dim",
-                )
-            )
     try:
+        if todo:
+            console.print(rubric_panel())
+            if backfill:
+                console.print(
+                    Text(
+                        f"{len(backfill)} labeled item(s) come first to answer questions added "
+                        "since they were labeled",
+                        style="dim",
+                    )
+                )
+            # The first item clears the screen, so the rubric waits to be read first.
+            if ask(START_PROMPT, None).strip().lower() == "q":
+                raise StopLabeling
         for index, item in enumerate(todo, start=1):
             item_id = item["item_id"]
             item_drafts = views(item)
@@ -835,13 +989,17 @@ def label_items(
                 item_drafts,
                 previous=previous,
                 only=only,
-                keep=index == 1,
             )
             if review:
                 screen.show_all()
                 try:
                     decision = _answer(
-                        ask, REVIEW_PROMPT, ("k", "r"), back=False, page=screen.page_projection
+                        ask,
+                        REVIEW_PROMPT,
+                        ("k", "r"),
+                        back=False,
+                        page=screen.page_projection,
+                        rubric=screen.page_rubric,
                     )
                 except SkipItem:
                     skipped += 1
