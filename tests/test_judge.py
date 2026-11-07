@@ -30,7 +30,7 @@ from agent_memory.judge.backends.llm import (
 from agent_memory.judge.backends.readout import ReadoutBackend, _letter_logits, first_letter
 from agent_memory.judge.backends.rules import RulesBackend
 from agent_memory.judge.drafter import draft_hash, make_drafter, parse_draft
-from agent_memory.judge.labeling import label_items, order_drafts
+from agent_memory.judge.labeling import SAVE_PROMPT, label_items, order_drafts
 from agent_memory.judge.pipeline import assign_splits
 from agent_memory.judge.projection import FullEvent, build_projection, drafter_rendering
 from agent_memory.judge.questions import (
@@ -1526,7 +1526,7 @@ def test_labeling_hides_verdicts_and_resumes(tmp_path):
     assert "about draft B" in out
     assert "the drafts side by side" in out
     first_item = out[: out.index("item 2/3")]
-    assert first_item.count("DRAFT_LESSON_TEXT") == 2  # the panel, then again before its questions
+    assert first_item.count("DRAFT_LESSON_TEXT") == 2  # its own screen, then side by side
     assert (
         out.index("about the turn itself") < out.index("about draft A") < out.index("about draft B")
     )
@@ -1566,6 +1566,51 @@ def test_labeling_hides_verdicts_and_resumes(tmp_path):
     # Resume: the labeled item is not offered again.
     again = label_items(store, console=console, ask=lambda q, c: "q", seed=5)
     assert (again.labeled, again.remaining) == (0, 2)
+
+
+def test_labeling_redraws_per_section_and_pages_the_projection(tmp_path, monkeypatch):
+    monkeypatch.setenv("TERM", "xterm-256color")  # Rich drops control codes on a dumb terminal
+    store = synthetic_run(tmp_path, n=1)
+    store.labels_path.unlink()
+    item_id = "00000000-0000-0000-0000-000000000000"
+    store.write_jsonl(
+        store.drafts_path,
+        [
+            {"item_id": item_id, "lesson": "DRAFT_LESSON_TEXT", "drafter": "ollama:m"},
+            {"item_id": item_id, "lesson": "OTHER_DRAFT_TEXT", "drafter": "llamacpp:x"},
+        ],
+    )
+    buffer = io.StringIO()
+    console = Console(file=buffer, width=100, force_terminal=False)
+    # p at failed, at A.grounded, and at save pages the projection and asks again; b at
+    # preferred picks draft B instead of going back.
+    ask, asked = _scripted(
+        ["p", "n", "n", "p", "y", "y", "1", "1", "y", "y", "1", "1", "b", "", "p", "y"]
+    )
+    summary = label_items(store, console=console, ask=ask, seed=5)
+    out = buffer.getvalue()
+    assert (summary.labeled, summary.remaining) == (1, 0)
+    # Four screens, each with the header: the turn, draft A, draft B, the drafts side by side.
+    body = out[out.index("item 1/1") :]
+    assert body.count("item 1/1") == 4
+    assert body.count("about the turn itself") == 1
+    assert body.count("about draft A") == 1
+    assert body.count("about draft B") == 1
+    assert body.count("the drafts side by side") == 1
+    # The projection is on the turn screen, then once per p (inline when there is no terminal).
+    assert body.count("SENTINEL_STATE_TEXT") == 4
+    assert [q.split("?")[0] for q in asked[:2]] == ["failed", "failed"]
+    assert asked[-2:] == [SAVE_PROMPT, SAVE_PROMPT]
+    label = store.read_jsonl(store.labels_path)[0]
+    drafts = order_drafts(item_id, store.read_drafts()[item_id], seed=5)
+    assert label["preferred"] == next(d.drafter for d in drafts if d.slot == "B")
+    # On a terminal every screen after the first clears the viewport.
+    store.labels_path.unlink()
+    buffer = io.StringIO()
+    console = Console(file=buffer, width=100, force_terminal=True)
+    ask, _ = _scripted(["n", "n", "y", "y", "1", "1", "y", "y", "1", "1", "a", "", "y"])
+    label_items(store, console=console, ask=ask, seed=5)
+    assert buffer.getvalue().count("\x1b[2J") == 3
 
 
 def test_labeling_shows_rubric_cited_evidence_and_incomplete(tmp_path):

@@ -811,8 +811,9 @@ shown together in a seeded order as A and B with the drafter hidden:
 `grounded`, `faithful`, `generalizable`, `enforced_by`; then `preferred`
 (A, B, same, neither) once per item. A declined draft is shown as
 "(no lesson)" and asks nothing. An optional free-text `note` closes the
-item. Controls: `b` back one question, a one-line summary before saving
-with `r` to redo the item, `s` skip, `q` quit. `mem judge label --item ID`
+item. Controls: `b` back one question, `p` to page the full projection, a
+one-line summary before saving with `r` to redo the item, `s` skip, `q`
+quit. `mem judge label --item ID`
 reopens items; `--review` steps through labeled items showing current
 values. A changed label keeps its previous value in a `history` list on
 the row, so the file stays append-only in spirit and the report can count
@@ -892,7 +893,12 @@ deviations:
   arm come first and are asked only those steps. `--item ID` relabels in
   full with the current labels shown; `--review` shows them and asks keep
   or redo. `history` records only values that moved; a key that was
-  unanswered (`null`) and is now filled in is not a change.
+  unanswered (`null`) and is now filled in is not a change. Each run of
+  questions clears the viewport and draws only what it is about (the turn
+  with its projection, one draft with the evidence it cites, the drafts side
+  by side for `preferred`), so nothing has to be scrolled back to; `p` at
+  any question pages the full projection. A typed choice wins over a
+  control key, so `b` at `preferred` picks draft B.
 - Report: Stage A and Stage B are separate tables (per item and per draft);
   the write table lists each backend's gates and thresholds; criterion 1
   reports the majority-class rate; criterion 6 is evaluated per reference

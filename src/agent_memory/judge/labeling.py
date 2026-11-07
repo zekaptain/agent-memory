@@ -75,6 +75,10 @@ class GoBack(Exception):
     """The reviewer typed b."""
 
 
+class ShowProjection(Exception):
+    """The reviewer typed p."""
+
+
 RUBRIC = """\
 [bold]who is speaking[/bold]  The header says who started the session. In a session an agent
   started, the REQUEST and the NEXT MESSAGE were written by that parent agent: treat a
@@ -93,8 +97,9 @@ RUBRIC = """\
 [bold]error intended[/bold]  Asked when a tool call errored. Was the error expected and used
   (probing for a missing file, a test meant to fail, grep with no match)? [bold]y[/bold] then.
 [bold]per draft[/bold]  Drafts are shown as A, B in a random order; the drafter is hidden.
-  "(no lesson)" means the drafter declined and asks nothing. A rule before each run of
-  questions says what they are about: the turn itself, draft A, draft B, or both.
+  "(no lesson)" means the drafter declined and asks nothing. Each run of questions starts on
+  a fresh screen that says what it is about and shows just that: the turn and its projection,
+  one draft with the evidence it cites, or the drafts side by side.
   [bold]grounded[/bold]: can every claim in the draft be traced to something in the projection,
   in particular the lines it cites? [bold]n[/bold] if it asserts a cause or rule the evidence
   does not show, or cites nothing relevant.
@@ -108,9 +113,10 @@ RUBRIC = """\
   would be the only place. Judge the lesson, not the turn.
 [bold]preferred[/bold]  Which draft would you rather keep: a, b, same, or neither.
 [bold]note[/bold]  Optional free text; Enter for none.
-[dim]b goes back one question, s skips the item (comes back next session), q stops; a summary
-is shown before saving and r redoes the item. Progress is saved per item. Items labeled before
-a question or a drafter existed come back and ask only what is missing.[/dim]"""
+[dim]b goes back one question, p pages the full projection (q leaves the pager), s skips the
+item (comes back next session), q stops; a summary is shown before saving and r redoes the
+item. Progress is saved per item. Items labeled before a question or a drafter existed come
+back and ask only what is missing.[/dim]"""
 
 _ENTRY = re.compile(r"^\[(\d+)\] ", re.MULTILINE)
 EXCERPT_CHARS = 320
@@ -186,21 +192,25 @@ def rich_ask(console: Console) -> Ask:
 
 
 def _answer(ask: Ask, question: str, choices: Sequence[str], *, back: bool = True) -> str:
-    """One answer from the allowed set; `b` goes back, `s` skips the item, `q` stops."""
-    allowed = [*choices, "s", "q", *(["b"] if back else [])]
+    """One answer from the allowed set; `b` goes back, `p` pages the projection, `s` skips the
+    item, `q` stops. A real choice wins over a key, so `b` at `preferred` picks draft B."""
+    keys = [k for k in (*(["b"] if back else []), "p", "s", "q") if k not in choices]
+    allowed = [*choices, *keys]
     while True:
         try:
             value = ask(question, allowed).strip().lower()
         except InvalidResponse:
             continue
+        if value in choices:
+            return value
         if value == "q":
             raise StopLabeling
         if value == "s":
             raise SkipItem
+        if value == "p":
+            raise ShowProjection
         if value == "b" and back:
             raise GoBack
-        if value in choices:
-            return value
 
 
 def _numbers(options: Sequence[str]) -> list[str]:
@@ -214,16 +224,7 @@ def _choice_table(choices: Mapping[str, str]) -> Table:
     return table
 
 
-def render_item(
-    console: Console,
-    index: int,
-    total: int,
-    item: Mapping[str, Any],
-    projection: str,
-    drafts: Sequence[DraftView],
-    previous: Mapping[str, Any] | None = None,
-) -> None:
-    console.print(Rule(f"item {index}/{total}  [dim]{item['item_id']}[/dim]"))
+def _meta(item: Mapping[str, Any]) -> Table:
     meta = Table.grid(padding=(0, 2))
     meta.add_row("[bold]project[/bold]", str(item.get("project") or "unknown"))
     started_by = item.get("facts", {}).get("caller") or item.get("caller") or "human"
@@ -231,48 +232,127 @@ def render_item(
     meta.add_row("[bold]closed by[/bold]", closed_by_of(item))
     meta.add_row("[bold]outcome[/bold]", str(item.get("outcome_reason") or "none"))
     meta.add_row("[bold]tool calls[/bold]", str(item.get("facts", {}).get("tool_count", 0)))
-    console.print(meta)
+    return meta
+
+
+def _projection_panel(projection: str) -> Panel:
     # Text() keeps bracketed evidence numbers and code from being read as Rich markup.
-    console.print(Panel(Text(projection), title="projection", border_style="cyan"))
-    for draft in drafts:
-        if draft.declined:
-            console.print(
-                Panel(
-                    Text("(no lesson)", style="dim"),
-                    title=f"draft {draft.slot}",
-                    border_style="magenta",
-                )
-            )
-            continue
-        cites = " ".join(f"[{n}]" for n in draft.cited) or "nothing"
-        console.print(
-            Panel(
-                Text(draft.lesson or ""),
-                title=f"draft {draft.slot}  (cites {cites})",
-                border_style="magenta",
-            )
+    return Panel(Text(projection), title="projection", border_style="cyan")
+
+
+def _draft_panel(draft: DraftView) -> Panel:
+    if draft.declined:
+        return Panel(
+            Text("(no lesson)", style="dim"), title=f"draft {draft.slot}", border_style="magenta"
         )
-        entries = cited_entries(projection, draft.cited)
-        if entries:
-            body = Text()
-            for k, (_, excerpt) in enumerate(entries):
-                if k:
-                    body.append("\n\n")
-                body.append(excerpt)
-            console.print(
-                Panel(body, title=f"draft {draft.slot}: cited evidence", border_style="magenta")
-            )
-        elif draft.cited:
-            console.print(
-                f"[yellow]draft {draft.slot}: the cited line numbers are not in the "
-                "projection[/yellow]"
-            )
-    if previous is not None:
+    cites = " ".join(f"[{n}]" for n in draft.cited) or "nothing"
+    return Panel(
+        Text(draft.lesson or ""),
+        title=f"draft {draft.slot}  (cites {cites})",
+        border_style="magenta",
+    )
+
+
+def _print_draft(console: Console, projection: str, draft: DraftView) -> None:
+    """A draft's panel, then excerpts of the projection entries it cites."""
+    console.print(_draft_panel(draft))
+    if draft.declined:
+        return
+    entries = cited_entries(projection, draft.cited)
+    if entries:
+        body = Text()
+        for k, (_, excerpt) in enumerate(entries):
+            if k:
+                body.append("\n\n")
+            body.append(excerpt)
         console.print(
-            Panel(
-                Text(summary_line(previous, drafts)), title="current labels", border_style="green"
-            )
+            Panel(body, title=f"draft {draft.slot}: cited evidence", border_style="magenta")
         )
+    elif draft.cited:
+        console.print(
+            f"[yellow]draft {draft.slot}: the cited line numbers are not in the projection[/yellow]"
+        )
+
+
+def _side_by_side(drafts: Sequence[DraftView]) -> Table:
+    grid = Table.grid(expand=True, padding=(0, 1))
+    for _ in drafts:
+        grid.add_column(ratio=1)
+    grid.add_row(*(_draft_panel(d) for d in drafts))
+    return grid
+
+
+def _labels_panel(previous: Mapping[str, Any], drafts: Sequence[DraftView]) -> Panel:
+    return Panel(Text(summary_line(previous, drafts)), title="current labels", border_style="green")
+
+
+@dataclass
+class ItemScreen:
+    """One item on the terminal. Each run of questions clears the viewport and draws only what
+    it is about (the turn, one draft, the drafts side by side), so the reviewer never scrolls
+    back to find it; the terminal's scrollback keeps what was cleared, and `p` at any question
+    pages the full projection."""
+
+    console: Console
+    index: int
+    total: int
+    item: Mapping[str, Any]
+    projection: str
+    drafts: Sequence[DraftView]
+    previous: Mapping[str, Any] | None = None
+    only: Sequence[str] | None = None
+    # The first draw of a session leaves the screen alone so the rubric just printed stays up.
+    keep: bool = False
+
+    def _fresh(self) -> None:
+        if self.keep:
+            self.keep = False
+        else:
+            self.console.clear()
+        self.console.print(
+            Rule(f"item {self.index}/{self.total}  [dim]{self.item['item_id']}[/dim]")
+        )
+        if self.only:
+            self.console.print(f"[green]only asking: {', '.join(self.only)}[/green]")
+
+    def show_all(self) -> None:
+        """Everything at once, for the keep-or-redo decision in review mode."""
+        self._fresh()
+        self.console.print(_meta(self.item))
+        self.console.print(_projection_panel(self.projection))
+        for draft in self.drafts:
+            _print_draft(self.console, self.projection, draft)
+        if self.previous is not None:
+            self.console.print(_labels_panel(self.previous, self.drafts))
+
+    def show(self, section: str) -> None:
+        """A fresh screen saying what the next run of questions is about, and showing it."""
+        if section == "note":
+            return  # stays under the drafts it comments on
+        self._fresh()
+        if section == "turn":
+            self.console.print(Rule("about the turn itself (not the drafts)", style="cyan"))
+            self.console.print(_meta(self.item))
+            self.console.print(_projection_panel(self.projection))
+            if self.previous is not None and self.only is None:
+                self.console.print(_labels_panel(self.previous, self.drafts))
+        elif section == "preferred":
+            self.console.print(Rule("the drafts side by side", style="magenta"))
+            self.console.print(_side_by_side(self.drafts))
+        else:
+            self.console.print(Rule(f"about draft {section}", style="magenta"))
+            draft = next((d for d in self.drafts if d.slot == section), None)
+            if draft is not None:
+                _print_draft(self.console, self.projection, draft)
+
+    def page_projection(self) -> None:
+        """The full projection in the system pager; inline when there is no terminal to page."""
+        panel = _projection_panel(self.projection)
+        if not self.console.is_terminal:
+            self.console.print(panel)
+            return
+        with self.console.pager():
+            self.console.print(panel)
 
 
 # Steps: the questions an item is asked, in order, given the answers so far. Raw answers are the
@@ -310,22 +390,6 @@ def _section(step: str) -> str:
     return "turn"
 
 
-def _announce(console: Console, section: str, drafts: Sequence[DraftView]) -> None:
-    """A cue before a run of questions saying what they are about. A draft is shown again
-    here because its panel has usually scrolled away behind the cited evidence by now."""
-    if section == "turn":
-        console.print(Rule("about the turn itself (not the drafts)", style="cyan"))
-    elif section == "preferred":
-        console.print(Rule("the drafts side by side", style="magenta"))
-    elif section != "note":
-        draft = next((d for d in drafts if d.slot == section), None)
-        console.print(Rule(f"about draft {section}", style="magenta"))
-        if draft is not None:
-            console.print(
-                Panel(Text(draft.lesson or ""), title=f"draft {section}", border_style="magenta")
-            )
-
-
 def _ask_step(step: str, ask: Ask, console: Console, drafts: Sequence[DraftView]) -> str:
     if step == "failed":
         return _answer(ask, "failed? (y/n, u unclear, i incomplete)", _FAILED)
@@ -350,6 +414,8 @@ def _ask_step(step: str, ask: Ask, console: Console, drafts: Sequence[DraftView]
             raise StopLabeling
         if value.lower() == "b":
             raise GoBack
+        if value.lower() == "p":
+            raise ShowProjection
         return value
     slot, _, key = step.partition(".")
     if key == "grounded":
@@ -507,17 +573,22 @@ def summary_line(row: Mapping[str, Any], drafts: Sequence[DraftView]) -> str:
     return " | ".join(parts)
 
 
-def label_one(
-    ask: Ask,
-    console: Console,
-    drafts: Sequence[DraftView],
-    has_tool_errors: bool = False,
-    *,
-    only: Sequence[str] | None = None,
-    previous: Mapping[str, Any] | None = None,
-) -> dict[str, Any] | None:
-    """Collect one item's labels, or with `only` just those steps on top of `previous`. The
-    reviewer can step back with b, redo from the summary with r, and skip with s (None)."""
+def _confirm(ask: Ask, screen: ItemScreen, question: str, choices: Sequence[str]) -> str:
+    """A closing prompt (save, keep): no going back, but `p` still pages the projection."""
+    while True:
+        try:
+            return _answer(ask, question, choices, back=False)
+        except ShowProjection:
+            screen.page_projection()
+
+
+def label_one(ask: Ask, screen: ItemScreen, has_tool_errors: bool = False) -> dict[str, Any] | None:
+    """Collect one item's labels, or with `screen.only` just those steps on top of the previous
+    row. Each run of questions gets a fresh screen showing what it is about. The reviewer can
+    step back with b, page the projection with p, redo from the summary with r, and skip with
+    s (None)."""
+    console, drafts, only = screen.console, screen.drafts, screen.only
+    previous = screen.previous
     base = raw_answers(previous, drafts) if previous is not None and only is not None else {}
     try:
         while True:
@@ -528,7 +599,7 @@ def label_one(
             while i < len(plan):
                 if _section(plan[i]) != section:
                     section = _section(plan[i])
-                    _announce(console, section, drafts)
+                    screen.show(section)
                 try:
                     value = _ask_step(plan[i], ask, console, drafts)
                 except GoBack:
@@ -537,12 +608,15 @@ def label_one(
                         answers.pop(plan[i], None)
                         plan = _plan(answers, drafts, has_tool_errors, only)
                     continue
+                except ShowProjection:
+                    screen.page_projection()
+                    continue
                 answers[plan[i]] = value
                 plan = _plan(answers, drafts, has_tool_errors, only)
                 i += 1
             row = assemble(answers, drafts, has_tool_errors)
             console.print(Text(summary_line(row, drafts), style="bold"))
-            if _answer(ask, SAVE_PROMPT, ("y", "r"), back=False) == "y":
+            if _confirm(ask, screen, SAVE_PROMPT, ("y", "r")) == "y":
                 return row
     except SkipItem:
         return None
@@ -654,26 +728,27 @@ def label_items(
             only: list[str] | None = None
             if previous is not None and not item_ids and not review:
                 only = missing_steps(previous, item_drafts, has_errors)
-            render_item(
+            screen = ItemScreen(
                 console,
                 index,
                 len(todo),
                 item,
                 store.read_projection(item_id),
                 item_drafts,
-                previous=previous if only is None else None,
+                previous=previous,
+                only=only,
+                keep=index == 1,
             )
             if review:
+                screen.show_all()
                 try:
-                    decision = _answer(ask, REVIEW_PROMPT, ("k", "r"), back=False)
+                    decision = _confirm(ask, screen, REVIEW_PROMPT, ("k", "r"))
                 except SkipItem:
                     skipped += 1
                     continue
                 if decision == "k":
                     continue
-            if only:
-                console.print(f"[green]only asking: {', '.join(only)}[/green]")
-            answers = label_one(ask, console, item_drafts, has_errors, only=only, previous=previous)
+            answers = label_one(ask, screen, has_errors)
             if answers is None:
                 skipped += 1
                 continue
