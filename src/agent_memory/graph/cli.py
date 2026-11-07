@@ -31,9 +31,7 @@ SCOPES = Annotated[
     list[str] | None,
     typer.Option("--scope", help="Scope to read; repeatable. Default: global and --project."),
 ]
-AGENT = Annotated[
-    str, typer.Option(help="Agent recorded as the actor of these reads and writes.")
-]
+AGENT = Annotated[str, typer.Option(help="Agent recorded as the actor of these reads and writes.")]
 PROJECT = Annotated[
     str | None, typer.Option(help="Project scope. Defaults to the working directory's name.")
 ]
@@ -46,9 +44,7 @@ def _config(ctx: typer.Context) -> Config:
 
 def _tools(ctx: typer.Context, agent: str, project: str | None) -> MemoryTools:
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    return MemoryTools(
-        _config(ctx), agent, harness_session_id=f"graph-{stamp}", project=project
-    )
+    return MemoryTools(_config(ctx), agent, harness_session_id=f"graph-{stamp}", project=project)
 
 
 @graph_app.command()
@@ -98,7 +94,10 @@ def show(
         raise typer.Exit(_fail(result["reason"]))
     for item in result["items"]:
         print(f"{item['depth']}  {item['triple']}  [{item['memory_id']}]")
-    print(f"\n{len(result['items'])} of {result['candidates']} edges; retrieval {result['retrieval_id']}")
+    print(
+        f"\n{len(result['items'])} of {result['candidates']} edges; "
+        f"retrieval {result['retrieval_id']}"
+    )
 
 
 @graph_app.command()
@@ -108,7 +107,9 @@ def resolve(
     entity_type: Annotated[
         str | None, typer.Option(help="Only cluster entities of this type.")
     ] = None,
-    model: Annotated[str, typer.Option(help="Ollama model that proposes clusters.")] = DEFAULT_MODEL,
+    model: Annotated[
+        str, typer.Option(help="Ollama model that proposes clusters.")
+    ] = DEFAULT_MODEL,
     host: Annotated[str, typer.Option(help="Ollama host.")] = OLLAMA_HOST,
     block_size: Annotated[int, typer.Option(min=2)] = BLOCK_SIZE,
     apply: Annotated[
@@ -158,7 +159,8 @@ def resolve(
 def _print_merges(merges: list[Merge]) -> None:
     width = max(len(m.alias) for m in merges)
     for m in merges:
-        print(f"{m.alias:<{width}}  ->  {m.canonical}" + (f"  ({m.entity_type})" if m.entity_type else ""))
+        suffix = f"  ({m.entity_type})" if m.entity_type else ""
+        print(f"{m.alias:<{width}}  ->  {m.canonical}{suffix}")
 
 
 def _fail(reason: str) -> int:

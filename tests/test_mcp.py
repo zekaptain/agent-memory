@@ -291,7 +291,7 @@ def test_mcp_server_exposes_tools_and_keeps_error_messages(tools, live_client):
 
     async def go():
         names = [t.name for t in await server.list_tools()]
-        assert names == ["recall", "remember", "cite", "review", "status"]
+        assert names == ["recall", "remember", "cite", "review", "relate", "graph", "status"]
         remembered = await server.call_tool(
             "remember", {"content": "MCP layer works", "type": "fact", "scope": "mcp"}
         )
@@ -375,7 +375,7 @@ def test_mem_mcp_runs_over_stdio(live_cfg):
         async with stdio_client(params) as (read, write), ClientSession(read, write) as session:
             await session.initialize()
             names = sorted(t.name for t in (await session.list_tools()).tools)
-            assert names == ["cite", "recall", "remember", "review", "status"]
+            assert names == ["cite", "graph", "recall", "relate", "remember", "review", "status"]
             result = await session.call_tool("status", {})
             assert result.is_error is False
             assert result.structured_content["reachable"] is True

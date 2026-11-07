@@ -57,7 +57,10 @@ port, and runs the full end-to-end check, including writes. It never touches
 | `mem ingest --harness droid --transcript PATH` | Import a Droid session transcript (`~/.factory/sessions/<cwd-slug>/<id>.jsonl`). Re-running is a no-op; `--since-key <message id>` skips what a hook already knows about; `--include-thinking` also records thinking blocks. |
 | `mem ingest --spool` | Replay records that were spooled while the server was down. `--purge-done DAYS` deletes old replayed files. |
 | `mem spool status` | Pending spool files and lines per harness. |
-| `mem-mcp` | The stdio MCP server (`recall`, `remember`, `cite`, `review`, `status`). Needs `AGENT_MEMORY_AGENT`; see below. |
+| `mem-mcp` | The stdio MCP server (`recall`, `remember`, `cite`, `review`, `relate`, `graph`, `status`). Needs `AGENT_MEMORY_AGENT`; see below. |
+| `mem graph entities` | Every entity in the active relations of a scope, with type and mention count. |
+| `mem graph show ENTITY` | The relations within `--hops` of an entity (logged as a `graph_hop_v1` retrieval). |
+| `mem graph resolve` | Ask a local Ollama model which entity names are the same thing; `--apply` records the merges as supersedes history. |
 
 Global options: `--home` (default `$AGENT_MEMORY_HOME`, then `~/.agent-memory`)
 and `--port` (default `$AGENT_MEMORY_PORT`, then 9494). `AGENT_MEMORY_HOST`
@@ -119,6 +122,41 @@ duplicated); `cite(retrieval_id, memory_ids)` records what an answer used;
 or flags a contradiction; `status()` reports reachability and the spool. When
 the server is down, `recall` returns `degraded: true` and writes are queued to
 the spool.
+
+## Relations and the graph
+
+`relate(subject, predicate, object, ...)` records one typed edge, for example
+`("payments-api", "owned by", "Dana")`. It is stored as an ordinary `fact`
+memory: the key is the normalized triple (`payments-api|owned by|dana`), the
+display names, optional entity types, and merged aliases live in
+`metadata.graph`, and `memory_sources` points at the events it came from. The
+same triple in the same scope is confirmed, not duplicated, and tool-derived
+edges start quarantined like any other tool memory. There are no graph tables;
+the graph is rebuilt from metadata at query time.
+
+`graph(entity, hops)` walks the active edges outward from an entity with a
+recursive CTE (1 to 3 hops, undirected, case- and punctuation-insensitive) and
+returns them as items and as `(subject) --[predicate]--> (object)` triples, plus
+a `retrieval_id` for `cite`. Every walk is logged in `retrievals` with
+strategy `graph_hop_v1`, including misses, so `why_answer` covers graph-backed
+answers the same way it covers text recall.
+
+Entity resolution is append-only. `mem graph resolve --scope <project>` lists
+the entities in a scope, asks a local Ollama model (default `qwen3:8b`, set
+`--model` and `--host`) to cluster surface forms per entity type, and prints
+the proposed merges. With `--apply`, each merge supersedes every relation that
+mentions the alias with the same relation under the canonical name (the alias
+is kept in the new row's metadata and its sources are copied), or retires the
+alias relation when the canonical one already exists. Names the model drops stay
+as they are; nothing is rewritten in place, and a bad merge is undone by
+superseding again.
+
+```sh
+uv run mem graph entities --scope my-project
+uv run mem graph show payments-api --hops 2 --scope my-project
+uv run mem graph resolve --scope my-project            # proposal only
+uv run mem graph resolve --scope my-project --apply
+```
 
 ## Asking why
 

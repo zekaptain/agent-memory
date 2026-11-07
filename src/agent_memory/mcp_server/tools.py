@@ -815,6 +815,7 @@ class MemoryTools:
                 "superseded": [],
                 "retired": [],
             }
+
     # Helpers
 
     def _status_of(self, client: MemoryClient, memory_id: str) -> str | None:

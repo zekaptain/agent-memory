@@ -119,6 +119,19 @@ Derived views:
 
 Full-text search: an incremental FTS index on `memories(content, key)`.
 
+Relation graph (no schema change): a relation is a `fact` memory whose `key`
+is the normalized triple `subject|predicate|object` and whose `metadata.graph`
+holds the display names, entity types, and aliases merged into either end.
+`mem-mcp` records them with `relate` and walks them with `graph`, a recursive
+CTE over `active_memories` logged as strategy `graph_hop_v1`. Entity resolution
+(`mem graph resolve`) proposes clusters with a local Ollama model and records
+each merge as a superseding row or a `retire` action, so the graph has the same
+provenance, status derivation, and `why_answer` coverage as every other memory.
+This is the first step of the knowledge-graph layer from Anthropic's cookbook,
+adapted to the ledger: extraction is done by the harness agent itself, storage
+is append-only, and resolution never rewrites a row. Dedicated `entities` and
+`relations` tables are deferred until the trial shows the graph earns them.
+
 ## Security model
 
 - Local only. The server listens on localhost, and `AGENT_MEMORY_HOST` must be
@@ -272,7 +285,11 @@ Parquet export for browsing.
 
 **Phase 4: memory quality.** Dedupe by `content_hash` and similarity,
 contradiction detection (`flag_contradiction`), confirmation and decay of
-`confidence`, and a review queue for quarantined tool-derived memories.
+`confidence`, and a review queue for quarantined tool-derived memories. The
+relation graph's first step is in: `relate`, `graph`, and `mem graph resolve`
+(see "Relation graph" above). Still open: offline extraction of triples from
+`events` with a local model, and whether multi-hop recall earns dedicated
+tables.
 
 **Phase 5: Markdown projection.** Render active memories to an IWE-compatible
 Markdown wiki (one note per key or topic, with links to sources), in the
