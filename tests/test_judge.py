@@ -1573,10 +1573,17 @@ def test_labeling_redraws_per_section_and_pages_the_projection(tmp_path, monkeyp
     store = synthetic_run(tmp_path, n=1)
     store.labels_path.unlink()
     item_id = "00000000-0000-0000-0000-000000000000"
+    # Lesson text is untrusted: Rich markup in it must print as written, never be parsed. A
+    # citation that is not in the projection is called out with what to do about it.
     store.write_jsonl(
         store.drafts_path,
         [
-            {"item_id": item_id, "lesson": "DRAFT_LESSON_TEXT", "drafter": "ollama:m"},
+            {
+                "item_id": item_id,
+                "lesson": "DRAFT_LESSON_TEXT [bold]x [/dim]",
+                "cited": [7],
+                "drafter": "ollama:m",
+            },
             {"item_id": item_id, "lesson": "OTHER_DRAFT_TEXT", "drafter": "llamacpp:x"},
         ],
     )
@@ -1590,9 +1597,17 @@ def test_labeling_redraws_per_section_and_pages_the_projection(tmp_path, monkeyp
     summary = label_items(store, console=console, ask=ask, seed=5)
     out = buffer.getvalue()
     assert (summary.labeled, summary.remaining) == (1, 0)
-    # Four screens, each with the header: the turn, draft A, draft B, the drafts side by side.
+    assert "DRAFT_LESSON_TEXT [bold]x [/dim]" in out
+    slot = next(
+        d.slot
+        for d in order_drafts(item_id, store.read_drafts()[item_id], seed=5)
+        if d.drafter == "ollama:m"
+    )
+    assert f"draft {slot} cites [7], which are not in the projection; judge it as" in out
+    # Four screens, each with the header and the keys: the turn, draft A, draft B, side by side.
     body = out[out.index("item 1/1") :]
     assert body.count("item 1/1") == 4
+    assert body.count("b back one question, p page the full projection") == 4
     assert body.count("about the turn itself") == 1
     assert body.count("about draft A") == 1
     assert body.count("about draft B") == 1
@@ -1611,6 +1626,30 @@ def test_labeling_redraws_per_section_and_pages_the_projection(tmp_path, monkeyp
     ask, _ = _scripted(["n", "n", "y", "y", "1", "1", "y", "y", "1", "1", "a", "", "y"])
     label_items(store, console=console, ask=ask, seed=5)
     assert buffer.getvalue().count("\x1b[2J") == 3
+
+
+def test_report_cli_keeps_raw_stdout_clean_and_warns_about_width(tmp_path, capsys, monkeypatch):
+    """`report --raw > file` must hold only the markdown; status and advice go to stderr."""
+    from agent_memory.cli import main
+
+    for var in ("AGENT_MEMORY_HOME", "FORCE_COLOR", "TTY_COMPATIBLE"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("COLUMNS", "100")
+    store = synthetic_run(tmp_path)
+    home = str(tmp_path / "exp")
+    assert main(["--home", home, "judge", "report", "--run", "syn", "--raw"]) == 0
+    out, err = capsys.readouterr()
+    assert out.startswith("# Judge report: syn")
+    assert out.rstrip().endswith("scored once.")
+    assert "written to" not in out
+    assert f"written to {store.report_path}" in err
+    assert "columns" not in err  # raw output is not squeezed, so no width advice
+    assert main(["--home", home, "judge", "report", "--run", "syn"]) == 0
+    out, err = capsys.readouterr()
+    assert "Judge report: syn" in out
+    assert "written to" not in out
+    assert "squeezed into 100 columns and need about 150" in err
+    assert "Versions: unknown, unknown, questions_v2" in out
 
 
 def test_labeling_shows_rubric_cited_evidence_and_incomplete(tmp_path):
@@ -1709,9 +1748,11 @@ def test_labeling_backfills_relabels_and_keeps_history(tmp_path):
     out = buffer.getvalue()
     assert (summary.labeled, summary.skipped, summary.remaining, summary.changed) == (3, 0, 0, 0)
     assert "3 labeled item(s) come first" in out
-    assert f"only asking: {new_slot}.grounded" in out
+    assert (
+        f"only asking: draft {new_slot} (grounded, faithful, generalizable, enforced by), preferred"
+    ) in out
     assert "only asking: preferred" in out
-    assert "only asking: error_intended" in out
+    assert "only asking: error intended" in out
     rows = {row["item_id"]: row for row in store.read_jsonl(store.labels_path)}
     assert list(rows) == ids  # rewritten in place, nothing duplicated
     second = rows[ids[0]]["drafts"]["llamacpp:x"]
@@ -1846,20 +1887,25 @@ def test_drafter_caps_output_and_draft_items_skips_bad_items(tmp_path, monkeypat
     monkeypatch.setattr(judge_http, "post_json", fake_post)
     cfg = Config(home=tmp_path / "exp")
     logs: list[str] = []
-    written = pipeline.draft_items(cfg, "syn", "ollama:m", store=store, log=logs.append)
-    assert written == 3
+    warnings: list[str] = []
+    summary = pipeline.draft_items(
+        cfg, "syn", "ollama:m", store=store, log=logs.append, warn=warnings.append
+    )
+    assert (summary.written, summary.declined, summary.failed) == (3, 0, 1)
     assert bodies[0]["options"]["num_predict"] == 400
     assert bodies[0]["think"] is False
     # The drafter never sees the next message.
     assert "NEXT MESSAGE" not in bodies[0]["messages"][1]["content"]
     assert "OUTCOME: none recorded" in bodies[0]["messages"][1]["content"]
-    assert any("skipped" in line for line in logs)
+    # The failure goes to the warn channel, not into the progress lines.
+    assert any("skipped (rerun to retry)" in line for line in warnings)
+    assert not any("skipped" in line for line in logs)
     rows = store.read_jsonl(store.drafts_path)
     assert len(rows) == 3
     assert all(r["drafter"] == "ollama:m" and r["declined"] is False for r in rows)
     assert rows[0]["drafter_version"] == "drafter_v2"
     # The skipped item is picked up by the next run.
-    assert pipeline.draft_items(cfg, "syn", "ollama:m", store=store) == 1
+    assert pipeline.draft_items(cfg, "syn", "ollama:m", store=store).written == 1
     assert isinstance(pipeline.make_drafter("ollama:m"), OllamaDrafter)
     run = store.read_run()
     assert run["drafters"]["ollama:m"]["drafts"] == 4
@@ -1881,7 +1927,7 @@ def test_drafter_caps_output_and_draft_items_skips_bad_items(tmp_path, monkeypat
 
     monkeypatch.setattr(judge_http, "post_json", fake_openai)
     logs.clear()
-    assert pipeline.draft_items(cfg, "syn", "llamacpp:x", store=store, log=logs.append) == 4
+    assert pipeline.draft_items(cfg, "syn", "llamacpp:x", store=store, log=logs.append).written == 4
     by_item = store.read_drafts()
     assert all(len(v) == 2 for v in by_item.values())
     assert all([d["drafter"] for d in v] == ["llamacpp:x", "ollama:m"] for v in by_item.values())
@@ -1895,7 +1941,7 @@ def test_drafter_caps_output_and_draft_items_skips_bad_items(tmp_path, monkeypat
     assert set(run["drafters"]) == {"ollama:m", "llamacpp:x"}
     assert run["drafters"]["llamacpp:x"]["declined"] == 2
     assert run["drafters"]["llamacpp:x"]["model_snapshot"] == "x-served"
-    assert pipeline.draft_items(cfg, "syn", "llamacpp:x", store=store) == 0
+    assert pipeline.draft_items(cfg, "syn", "llamacpp:x", store=store).written == 0
 
     # On resume the first undrafted item is the one that failed before; a drafter that has
     # already produced drafts in this run skips it instead of aborting.
@@ -1906,7 +1952,9 @@ def test_drafter_caps_output_and_draft_items_skips_bad_items(tmp_path, monkeypat
         judge_http, "post_json", lambda *a, **k: (_ for _ in ()).throw(JudgeError("down"))
     )
     logs.clear()
-    assert pipeline.draft_items(cfg, "syn", "ollama:m", store=store, log=logs.append) == 0
+    # Without a warn channel the problem still reaches the one channel there is.
+    summary = pipeline.draft_items(cfg, "syn", "ollama:m", store=store, log=logs.append)
+    assert (summary.written, summary.failed) == (0, 1)
     assert any("skipped" in line for line in logs)
 
     # A failure on the very first item of a fresh run is treated as configuration and raised.
@@ -1949,12 +1997,20 @@ def test_decide_items_skips_failing_item_on_resume(tmp_path, monkeypatch):
     assert set(verdict["answers"]) == {q.id for q in ALL_QUESTIONS}
     store.write_jsonl(store.verdicts_path("rules"), [verdict])
     logs: list[str] = []
+    warnings: list[str] = []
     written = pipeline.decide_items(
-        cfg, "syn", ["rules"], store=store, record_events=False, log=logs.append
+        cfg,
+        "syn",
+        ["rules"],
+        store=store,
+        record_events=False,
+        log=logs.append,
+        warn=warnings.append,
     )
     assert written == {"rules": 1}
-    assert any(f"item {bad} failed" in line for line in logs)
-    assert any("1 verdict(s) failed" in line for line in logs)
+    assert any(f"item {bad} failed" in line for line in warnings)
+    assert any("1 verdict(s) failed" in line for line in warnings)
+    assert not any("failed" in line for line in logs)
     verdicts = store.read_jsonl(store.verdicts_path("rules"))
     assert len(verdicts) == 2
     assert bad not in {v["item_id"] for v in verdicts}

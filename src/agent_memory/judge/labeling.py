@@ -16,7 +16,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from rich.console import Console
+from rich.console import Console, Group
 from rich.panel import Panel
 from rich.prompt import InvalidResponse, Prompt
 from rich.rule import Rule
@@ -75,48 +75,115 @@ class GoBack(Exception):
     """The reviewer typed b."""
 
 
-class ShowProjection(Exception):
-    """The reviewer typed p."""
+# Rendered as a term/description grid so each entry wraps to the terminal on its own.
+RUBRIC = (
+    (
+        "who is speaking",
+        "The header says who started the session. In a session an agent started, the REQUEST "
+        "and the NEXT MESSAGE were written by that parent agent: treat a parent's \"no, redo "
+        "it\" as a reviewer's opinion, not as the requester's verdict.",
+    ),
+    (
+        "closed by",
+        "How the turn ended: at its [bold]outcome[/bold], cut off by the "
+        "[bold]next_message[/bold], or at the [bold]session_end[/bold]. A cut-off turn may hold "
+        "an attempt, not a result.",
+    ),
+    (
+        "failed",
+        "Did the agent fail to do what was asked in this turn? Judge from tool results, the "
+        "recorded outcome, and the next message, not from what the agent claimed. "
+        "[bold]u[/bold] = the turn finished but the evidence does not say. [bold]i[/bold] = "
+        "incomplete: the turn was cut off before the agent finished, so success or failure "
+        "cannot be read from it.",
+    ),
+    ("category", "Asked when failed. The main cause."),
+    (
+        "worth remembering",
+        "Would a lesson from this turn help a future session on this project, or any project? "
+        "[bold]n[/bold] for one-off slips, outages, and user redirects.",
+    ),
+    ("lesson kind", "Asked when worth remembering. What sort of thing the lesson is."),
+    (
+        "error intended",
+        "Asked when a tool call errored. Was the error expected and used (probing for a "
+        "missing file, a test meant to fail, grep with no match)? [bold]y[/bold] then.",
+    ),
+    (
+        "drafts",
+        'Shown as A, B in a random order; the drafter is hidden. "(no lesson)" means the '
+        "drafter declined and asks nothing. Each run of questions starts on a fresh screen that "
+        "says what it is about and shows just that: the turn and its projection, one draft "
+        "with the evidence it cites, or the drafts side by side.",
+    ),
+    (
+        "grounded",
+        "Can every claim in the draft be traced to something in the projection, in particular "
+        "the lines it cites? [bold]n[/bold] if it asserts a cause or rule the evidence does not "
+        "show, or cites nothing relevant.",
+    ),
+    (
+        "faithful",
+        "Does the draft read the evidence right? [bold]n[/bold] if it cites the right lines but "
+        "misstates the cause, the error, or the fact they show.",
+    ),
+    (
+        "generalizable",
+        "0 = only this exact request, 1 = future sessions on this project, 2 = any project.",
+    ),
+    (
+        "enforced by",
+        "Is the lesson already enforced somewhere the agent will meet anyway? "
+        "[bold]harness[/bold] for Mission orchestration and subagent constraints, "
+        "[bold]project_docs[/bold] for AGENTS.md and the like, [bold]tooling[/bold] for "
+        "lint/CI/hooks, [bold]none[/bold] when memory would be the only place. Judge the "
+        "lesson, not the turn.",
+    ),
+    ("preferred", "Which draft would you rather keep: a, b, same, or neither."),
+    ("note", "Optional free text; Enter for none."),
+)
+KEYS = "b back one question, p page the full projection, s skip this item, q quit"
+RUBRIC_KEYS = (
+    "At any question: b goes back one question, p pages the full projection (q leaves the "
+    "pager), s skips the item (it comes back next session), q stops. A summary is shown before "
+    "saving; r redoes the item. Progress is saved per item. Items labeled before a question or "
+    "a drafter existed come back and ask only what is missing."
+)
+_STEP_NAMES = {
+    "worth_remembering": "worth remembering",
+    "lesson_kind": "lesson kind",
+    "error_intended": "error intended",
+    "enforced_by": "enforced by",
+}
 
 
-RUBRIC = """\
-[bold]who is speaking[/bold]  The header says who started the session. In a session an agent
-  started, the REQUEST and the NEXT MESSAGE were written by that parent agent: treat a
-  parent's "no, redo it" as a reviewer's opinion, not as the requester's verdict.
-[bold]closed by[/bold]  How the turn ended: at its [bold]outcome[/bold], cut off by the
-  [bold]next_message[/bold], or at the [bold]session_end[/bold]. A cut-off turn may hold an
-  attempt, not a result.
-[bold]failed[/bold]  Did the agent fail to do what was asked in this turn? Judge from tool
-  results, the recorded outcome, and the next message, not from what the agent claimed.
-  [bold]u[/bold] = the turn finished but the evidence does not say. [bold]i[/bold] = incomplete:
-  the turn was cut off before the agent finished, so success or failure cannot be read from it.
-[bold]category[/bold]  Asked when failed. The main cause.
-[bold]worth remembering[/bold]  Would a lesson from this turn help a future session on this
-  project, or any project? [bold]n[/bold] for one-off slips, outages, and user redirects.
-[bold]lesson kind[/bold]  Asked when worth remembering. What sort of thing the lesson is.
-[bold]error intended[/bold]  Asked when a tool call errored. Was the error expected and used
-  (probing for a missing file, a test meant to fail, grep with no match)? [bold]y[/bold] then.
-[bold]per draft[/bold]  Drafts are shown as A, B in a random order; the drafter is hidden.
-  "(no lesson)" means the drafter declined and asks nothing. Each run of questions starts on
-  a fresh screen that says what it is about and shows just that: the turn and its projection,
-  one draft with the evidence it cites, or the drafts side by side.
-  [bold]grounded[/bold]: can every claim in the draft be traced to something in the projection,
-  in particular the lines it cites? [bold]n[/bold] if it asserts a cause or rule the evidence
-  does not show, or cites nothing relevant.
-  [bold]faithful[/bold]: does the draft read the evidence right? [bold]n[/bold] if it cites the
-  right lines but misstates the cause, the error, or the fact they show.
-  [bold]generalizable[/bold]: 0 = only this exact request, 1 = future sessions on this project,
-  2 = any project.
-  [bold]enforced by[/bold]: is the lesson already enforced somewhere the agent will meet anyway?
-  [bold]harness[/bold] for Mission orchestration and subagent constraints, [bold]project_docs[/bold]
-  for AGENTS.md and the like, [bold]tooling[/bold] for lint/CI/hooks, [bold]none[/bold] when memory
-  would be the only place. Judge the lesson, not the turn.
-[bold]preferred[/bold]  Which draft would you rather keep: a, b, same, or neither.
-[bold]note[/bold]  Optional free text; Enter for none.
-[dim]b goes back one question, p pages the full projection (q leaves the pager), s skips the
-item (comes back next session), q stops; a summary is shown before saving and r redoes the
-item. Progress is saved per item. Items labeled before a question or a drafter existed come
-back and ask only what is missing.[/dim]"""
+def rubric_panel() -> Panel:
+    grid = Table.grid(padding=(0, 2))
+    grid.add_column(no_wrap=True, style="bold")
+    grid.add_column()
+    for term, description in RUBRIC:
+        grid.add_row(term, description)
+    return Panel(Group(grid, Text(f"\n{RUBRIC_KEYS}", style="dim")), title="how to label")
+
+
+def describe_steps(steps: Sequence[str]) -> str:
+    """`B.grounded, B.faithful, preferred` as `draft B (grounded, faithful), preferred`."""
+    order: list[str] = []
+    per_draft: dict[str, list[str]] = {}
+    for step in steps:
+        slot, dot, key = step.partition(".")
+        if dot:
+            if slot not in per_draft:
+                per_draft[slot] = []
+                order.append(f"draft {slot}")
+            per_draft[slot].append(_STEP_NAMES.get(key, key))
+        else:
+            order.append(_STEP_NAMES.get(step, step))
+    return ", ".join(
+        f"{name} ({', '.join(per_draft[name[6:]])})" if name.startswith("draft ") else name
+        for name in order
+    )
+
 
 _ENTRY = re.compile(r"^\[(\d+)\] ", re.MULTILINE)
 EXCERPT_CHARS = 320
@@ -179,22 +246,41 @@ def order_drafts(item_id: str, rows: Sequence[Mapping[str, Any]], seed: int) -> 
 
 
 def rich_ask(console: Console) -> Ask:
+    # The question already names its choices; Rich's own list would repeat them, with the
+    # navigation keys the screen header shows, and push narrow prompts onto two lines.
     def ask(question: str, choices: Sequence[str] | None) -> str:
         if choices is None:
             return Prompt.ask(question, console=console, default="", show_default=False)
         if question == SAVE_PROMPT:
             return Prompt.ask(
-                question, choices=list(choices), console=console, default="y", show_default=False
+                question,
+                choices=list(choices),
+                console=console,
+                show_choices=False,
+                default="y",
+                show_default=False,
             )
-        return Prompt.ask(question, choices=list(choices), console=console)
+        return Prompt.ask(question, choices=list(choices), console=console, show_choices=False)
 
     return ask
 
 
-def _answer(ask: Ask, question: str, choices: Sequence[str], *, back: bool = True) -> str:
-    """One answer from the allowed set; `b` goes back, `p` pages the projection, `s` skips the
-    item, `q` stops. A real choice wins over a key, so `b` at `preferred` picks draft B."""
-    keys = [k for k in (*(["b"] if back else []), "p", "s", "q") if k not in choices]
+def _answer(
+    ask: Ask,
+    question: str,
+    choices: Sequence[str],
+    *,
+    back: bool = True,
+    page: Callable[[], None] | None = None,
+) -> str:
+    """One answer from the allowed set; `b` goes back, `p` pages the projection and asks again,
+    `s` skips the item, `q` stops. A real choice wins over a key, so `b` at `preferred` picks
+    draft B."""
+    keys = [
+        k
+        for k in (*(["b"] if back else []), *(["p"] if page else []), "s", "q")
+        if k not in choices
+    ]
     allowed = [*choices, *keys]
     while True:
         try:
@@ -207,9 +293,9 @@ def _answer(ask: Ask, question: str, choices: Sequence[str], *, back: bool = Tru
             raise StopLabeling
         if value == "s":
             raise SkipItem
-        if value == "p":
-            raise ShowProjection
-        if value == "b" and back:
+        if value == "p" and page is not None:
+            page()
+        elif value == "b" and back:
             raise GoBack
 
 
@@ -269,8 +355,13 @@ def _print_draft(console: Console, projection: str, draft: DraftView) -> None:
             Panel(body, title=f"draft {draft.slot}: cited evidence", border_style="magenta")
         )
     elif draft.cited:
+        cites = " ".join(f"[{n}]" for n in draft.cited)
         console.print(
-            f"[yellow]draft {draft.slot}: the cited line numbers are not in the projection[/yellow]"
+            Text(
+                f"draft {draft.slot} cites {cites}, which are not in the projection; judge it as "
+                "if it cited nothing",
+                style="yellow",
+            )
         )
 
 
@@ -307,13 +398,14 @@ class ItemScreen:
     def _fresh(self) -> None:
         if self.keep:
             self.keep = False
-        else:
+        elif self.console.is_terminal:  # a pipe or log gets the screens one after another
             self.console.clear()
         self.console.print(
             Rule(f"item {self.index}/{self.total}  [dim]{self.item['item_id']}[/dim]")
         )
+        self.console.print(Text(KEYS, style="dim"))
         if self.only:
-            self.console.print(f"[green]only asking: {', '.join(self.only)}[/green]")
+            self.console.print(Text(f"only asking: {describe_steps(self.only)}", style="dim"))
 
     def show_all(self) -> None:
         """Everything at once, for the keep-or-redo decision in review mode."""
@@ -390,50 +482,64 @@ def _section(step: str) -> str:
     return "turn"
 
 
-def _ask_step(step: str, ask: Ask, console: Console, drafts: Sequence[DraftView]) -> str:
+def _ask_step(step: str, ask: Ask, screen: ItemScreen) -> str:
+    console, drafts, page = screen.console, screen.drafts, screen.page_projection
     if step == "failed":
-        return _answer(ask, "failed? (y/n, u unclear, i incomplete)", _FAILED)
+        return _answer(ask, "failed? (y/n, u unclear, i incomplete)", _FAILED, page=page)
     if step == "category":
         console.print(_choice_table(CATEGORIES))
-        return _answer(ask, "category (number)", _numbers(CATEGORY_ORDER))
+        return _answer(ask, "category (number)", _numbers(CATEGORY_ORDER), page=page)
     if step == "worth_remembering":
-        return _answer(ask, "worth remembering for future sessions? (y/n)", _YN)
+        return _answer(ask, "worth remembering for future sessions? (y/n)", _YN, page=page)
     if step == "lesson_kind":
         console.print(_choice_table(LESSON_KINDS))
-        return _answer(ask, "lesson kind (number)", _numbers(LESSON_ORDER))
+        return _answer(ask, "lesson kind (number)", _numbers(LESSON_ORDER), page=page)
     if step == "error_intended":
-        return _answer(ask, "was the tool error intended and used? (y/n)", _YN)
+        return _answer(ask, "was the tool error intended and used? (y/n)", _YN, page=page)
     if step == "preferred":
         slots = [d.slot.lower() for d in drafts]
         return _answer(
-            ask, f"preferred draft? ({'/'.join(slots)}/same/neither)", (*slots, *PREFERRED_OTHER)
+            ask,
+            f"preferred draft? ({'/'.join(slots)}/same/neither)",
+            (*slots, *PREFERRED_OTHER),
+            page=page,
         )
     if step == "note":
-        value = ask("note (optional, Enter for none)", None).strip()
-        if value.lower() == "q":
-            raise StopLabeling
-        if value.lower() == "b":
-            raise GoBack
-        if value.lower() == "p":
-            raise ShowProjection
-        return value
+        while True:
+            value = ask("note (optional, Enter for none)", None).strip()
+            if value.lower() == "q":
+                raise StopLabeling
+            if value.lower() == "b":
+                raise GoBack
+            if value.lower() != "p":
+                return value
+            page()
     slot, _, key = step.partition(".")
     if key == "grounded":
         return _answer(
-            ask, f"draft {slot}: every claim traceable to the cited evidence? (y/n)", _YN
+            ask, f"draft {slot}: every claim traceable to the cited evidence? (y/n)", _YN, page=page
         )
     if key == "faithful":
         return _answer(
-            ask, f"draft {slot}: reads the evidence right (cause, error, fact)? (y/n)", _YN
+            ask,
+            f"draft {slot}: reads the evidence right (cause, error, fact)? (y/n)",
+            _YN,
+            page=page,
         )
     if key == "generalizable":
         return _answer(
-            ask, f"draft {slot}: generalizable? (0 one-off, 1 project, 2 general)", _LEVELS
+            ask,
+            f"draft {slot}: generalizable? (0 one-off, 1 project, 2 general)",
+            _LEVELS,
+            page=page,
         )
     if key == "enforced_by":
         console.print(_choice_table(ENFORCED_BY))
         return _answer(
-            ask, f"draft {slot}: lesson already enforced by (number)", _numbers(ENFORCED_ORDER)
+            ask,
+            f"draft {slot}: lesson already enforced by (number)",
+            _numbers(ENFORCED_ORDER),
+            page=page,
         )
     raise JudgeError(f"unknown labeling step {step!r}")
 
@@ -573,15 +679,6 @@ def summary_line(row: Mapping[str, Any], drafts: Sequence[DraftView]) -> str:
     return " | ".join(parts)
 
 
-def _confirm(ask: Ask, screen: ItemScreen, question: str, choices: Sequence[str]) -> str:
-    """A closing prompt (save, keep): no going back, but `p` still pages the projection."""
-    while True:
-        try:
-            return _answer(ask, question, choices, back=False)
-        except ShowProjection:
-            screen.page_projection()
-
-
 def label_one(ask: Ask, screen: ItemScreen, has_tool_errors: bool = False) -> dict[str, Any] | None:
     """Collect one item's labels, or with `screen.only` just those steps on top of the previous
     row. Each run of questions gets a fresh screen showing what it is about. The reviewer can
@@ -601,22 +698,20 @@ def label_one(ask: Ask, screen: ItemScreen, has_tool_errors: bool = False) -> di
                     section = _section(plan[i])
                     screen.show(section)
                 try:
-                    value = _ask_step(plan[i], ask, console, drafts)
+                    value = _ask_step(plan[i], ask, screen)
                 except GoBack:
                     if i > 0:
                         i -= 1
                         answers.pop(plan[i], None)
                         plan = _plan(answers, drafts, has_tool_errors, only)
                     continue
-                except ShowProjection:
-                    screen.page_projection()
-                    continue
                 answers[plan[i]] = value
                 plan = _plan(answers, drafts, has_tool_errors, only)
                 i += 1
             row = assemble(answers, drafts, has_tool_errors)
             console.print(Text(summary_line(row, drafts), style="bold"))
-            if _confirm(ask, screen, SAVE_PROMPT, ("y", "r")) == "y":
+            save = _answer(ask, SAVE_PROMPT, ("y", "r"), back=False, page=screen.page_projection)
+            if save == "y":
                 return row
     except SkipItem:
         return None
@@ -713,11 +808,14 @@ def label_items(
         todo = todo[:limit]
     labeled = skipped = changed = 0
     if todo:
-        console.print(Panel(RUBRIC, title="how to label", border_style="green"))
+        console.print(rubric_panel())
         if backfill:
             console.print(
-                f"[green]{len(backfill)} labeled item(s) come first to answer questions added "
-                "since they were labeled[/green]"
+                Text(
+                    f"{len(backfill)} labeled item(s) come first to answer questions added since "
+                    "they were labeled",
+                    style="dim",
+                )
             )
     try:
         for index, item in enumerate(todo, start=1):
@@ -742,7 +840,9 @@ def label_items(
             if review:
                 screen.show_all()
                 try:
-                    decision = _confirm(ask, screen, REVIEW_PROMPT, ("k", "r"))
+                    decision = _answer(
+                        ask, REVIEW_PROMPT, ("k", "r"), back=False, page=screen.page_projection
+                    )
                 except SkipItem:
                     skipped += 1
                     continue

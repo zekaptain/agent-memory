@@ -9,6 +9,7 @@ from typing import Annotated
 import typer
 from rich.console import Console
 from rich.markdown import Markdown
+from rich.markup import escape
 from rich.table import Table
 
 from ..config import Config, load_config
@@ -47,8 +48,23 @@ def _config(ctx: typer.Context) -> Config:
     return cfg
 
 
+# The rendered report's widest tables (Stage A has 13 columns) need about this many columns.
+REPORT_WIDTH = 150
+
+
 def _log(message: str) -> None:
+    """Progress: stdout, dim, so a long run can be followed without drowning the result."""
     console.print(message, markup=False, highlight=False, style="dim")
+
+
+def _warn(message: str) -> None:
+    """A problem the user has to act on: stderr, so it survives a redirect and a pipe."""
+    err_console.print(message, markup=False, highlight=False, style="yellow")
+
+
+def _errors(errors: list[str]) -> None:
+    for error in errors:
+        err_console.print(error, markup=False, highlight=False, style="red")
 
 
 def _store(cfg: Config, run: str, live: str | None) -> RunStore:
@@ -103,12 +119,13 @@ def import_command(
     table = Table(show_header=False, box=None)
     table.add_row("files imported", str(summary.files))
     table.add_row("files skipped", str(summary.skipped_files))
+    if summary.errors:
+        table.add_row("files failed", str(len(summary.errors)), style="red")
     table.add_row("records", str(summary.records))
     table.add_row("rows inserted", str(summary.inserted))
     table.add_row("rows already present", str(summary.skipped_rows))
     console.print(table)
-    for error in summary.errors:
-        err_console.print(error, markup=False, style="red")
+    _errors(summary.errors)
 
 
 @judge_app.command()
@@ -137,6 +154,10 @@ def candidates(
             human_share=human_share,
             log=_log,
         )
+    console.print(
+        f"{summary.items} items, {summary.redactions} redaction(s) in projections; "
+        f"{summary.harness_turns} harness-opened turn(s) excluded from the pool"
+    )
     console.print(_strata_table(f"run {run}", ("pool", summary.pool), ("chosen", summary.chosen)))
     callers = Table(title="session started by", show_edge=False)
     callers.add_column("caller")
@@ -147,10 +168,6 @@ def candidates(
             kind, str(summary.pool_callers.get(kind, 0)), str(summary.chosen_callers.get(kind, 0))
         )
     console.print(callers)
-    console.print(
-        f"{summary.items} items, {summary.redactions} redaction(s) in projections; "
-        f"{summary.harness_turns} harness-opened turn(s) excluded from the pool"
-    )
 
 
 DRAFTER_HELP = (
@@ -171,8 +188,11 @@ def draft(
     cfg = _config(ctx)
     store = _store(cfg, run, live)
     for spec in drafter or ["ollama:gemma4:26b"]:
-        written = draft_items(cfg, run, spec, limit=limit, store=store, log=_log)
-        console.print(f"drafted {written} item(s) with {spec}")
+        summary = draft_items(cfg, run, spec, limit=limit, store=store, log=_log, warn=_warn)
+        line = f"drafted {summary.written} item(s) with {spec}"
+        if summary.failed:
+            line += f"; {summary.failed} failed, rerun to retry"
+        console.print(line, markup=False, highlight=False)
 
 
 @judge_app.command()
@@ -196,7 +216,14 @@ def decide(
     cfg = _config(ctx)
     store = _store(cfg, run, live)
     written = decide_items(
-        cfg, run, backend, limit=limit, store=store, record_events=not no_events, log=_log
+        cfg,
+        run,
+        backend,
+        limit=limit,
+        store=store,
+        record_events=not no_events,
+        log=_log,
+        warn=_warn,
     )
     table = Table(show_header=True, show_edge=False)
     table.add_column("backend")
@@ -250,7 +277,19 @@ def report(
         print(text)
     else:
         console.print(Markdown(text))
-    console.print(f"[dim]written to {store.report_path}[/dim]")
+        if console.width < REPORT_WIDTH:
+            _warn(
+                f"the tables above were squeezed into {console.width} columns and need about "
+                f"{REPORT_WIDTH}; widen the terminal, use --raw, or open the file"
+            )
+    # stderr, so `--raw > report.md` holds only the report; soft_wrap keeps the path whole.
+    err_console.print(
+        f"written to {store.report_path}",
+        markup=False,
+        highlight=False,
+        soft_wrap=True,
+        style="dim",
+    )
 
 
 @judge_app.command()
@@ -283,12 +322,16 @@ def live(
         drafter_specs=drafter or (),
         day=day,
         log=_log,
+        warn=_warn,
     )
     console.print(
         f"live day {summary.day}: imported {summary.imported.files} file(s), "
         + (f"{summary.candidates.items} new item(s), " if summary.candidates else "")
-        + f"drafted {summary.drafted}, verdicts {summary.decided}"
+        + f"drafted {summary.drafted}, verdicts {summary.decided}",
+        markup=False,
+        highlight=False,
     )
+    _errors(summary.imported.errors)
 
 
 @judge_app.command()
@@ -313,11 +356,11 @@ def status(ctx: typer.Context, run: RUN, live: LIVE_DAY = None) -> None:
         slot[0] += 1
         slot[1] += row.get("lesson") is None
     for name, (count, declined) in sorted(drafts.items()):
-        table.add_row(f"drafts {name}", f"{count} ({declined} declined)")
+        table.add_row(f"drafts {escape(name)}", f"{count} ({declined} declined)")
     table.add_row("labels", str(len(store.read_jsonl(store.labels_path))))
     if store.verdicts_dir.exists():
         for path in sorted(store.verdicts_dir.glob("*.jsonl")):
-            table.add_row(f"verdicts {path.stem}", str(len(store.read_jsonl(path))))
+            table.add_row(f"verdicts {escape(path.stem)}", str(len(store.read_jsonl(path))))
     table.add_row("frozen", "yes" if meta.get("frozen") else "no")
     console.print(table)
 

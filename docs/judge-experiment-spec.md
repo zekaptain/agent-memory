@@ -898,7 +898,15 @@ deviations:
   with its projection, one draft with the evidence it cites, the drafts side
   by side for `preferred`), so nothing has to be scrolled back to; `p` at
   any question pages the full projection. A typed choice wins over a
-  control key, so `b` at `preferred` picks draft B.
+  control key, so `b` at `preferred` picks draft B. The rubric is a
+  term/description grid that wraps to the terminal; each screen lists the
+  keys once and prompts name their choices once.
+- CLI output: progress lines stay on stdout (dim); problems (a skipped
+  draft or verdict, a spooled event batch, import failures grouped at the
+  end) go to stderr so they survive a redirect. `draft` counts failures in
+  its headline. `report` prints `written to <path>` on stderr, so
+  `report --raw > file` holds only the markdown, and warns when the
+  terminal is narrower than the tables (about 150 columns) need.
 - Report: Stage A and Stage B are separate tables (per item and per draft);
   the write table lists each backend's gates and thresholds; criterion 1
   reports the majority-class rate; criterion 6 is evaluated per reference

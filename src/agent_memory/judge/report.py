@@ -934,8 +934,9 @@ def build_report(store: RunStore, *, freeze: bool = False) -> str:
     lines = [
         f"# Judge report: {store.run_id}",
         "",
-        f"Generated {utc_now_iso()}. Versions: {run.get('triggers_version')}, "
-        f"{run.get('projection_version')}, {run.get('questions_version')}, "
+        f"Generated {utc_now_iso()}. Versions: {run.get('triggers_version') or 'unknown'}, "
+        f"{run.get('projection_version') or 'unknown'}, "
+        f"{run.get('questions_version') or 'unknown'}, "
         f"drafters {', '.join(f'`{d}`' for d in drafters) or 'none'}. Items {len(items)} "
         f"(calibration {len(calibration)}, held-out {len(held_out)}); labeled items with "
         f"verdicts {len(labeled)}. Reference judge: `{reference or 'none'}`.",

@@ -49,6 +49,8 @@ from .triggers import (
 )
 
 Log = Callable[[str], None]
+"""`log` takes progress lines; `warn` takes problems the user has to act on (a skipped item, a
+spooled batch). A caller with one channel passes only `log` and gets both on it."""
 JUDGE_AGENT = "human"
 CALIBRATION_SHARE = 0.6
 EVENT_BATCH = 25
@@ -134,8 +136,8 @@ def import_sessions(
             try:
                 result = writer.write(records)
             except (AgentMemoryError, duckdb.Error) as exc:
+                # Reported once, grouped, by the caller; a line per file would repeat it.
                 summary.errors.append(f"{path.name}: {type(exc).__name__}: {exc}")
-                log(f"failed {path.name}: {exc}")
                 continue
             summary.files += 1
             summary.records += len(records)
@@ -303,6 +305,13 @@ def _count_values(values: Iterable[str]) -> dict[str, int]:
 # Draft
 
 
+@dataclass
+class DraftSummary:
+    written: int = 0
+    declined: int = 0
+    failed: int = 0
+
+
 def draft_items(
     cfg: Config,
     run_id: str,
@@ -311,8 +320,10 @@ def draft_items(
     limit: int | None = None,
     store: RunStore | None = None,
     log: Log = _quiet,
-) -> int:
+    warn: Log | None = None,
+) -> DraftSummary:
     """One draft per item for this drafter; other drafters' rows are left alone. Resumable."""
+    warn = warn or log
     ensure_experiment_home(cfg)
     store = store or RunStore(cfg, run_id)
     run = store.read_run()
@@ -326,7 +337,7 @@ def draft_items(
     todo = [row for row in store.read_jsonl(store.items_path) if row["item_id"] not in done]
     if limit is not None:
         todo = todo[:limit]
-    written = declined = 0
+    summary = DraftSummary()
     snapshot = ""
     for index, item in enumerate(todo, start=1):
         state = drafter_rendering(store.read_projection(item["item_id"]))
@@ -335,17 +346,18 @@ def draft_items(
         except JudgeError as exc:
             # A drafter that has never produced anything in this run is probably
             # misconfigured; once it has, a bad item is skipped and the next run retries it.
-            if not done and written == 0:
+            if not done and summary.written == 0:
                 raise
-            log(f"draft {index}/{len(todo)} failed, skipped (rerun to retry): {exc}")
+            summary.failed += 1
+            warn(f"draft {index}/{len(todo)} failed, skipped (rerun to retry): {exc}")
             continue
         store.write_jsonl(
             store.drafts_path,
             [{**draft.to_dict(), "drafter_version": DRAFTER_VERSION}],
             append=True,
         )
-        written += 1
-        declined += draft.declined
+        summary.written += 1
+        summary.declined += draft.declined
         snapshot = draft.model_snapshot or snapshot
         what = "declined" if draft.declined else "drafted"
         log(f"{what} {index}/{len(todo)} ({draft.latency_ms / 1000:.1f}s)")
@@ -354,12 +366,12 @@ def draft_items(
     drafters[drafter.name] = {
         "drafter_version": DRAFTER_VERSION,
         "model_snapshot": snapshot or previous.get("model_snapshot", ""),
-        "drafts": len(done) + written,
-        "declined": int(previous.get("declined", 0)) + declined,
+        "drafts": len(done) + summary.written,
+        "declined": int(previous.get("declined", 0)) + summary.declined,
         "drafted_at": utc_now_iso(),
     }
     store.update_run(drafter=drafter.name, drafter_version=DRAFTER_VERSION, drafters=drafters)
-    return written
+    return summary
 
 
 # Decide
@@ -532,9 +544,11 @@ def decide_items(
     store: RunStore | None = None,
     record_events: bool = True,
     log: Log = _quiet,
+    warn: Log | None = None,
 ) -> dict[str, int]:
     """Run each backend over every (item, draft) without a current verdict. Stage A is judged
     once per item and copied into every row of that item. Returns rows written per backend."""
+    warn = warn or log
     ensure_experiment_home(cfg)
     store = store or RunStore(cfg, run_id)
     run = store.read_run()
@@ -594,7 +608,7 @@ def decide_items(
                 if not kept and count == 0:
                     raise
                 failed += 1
-                log(f"{backend.name}: item {item['item_id']} failed: {exc}")
+                warn(f"{backend.name}: item {item['item_id']} failed: {exc}")
                 continue
             for draft in waiting:
                 try:
@@ -613,7 +627,7 @@ def decide_items(
                         raise
                     failed += 1
                     who = f" draft {draft.get('drafter')}" if draft else ""
-                    log(f"{backend.name}: item {item['item_id']}{who} failed: {exc}")
+                    warn(f"{backend.name}: item {item['item_id']}{who} failed: {exc}")
                     continue
                 store.write_jsonl(path, [verdict], append=True)
                 count += 1
@@ -623,7 +637,7 @@ def decide_items(
                 if record_events:
                     pending_records.append(decision_record(verdict, item, run["created_at"]))
                     if len(pending_records) >= EVENT_BATCH:
-                        _record(cfg, pending_records, log)
+                        _record(cfg, pending_records, warn)
                         pending_records = []
                 who = f" [{draft.get('drafter')}]" if draft else ""
                 log(
@@ -631,17 +645,20 @@ def decide_items(
                     f"({verdict['latency_ms'] / 1000:.1f}s)"
                 )
         if pending_records:
-            _record(cfg, pending_records, log)
+            _record(cfg, pending_records, warn)
         if failed:
-            log(f"{backend.name}: {failed} verdict(s) failed and were not written; rerun to retry")
+            warn(f"{backend.name}: {failed} verdict(s) failed and were not written; rerun to retry")
         written[backend.name] = count
     return written
 
 
-def _record(cfg: Config, records: list[Record], log: Log) -> None:
+def _record(cfg: Config, records: list[Record], warn: Log) -> None:
     delivery = deliver(cfg, records, deadline=60.0)
     if delivery.spooled:
-        log(f"ledger unavailable; {len(records)} decision event(s) spooled")
+        warn(
+            f"ledger unavailable; {len(records)} decision event(s) spooled, replayed when "
+            "`mem serve` next starts on this home"
+        )
 
 
 # Live
@@ -666,8 +683,10 @@ def live_step(
     drafter_specs: Sequence[str] = (),
     day: str | None = None,
     log: Log = _quiet,
+    warn: Log | None = None,
 ) -> LiveSummary:
     """One day of the live week: import new sessions, judge their turns with frozen thresholds."""
+    warn = warn or log
     ensure_experiment_home(cfg)
     parent = RunStore(cfg, run_id)
     run = parent.read_run()
@@ -706,8 +725,8 @@ def live_step(
         )
     drafted = 0
     for spec in drafter_specs:
-        drafted += draft_items(cfg, run_id, spec, store=child, log=log)
-    decided = decide_items(cfg, run_id, backends, store=child, log=log)
+        drafted += draft_items(cfg, run_id, spec, store=child, log=log, warn=warn).written
+    decided = decide_items(cfg, run_id, backends, store=child, log=log, warn=warn)
     return LiveSummary(
         day=day, imported=imported, candidates=candidates, drafted=drafted, decided=decided
     )
