@@ -106,11 +106,11 @@ def answers_from_judge_json(
     return out
 
 
-def out_of_tokens(content: str, reasoning: str) -> str:
+def out_of_tokens(content: str, reasoning: str, *, who: str = "judge") -> str:
     """Says where the budget went, so an empty answer after a long think is not mistaken for a
     model that produced nothing."""
     where = f" after {len(reasoning)} chars of reasoning" if reasoning else ""
-    return f"judge ran out of tokens{where}; JSON incomplete: {content[-80:]!r}"
+    return f"{who} ran out of tokens{where}; JSON incomplete: {content[-80:]!r}"
 
 
 def retry_without_thinking(exc: JudgeError) -> bool:

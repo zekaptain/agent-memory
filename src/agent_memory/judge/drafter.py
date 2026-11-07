@@ -17,7 +17,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
 from typing import Any
 
@@ -25,7 +25,7 @@ from .backends import http
 from .backends.base import require_remote
 from .backends.jev import KEY_ENV
 from .backends.llamacpp import LLAMACPP_HOST, disable_thinking
-from .backends.llm import parse_judge_json
+from .backends.llm import out_of_tokens, parse_judge_json
 from .store import JudgeError
 
 DRAFTER_VERSION = "drafter_v2"
@@ -34,6 +34,10 @@ OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434").rstrip("/"
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 MAX_LESSON_CHARS = 400
 MAX_DRAFT_TOKENS = 400
+# A model that writes past two sentences, or reasons before it answers, can spend the whole
+# budget before the JSON closes. On OpenAI-compatible endpoints reasoning tokens share
+# max_tokens with the visible answer.
+RETRY_DRAFT_TOKENS = 3 * MAX_DRAFT_TOKENS
 TEMPERATURE = 0.2
 SEED = 7
 
@@ -105,6 +109,30 @@ def parse_draft(data: Mapping[str, Any]) -> tuple[str | None, list[int]]:
     return re.sub(r"\s+", " ", lesson)[:MAX_LESSON_CHARS], cited
 
 
+@dataclass(frozen=True)
+class Attempt:
+    """One completion call: what came back and whether the budget ran out first."""
+
+    response: Mapping[str, Any]
+    content: str
+    reasoning: str
+    cut_off: bool
+    latency_ms: float
+
+
+def draft_with_room(once: Callable[[int], Attempt]) -> list[Attempt]:
+    """Call at the normal budget; when that is cut off, once more with room to finish. The
+    request is seeded, so without the larger budget a rerun would be cut off at the same place.
+    Raises when the retry is cut off too."""
+    attempts = [once(MAX_DRAFT_TOKENS)]
+    if attempts[-1].cut_off:
+        attempts.append(once(RETRY_DRAFT_TOKENS))
+    last = attempts[-1]
+    if last.cut_off:
+        raise JudgeError(out_of_tokens(last.content, last.reasoning, who="drafter"))
+    return attempts
+
+
 class OllamaDrafter:
     def __init__(self, model: str, *, host: str = OLLAMA_HOST) -> None:
         self.model = model
@@ -125,16 +153,28 @@ class OllamaDrafter:
                 {"role": "user", "content": drafter_prompt(state)},
             ],
         }
-        response, latency = http.post_json(f"{self.host}/api/chat", body)
-        content = str((response.get("message") or {}).get("content") or "")
-        lesson, cited = parse_draft(parse_judge_json(content))
+
+        def once(budget: int) -> Attempt:
+            body["options"]["num_predict"] = budget
+            response, latency = http.post_json(f"{self.host}/api/chat", body)
+            message = response.get("message") or {}
+            return Attempt(
+                response=response,
+                content=str(message.get("content") or ""),
+                reasoning=str(message.get("thinking") or ""),
+                cut_off=response.get("done_reason") == "length",
+                latency_ms=latency,
+            )
+
+        attempts = draft_with_room(once)
+        lesson, cited = parse_draft(parse_judge_json(attempts[-1].content))
         return Draft(
             item_id=item_id,
             lesson=lesson,
             cited=cited,
             drafter=self.name,
-            model_snapshot=str(response.get("model") or self.model),
-            latency_ms=latency,
+            model_snapshot=str(attempts[-1].response.get("model") or self.model),
+            latency_ms=sum(a.latency_ms for a in attempts),
         )
 
 
@@ -184,22 +224,34 @@ class OpenAIChatDrafter:
             ],
             **self.extra,
         }
-        response, latency = http.post_json(self.url, body, headers=headers, timeout=180)
-        choices = response.get("choices") or []
-        first = choices[0] if choices and isinstance(choices[0], dict) else {}
-        content = str((first.get("message") or {}).get("content") or "")
-        if first.get("finish_reason") == "length":
-            raise JudgeError(f"drafter ran out of tokens; JSON incomplete: {content[-80:]!r}")
-        lesson, cited = parse_draft(parse_judge_json(content))
-        usage = response.get("usage") or {}
+
+        def once(budget: int) -> Attempt:
+            body["max_tokens"] = budget
+            response, latency = http.post_json(self.url, body, headers=headers, timeout=180)
+            choices = response.get("choices") or []
+            first = choices[0] if choices and isinstance(choices[0], dict) else {}
+            message = first.get("message") or {}
+            return Attempt(
+                response=response,
+                content=str(message.get("content") or ""),
+                reasoning=str(message.get("reasoning") or ""),
+                cut_off=first.get("finish_reason") == "length",
+                latency_ms=latency,
+            )
+
+        attempts = draft_with_room(once)
+        lesson, cited = parse_draft(parse_judge_json(attempts[-1].content))
         return Draft(
             item_id=item_id,
             lesson=lesson,
             cited=cited,
             drafter=self.name,
-            model_snapshot=str(response.get("model") or self.model),
-            latency_ms=latency,
-            cost_usd=float(usage.get("cost") or 0.0),
+            model_snapshot=str(attempts[-1].response.get("model") or self.model),
+            latency_ms=sum(a.latency_ms for a in attempts),
+            # Every attempt is billed, the cut-off one included.
+            cost_usd=sum(
+                float((a.response.get("usage") or {}).get("cost") or 0.0) for a in attempts
+            ),
         )
 
 

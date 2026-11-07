@@ -1119,6 +1119,70 @@ def test_drafter_parsing_and_spec(monkeypatch):
     assert body["usage"] == {"include": True}
 
 
+def test_drafter_retries_a_cut_off_draft_with_more_room(monkeypatch):
+    from agent_memory.judge.drafter import MAX_DRAFT_TOKENS, RETRY_DRAFT_TOKENS, OllamaDrafter
+
+    full = '{"lesson": "Check the script with ShellCheck before running it.", "cited": [4]}'
+    partial = full[:40]
+    bodies = []
+
+    def openai_post(url, body, headers=None, **kwargs):
+        bodies.append(dict(body))
+        cut = len(bodies) == 1
+        return {
+            "model": "served-model",
+            "choices": [
+                {
+                    "message": {"content": partial if cut else full, "reasoning": "hmm" * 50},
+                    "finish_reason": "length" if cut else "stop",
+                }
+            ],
+            "usage": {"cost": 0.001 if cut else 0.002},
+        }, 100.0
+
+    monkeypatch.setattr(judge_http, "post_json", openai_post)
+    local = make_drafter("llamacpp:m")
+    draft = local.draft("i1", "[4] TOOL RESULT: shellcheck ok")
+    assert draft.lesson == "Check the script with ShellCheck before running it."
+    assert [b["max_tokens"] for b in bodies] == [MAX_DRAFT_TOKENS, RETRY_DRAFT_TOKENS]
+    assert bodies[0]["seed"] == bodies[1]["seed"]
+    assert draft.latency_ms == 200.0
+    assert draft.cost_usd == pytest.approx(0.003)  # the cut-off attempt is billed too
+
+    # Cut off twice: a drafter fault that names where the budget went.
+    def always_cut(url, body, headers=None, **kwargs):
+        return {
+            "choices": [
+                {
+                    "message": {"content": partial, "reasoning": "x" * 300},
+                    "finish_reason": "length",
+                }
+            ]
+        }, 10.0
+
+    monkeypatch.setattr(judge_http, "post_json", always_cut)
+    with pytest.raises(JudgeError, match=r"drafter ran out of tokens after 300 chars of reasoning"):
+        local.draft("i2", "state")
+
+    # The Ollama drafter reads done_reason and widens num_predict the same way.
+    bodies.clear()
+
+    def ollama_post(url, body, **kwargs):
+        bodies.append({"num_predict": body["options"]["num_predict"]})
+        cut = len(bodies) == 1
+        return {
+            "model": "m",
+            "message": {"content": partial if cut else full},
+            "done_reason": "length" if cut else "stop",
+        }, 50.0
+
+    monkeypatch.setattr(judge_http, "post_json", ollama_post)
+    draft = OllamaDrafter("m").draft("i3", "state")
+    assert draft.cited == [4]
+    assert [b["num_predict"] for b in bodies] == [MAX_DRAFT_TOKENS, RETRY_DRAFT_TOKENS]
+    assert draft.latency_ms == 100.0
+
+
 # Metrics
 
 

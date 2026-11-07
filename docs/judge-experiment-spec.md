@@ -883,7 +883,11 @@ deviations:
   `usage.include` so the gateway's cost lands on each draft. The
   `openrouter` kind needs `OPENROUTER_API_KEY` and
   `AGENT_MEMORY_JUDGE_ALLOW_REMOTE=1`. `run.json` keeps one entry per
-  drafter (version, model snapshot, drafts, declined, drafted at).
+  drafter (version, model snapshot, drafts, declined, drafted at). A
+  draft cut off at the 400-token budget is asked once more with 1,200
+  tokens (same seed; on OpenAI-compatible endpoints reasoning tokens
+  share `max_tokens` with the answer), with both attempts' latency and
+  cost recorded; the first exp3 openrouter pass hit this on one item.
 - Labeling: items already labeled but missing answers for a newly drafted
   arm come first and are asked only those steps. `--item ID` relabels in
   full with the current labels shown; `--review` shows them and asks keep
