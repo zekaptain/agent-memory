@@ -36,6 +36,10 @@ class RulesBackend:
         if q.id == "failed":
             p = 0.9 if hard_fail else 0.6 if "T3" in flags else 0.1
             return {"yes": p, "no": 1 - p}
+        if q.id == "incomplete":
+            cut_off = facts.get("closed_by") in ("next_message", "session_end")
+            p = 0.8 if cut_off else 0.1
+            return {"yes": p, "no": 1 - p}
         if q.id == "user_corrected":
             p = 0.9 if "T4" in flags else 0.1
             return {"yes": p, "no": 1 - p}
@@ -59,14 +63,24 @@ class RulesBackend:
             p = 0.8 if facts.get("repeated_tool_error") else 0.3
             return {"yes": p, "no": 1 - p}
         supported = self._draft_mentions_turn(inp)
-        if q.id == "supported":
+        if q.id in ("supported", "grounded"):
             p = 0.8 if supported else 0.2
+            return {"yes": p, "no": 1 - p}
+        if q.id == "faithful":
+            # Nothing in the facts can check a reading of the evidence; the overlap signal is
+            # reused at lower confidence so the floor stays a floor.
+            p = 0.65 if supported else 0.35
             return {"yes": p, "no": 1 - p}
         if q.id == "generalizable":
             return {"0": 0.3, "1": 0.6, "2": 0.1} if supported else {"0": 0.7, "1": 0.2, "2": 0.1}
         if q.id == "actionable":
             p = 0.7 if inp.draft and _ACTION_WORDS.search(inp.draft) else 0.3
             return {"yes": p, "no": 1 - p}
+        if q.id == "enforced":
+            agent_started = str(facts.get("caller") or "human").startswith("agent")
+            pick = "harness" if agent_started else "none"
+            rest = (1 - 0.6) / (len(q.options()) - 1)
+            return {o: (0.6 if o == pick else rest) for o in q.options()}
         return dict.fromkeys(q.options(), 1.0)
 
     @staticmethod

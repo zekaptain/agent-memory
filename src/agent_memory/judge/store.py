@@ -149,6 +149,15 @@ class RunStore:
                 n += 1
         return n
 
+    def read_drafts(self) -> dict[str, list[dict[str, Any]]]:
+        """Draft rows by item, each item's drafts in a stable order by drafter name."""
+        by_item: dict[str, list[dict[str, Any]]] = {}
+        for row in self.read_jsonl(self.drafts_path):
+            by_item.setdefault(row["item_id"], []).append(row)
+        for rows in by_item.values():
+            rows.sort(key=lambda r: str(r.get("drafter") or ""))
+        return by_item
+
     # Projections: the one place state text lives on disk. Mode 0600, purgeable.
 
     def write_projection(self, item_id: str, text: str) -> Path:

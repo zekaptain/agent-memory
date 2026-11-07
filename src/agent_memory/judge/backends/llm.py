@@ -23,8 +23,10 @@ MAX_JUDGE_TOKENS = 4096
 SYSTEM = (
     "You evaluate one turn of an AI coding agent. The evidence is a numbered projection of the "
     "turn: the user's request, tool calls and their results, the agent's final message, the "
-    "recorded outcome, and the user's next message. Judge only from that evidence. Do not trust "
-    "the agent's own claims of success. Answer every question. Return only JSON."
+    "recorded outcome, and the user's next message. The header's closed_by says how the turn "
+    "ended: at its outcome, cut off by the next message, or at the end of the session. Judge "
+    "only from that evidence. Do not trust the agent's own claims of success. Answer every "
+    "question. Return only JSON."
 )
 
 
@@ -104,6 +106,21 @@ def answers_from_judge_json(
     return out
 
 
+def out_of_tokens(content: str, reasoning: str) -> str:
+    """Says where the budget went, so an empty answer after a long think is not mistaken for a
+    model that produced nothing."""
+    where = f" after {len(reasoning)} chars of reasoning" if reasoning else ""
+    return f"judge ran out of tokens{where}; JSON incomplete: {content[-80:]!r}"
+
+
+def retry_without_thinking(exc: JudgeError) -> bool:
+    """The token budget is shared between thinking and the answer. A thinking model that uses
+    it all returns empty or cut-off JSON; a server that predates thinking rejects the flag.
+    Either way the same question is worth asking again without thinking."""
+    message = str(exc).lower()
+    return "think" in message or "json" in message
+
+
 class LlmJudgeBackend:
     local = True
 
@@ -125,20 +142,25 @@ class LlmJudgeBackend:
                 {"role": "user", "content": judge_prompt(inp.state_with_draft(), questions)},
             ],
         }
+        # Ollama thinks by default for any model with the thinking capability, so leaving the
+        # flag out is not "off": the model would spend the whole budget in `thinking` and
+        # return an empty answer. Off has to be said explicitly.
         if not self.think:
+            body["think"] = False
             return self._ask(body, questions, method="llm_json")
         body["think"] = True
         try:
             return self._ask(body, questions, method="llm_json")
         except JudgeError as exc:
-            # The token budget is shared between thinking and the answer. A thinking model
-            # that uses it all returns empty or cut-off JSON; a server that predates thinking
-            # rejects the flag. Either way, answer the same question without thinking and
-            # say so in the method, so the report can count how often reasoning was dropped.
-            message = str(exc).lower()
-            if "think" not in message and "json" not in message:
+            # Answer without thinking and say so in the method, so the report can count how
+            # often reasoning was dropped.
+            if not retry_without_thinking(exc):
                 raise
-            body.pop("think")
+            if "http" in str(exc).lower():
+                # The server rejected the flag itself (it predates thinking): drop it.
+                body.pop("think", None)
+            else:
+                body["think"] = False
             # Grammar-constrained JSON with no thinking channel is where Gemma-family models
             # emit whitespace until the budget is gone; free text with the object extracted
             # by regex is the sturdier shape for the retry.
@@ -149,9 +171,10 @@ class LlmJudgeBackend:
         self, body: dict[str, Any], questions: Sequence[Question], *, method: str
     ) -> dict[str, Answer]:
         response, latency = http.post_json(f"{self.host}/api/chat", body)
-        content = str((response.get("message") or {}).get("content") or "")
+        message = response.get("message") or {}
+        content = str(message.get("content") or "")
         if response.get("done_reason") == "length":
-            raise JudgeError(f"judge ran out of tokens; JSON incomplete: {content[-80:]!r}")
+            raise JudgeError(out_of_tokens(content, str(message.get("thinking") or "")))
         data = parse_judge_json(content)
         snapshot = str(response.get("model") or self.model)
         per_question = latency / max(1, len(questions))

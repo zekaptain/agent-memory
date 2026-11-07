@@ -12,6 +12,7 @@ from rich.markdown import Markdown
 from rich.table import Table
 
 from ..config import Config, load_config
+from .backends.base import REMOTE_ENV
 from .labeling import label_items
 from .pipeline import (
     build_candidates,
@@ -23,7 +24,7 @@ from .pipeline import (
 )
 from .report import build_report
 from .store import JudgeError, RunStore, ensure_experiment_home
-from .triggers import CALLER_KINDS, STRATUM_PRIORITY
+from .triggers import CALLER_KINDS, STRATUM_PRIORITY, closed_by_of
 
 judge_app = typer.Typer(
     help="Judge experiment: decision models as failure and lesson triage. Separate home only.",
@@ -152,19 +153,26 @@ def candidates(
     )
 
 
+DRAFTER_HELP = (
+    "ollama:<model> | llamacpp:<model> | openrouter:<model> (needs OPENROUTER_API_KEY and "
+    f"{REMOTE_ENV}=1). Repeatable; each drafter drafts every item."
+)
+
+
 @judge_app.command()
 def draft(
     ctx: typer.Context,
     run: RUN,
-    drafter: Annotated[str, typer.Option(help="ollama:<model>")] = "ollama:gemma4:26b",
+    drafter: Annotated[list[str] | None, typer.Option(help=DRAFTER_HELP)] = None,
     limit: Annotated[int | None, typer.Option(help="Draft at most this many items.")] = None,
     live: LIVE_DAY = None,
 ) -> None:
-    """Write a candidate lesson for every item. Resumable."""
+    """Write a candidate lesson (or a decline) for every item, per drafter. Resumable."""
     cfg = _config(ctx)
     store = _store(cfg, run, live)
-    written = draft_items(cfg, run, drafter, limit=limit, store=store, log=_log)
-    console.print(f"drafted {written} item(s) with {drafter}")
+    for spec in drafter or ["ollama:gemma4:26b"]:
+        written = draft_items(cfg, run, spec, limit=limit, store=store, log=_log)
+        console.print(f"drafted {written} item(s) with {spec}")
 
 
 @judge_app.command()
@@ -173,7 +181,10 @@ def decide(
     run: RUN,
     backend: Annotated[
         list[str],
-        typer.Option(help="rules | readout:<model> | llm:<model> | jev[:<model>]. Repeatable."),
+        typer.Option(
+            help="rules | readout:<model> | llm:<model> | llamacpp:<model> | jev[:<model>]. "
+            "Repeatable."
+        ),
     ],
     limit: Annotated[int | None, typer.Option(help="Decide at most this many items.")] = None,
     no_events: Annotated[
@@ -200,14 +211,22 @@ def label(
     ctx: typer.Context,
     run: RUN,
     limit: Annotated[int | None, typer.Option(help="Stop after this many items.")] = None,
-    seed: Annotated[int, typer.Option(help="Order seed.")] = 1,
+    seed: Annotated[int, typer.Option(help="Order seed, also for the A/B draft order.")] = 1,
+    item: Annotated[
+        list[str] | None,
+        typer.Option("--item", help="Label (or relabel in full) just these item ids. Repeatable."),
+    ] = None,
+    review: Annotated[
+        bool,
+        typer.Option("--review", help="Step through labeled items showing their current labels."),
+    ] = False,
     live: LIVE_DAY = None,
 ) -> None:
     """Review items in the terminal. Verdicts are never shown. Resumable."""
     cfg = _config(ctx)
     store = _store(cfg, run, live)
     store.read_run()
-    label_items(store, console=console, limit=limit, seed=seed)
+    label_items(store, console=console, limit=limit, seed=seed, item_ids=item or (), review=review)
 
 
 @judge_app.command()
@@ -246,7 +265,7 @@ def live(
         list[str] | None, typer.Option(help="Backends to run with frozen thresholds. Repeatable.")
     ] = None,
     drafter: Annotated[
-        str | None, typer.Option(help="ollama:<model>; omit to skip drafting.")
+        list[str] | None, typer.Option(help=DRAFTER_HELP + " Omit to skip drafting.")
     ] = None,
     day: Annotated[
         str | None, typer.Option(help="Live day label; defaults to today (UTC).")
@@ -261,7 +280,7 @@ def live(
         sessions_dir=sessions_dir,
         since=_parse_since(since),
         backends=backends,
-        drafter_spec=drafter,
+        drafter_specs=drafter or (),
         day=day,
         log=_log,
     )
@@ -284,7 +303,17 @@ def status(ctx: typer.Context, run: RUN, live: LIVE_DAY = None) -> None:
         counts[item["stratum"]] = counts.get(item["stratum"], 0) + 1
     console.print(_strata_table(f"run {run}", ("items", counts)))
     table = Table(show_header=False, box=None)
-    table.add_row("drafts", str(len(store.read_jsonl(store.drafts_path))))
+    closed: dict[str, int] = {}
+    for item in items:
+        closed[closed_by_of(item)] = closed.get(closed_by_of(item), 0) + 1
+    table.add_row("closed by", ", ".join(f"{k} {v}" for k, v in sorted(closed.items())))
+    drafts: dict[str, list[int]] = {}
+    for row in store.read_jsonl(store.drafts_path):
+        slot = drafts.setdefault(str(row.get("drafter") or "unknown"), [0, 0])
+        slot[0] += 1
+        slot[1] += row.get("lesson") is None
+    for name, (count, declined) in sorted(drafts.items()):
+        table.add_row(f"drafts {name}", f"{count} ({declined} declined)")
     table.add_row("labels", str(len(store.read_jsonl(store.labels_path))))
     if store.verdicts_dir.exists():
         for path in sorted(store.verdicts_dir.glob("*.jsonl")):

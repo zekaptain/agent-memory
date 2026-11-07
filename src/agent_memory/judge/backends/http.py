@@ -27,6 +27,17 @@ def post_json(
     request = urllib.request.Request(
         url, data=data, headers={"Content-Type": "application/json", **(headers or {})}
     )
+    return _send(url, request, timeout)
+
+
+def get_json(url: str, timeout: float = 30.0) -> dict[str, Any]:
+    """GET a JSON object; same error handling as `post_json`."""
+    return _send(url, urllib.request.Request(url), timeout)[0]
+
+
+def _send(
+    url: str, request: urllib.request.Request, timeout: float
+) -> tuple[dict[str, Any], float]:
     started = time.perf_counter()
     payload = b""
     for attempt in range(TIMEOUT_RETRIES + 1):

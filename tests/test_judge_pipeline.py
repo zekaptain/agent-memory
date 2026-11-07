@@ -65,7 +65,7 @@ def test_import_candidates_decide_and_ledger_events(live_cfg, live_client, sessi
     by_item = {v["item_id"]: v for v in verdicts}
     assert by_item[t3["item_id"]]["answers"]["failed"]["value"] == "yes"
     assert by_item[t3["item_id"]]["answers"]["category"]["value"] == "tool_misuse"
-    assert "supported" not in by_item[t3["item_id"]]["answers"]  # no drafts yet
+    assert "grounded" not in by_item[t3["item_id"]]["answers"]  # no drafts yet
     assert decide_items(live_cfg, "t1", ["rules"]) == {"rules": 0}  # resumable
 
     _, rows = live_client.query(
@@ -78,7 +78,7 @@ def test_import_candidates_decide_and_ledger_events(live_cfg, live_client, sessi
         judge = json.loads(payload)["judge"]
         assert judge["run_id"] == "t1"
         assert judge["backend"] == "rules"
-        assert judge["questions_version"] == "questions_v1"
+        assert judge["questions_version"] == "questions_v2"
         assert judge["projection_hash"]
         assert judge["action"] in {"write_lesson", "review", "discard"}
         assert set(judge["answers"]["failed"]) == {"value", "probabilities", "confidence", "method"}
@@ -103,8 +103,11 @@ def test_import_candidates_decide_and_ledger_events(live_cfg, live_client, sessi
     assert len(verdicts) == 4
     redone = next(v for v in verdicts if v["item_id"] == t3["item_id"])
     assert redone["has_draft"] is True
-    assert redone["answers"]["supported"]["value"] == "yes"
-    assert redone["action"] == "write_lesson"
+    assert redone["answers"]["grounded"]["value"] == "yes"
+    # The rules floor cannot tell whether a lesson is already enforced, so its p(none) sits
+    # inside the band and the draft goes to review rather than straight to a write.
+    assert redone["action"] == "review"
+    assert any(r.startswith("enforced=0.60 within") for r in redone["reasons"])
     _, (count,) = live_client.query(
         "SELECT count(*) FROM events WHERE e.kind = 'decision'".replace("e.", "")
     )

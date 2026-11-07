@@ -1,15 +1,20 @@
-"""State projection (`projection_v2`): the bounded, deterministic text a judge sees for a turn.
+"""State projection (`projection_v3`): the bounded, deterministic text a judge sees for a turn.
 
 Built from ledger events only. Event ids never enter the text; a sidecar maps the numbered
 lines back to events so a verdict can cite evidence without the state leaving the machine.
 User messages are shown without the harness blocks the transcript wraps them in, and the
-header says who started the session and who wrote the next message.
+header says who started the session, how the turn closed, and who wrote the next message.
+
+The drafter sees the same text without the NEXT MESSAGE entry (`for_drafter`), so a lesson
+cannot fuse the request with an unrelated follow-up. The sidecar is shared, so cited line
+numbers mean the same thing in both renderings.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -20,7 +25,7 @@ from ..db import MemoryClient, sql_literal
 from .provenance import strip_harness_blocks
 from .triggers import Candidate, parse_payload, read_blob
 
-PROJECTION_VERSION = "projection_v2"
+PROJECTION_VERSION = "projection_v3"
 
 PROVENANCE_LABEL = {"human": "human", "parent_agent": "parent agent", "harness": "harness"}
 
@@ -58,6 +63,20 @@ class Projection:
     @property
     def hash(self) -> str:
         return hashlib.sha256(self.text.encode("utf-8")).hexdigest()
+
+    @property
+    def for_drafter(self) -> str:
+        return drafter_rendering(self.text)
+
+
+_NEXT_MESSAGE = re.compile(r"\n\[\d+\] NEXT MESSAGE\b")
+
+
+def drafter_rendering(text: str) -> str:
+    """The projection without its NEXT MESSAGE entry. That entry is always the last one, so
+    everything from its marker on is dropped; the numbering of the rest is unchanged."""
+    matches = list(_NEXT_MESSAGE.finditer(text))
+    return text[: matches[-1].start()] if matches else text
 
 
 def fetch_events(
@@ -128,7 +147,8 @@ def build_projection(
     caller = f"agent:{candidate.caller_role}" if candidate.caller_role else candidate.caller
     header = (
         f"Coding-agent turn. project={candidate.project or 'unknown'} "
-        f"session_started_by={caller} outcome={candidate.outcome_reason or 'none'} "
+        f"session_started_by={caller} closed_by={candidate.closed_by} "
+        f"outcome={candidate.outcome_reason or 'none'} "
         f"tool_calls={len(calls)} tool_errors={candidate.facts.get('tool_error_count', 0)}"
     )
     lines.append(header)

@@ -121,7 +121,8 @@ _SPEC = re.compile(r"^(?P<kind>[a-z]+)(?::(?P<arg>.+))?$")
 
 
 def make_backend(spec: str) -> DecisionBackend:
-    """`rules`, `readout:<ollama model>`, `llm:<ollama model>`, `jev[:<openrouter model>]`."""
+    """`rules`, `readout:<ollama model>`, `llm:<ollama model>`, `llamacpp:<llama-server model>`,
+    `jev[:<openrouter model>]`."""
     match = _SPEC.match(spec.strip())
     if not match:
         raise JudgeError(f"bad backend spec {spec!r}")
@@ -142,8 +143,16 @@ def make_backend(spec: str) -> DecisionBackend:
         if not arg:
             raise JudgeError("llm needs a model: llm:<ollama model>")
         return LlmJudgeBackend(model=arg)
+    if kind == "llamacpp":
+        from .llamacpp import LlamaCppJudgeBackend
+
+        if not arg:
+            raise JudgeError("llamacpp needs a model: llamacpp:<llama-server model id or alias>")
+        return LlamaCppJudgeBackend(model=arg)
     if kind == "jev":
         from .jev import JevBackend
 
         return JevBackend(model=arg) if arg else JevBackend()
-    raise JudgeError(f"unknown backend {kind!r}; choose rules, readout:M, llm:M, or jev")
+    raise JudgeError(
+        f"unknown backend {kind!r}; choose rules, readout:M, llm:M, llamacpp:M, or jev"
+    )

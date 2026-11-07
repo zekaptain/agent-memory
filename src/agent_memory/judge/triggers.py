@@ -1,8 +1,12 @@
-"""Turn segmentation over the ledger and the deterministic failure triggers (`triggers_v2`).
+"""Turn segmentation over the ledger and the deterministic failure triggers (`triggers_v3`).
 
 A turn is a `user_msg` and everything up to the next `outcome` event in the same session.
 Triggers read only what the ledger already records: the outcome reason, tool-result error
 flags, and the next message. They never read the agent's own claims.
+
+Every turn records how it closed: at its `outcome`, at the `next_message` that cut it off, or
+at the `session_end` with neither. Clean controls (T0) must have completed; triggered strata
+keep turns closed any way.
 
 Every user message is tagged with who wrote it (see `provenance`). Harness-injected messages
 open turns, so the agent's reaction to them is segmented, but those turns are not candidates
@@ -25,7 +29,7 @@ from ..capture.ids import NAMESPACE
 from ..db import MemoryClient
 from .provenance import HUMAN, Caller, Provenance, message_provenance, strip_harness_blocks
 
-TRIGGERS_VERSION = "triggers_v2"
+TRIGGERS_VERSION = "triggers_v3"
 
 # T1 cancelled, T2 error or provider failure, T3 tool error, T4 human correction,
 # T5 parent-agent correction, T0 clean.
@@ -35,6 +39,7 @@ PROVIDER_ERRORS = frozenset(
 STRATUM_PRIORITY = ("T2", "T1", "T3", "T4", "T5", "T0")
 TRIGGERED_STRATA = ("T1", "T3", "T4", "T5")
 CALLER_KINDS = ("human", "agent")
+CLOSED_BY = ("outcome", "next_message", "session_end")
 SNIPPET_CHARS = 500
 
 # Matched case-insensitively against the first 500 characters of the user's next message.
@@ -120,6 +125,12 @@ class Turn:
         if self.next_user is None:
             return None
         return message_provenance(self.next_user.snippet, self.caller.kind)
+
+    @property
+    def closed_by(self) -> str:
+        if self.outcome_reason is not None:
+            return "outcome"
+        return "next_message" if self.next_user is not None else "session_end"
 
     def of_kind(self, kind: str) -> list[TurnEvent]:
         return [e for e in self.events if e.kind == kind]
@@ -311,9 +322,20 @@ class Candidate:
     caller_role: str | None = None  # the spawned droid's role when caller is agent
     opener_provenance: str = "human"
     next_provenance: str | None = None
+    closed_by: str = "outcome"  # outcome, next_message, or session_end
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+def closed_by_of(item: Mapping[str, Any]) -> str:
+    """How an item's turn closed, derived for items written before `closed_by` was recorded."""
+    value = item.get("closed_by")
+    if value in CLOSED_BY:
+        return str(value)
+    if item.get("outcome_reason"):
+        return "outcome"
+    return "next_message" if item.get("next_user_event_id") else "session_end"
 
 
 def item_id_for(session_id: str, turn_event_id: str) -> str:
@@ -345,11 +367,16 @@ def candidates_from_turns(turns: Iterable[Turn]) -> list[Candidate]:
                 outcome_reason=turn.outcome_reason,
                 flags=flags,
                 stratum=stratum,
-                facts={**tool_error_facts(turn), "caller": turn.caller.label},
+                facts={
+                    **tool_error_facts(turn),
+                    "caller": turn.caller.label,
+                    "closed_by": turn.closed_by,
+                },
                 caller=turn.caller.kind,
                 caller_role=turn.caller.role,
                 opener_provenance=turn.opener_provenance,
                 next_provenance=turn.next_provenance,
+                closed_by=turn.closed_by,
             )
         )
     return out

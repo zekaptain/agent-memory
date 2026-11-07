@@ -1,4 +1,11 @@
-"""The typed question set (`questions_v1`) and the action derived from its answers."""
+"""The typed question set (`questions_v2`) and the action derived from its answers.
+
+Stage A is asked once per item from the projection alone; Stage B once per draft. The write
+rule reads only Stage B: a lesson is written when it is grounded, faithful, reusable beyond
+the turn, and enforced by nothing else. `failed` and `recurrence` describe the turn and are
+scored on their own, but no longer gate a write. `questions_v1` runs (exp1, exp2) keep their
+rule through `write_gates`.
+"""
 
 from __future__ import annotations
 
@@ -6,7 +13,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-QUESTIONS_VERSION = "questions_v1"
+QUESTIONS_VERSION = "questions_v2"
 
 QuestionType = Literal["noul", "choice", "score"]
 Stage = Literal["A", "B"]
@@ -54,6 +61,16 @@ CATEGORIES: dict[str, str] = {
     "none": "No failure: the turn achieved what the user asked.",
 }
 
+# Where a lesson may already be enforced. Shared by the `enforced` question and the
+# `enforced_by` label, so the judge and the reviewer answer from the same options.
+ENFORCED: dict[str, str] = {
+    "none": "Nothing else makes the agent behave this way; memory would be the only place.",
+    "harness": "The harness already enforces it (Mission prompts, system prompt, subagent "
+    "limits). In a session a parent agent started, its instructions count as harness.",
+    "project_docs": "The repository already says it (AGENTS.md, contributing guide, conventions).",
+    "tooling": "A tool would catch the slip anyway (lint, type check, CI, hook).",
+}
+
 STAGE_A: tuple[Question, ...] = (
     Question(
         "failed",
@@ -67,6 +84,21 @@ STAGE_A: tuple[Question, ...] = (
             "user's next message shows the work was wrong or incomplete.",
             "false": "The evidence shows the requested work was done, or the user moved on "
             "without objection.",
+        },
+    ),
+    Question(
+        "incomplete",
+        "noul",
+        "The turn ended before the agent finished: it was cut off by the next message or by the "
+        "end of the session, so whether the request was carried out cannot be read from it.",
+        "A",
+        {
+            "true": "The header says closed_by=next_message or closed_by=session_end and the "
+            "agent's last visible step is not a finished result: no final message that closes "
+            "the request, or work still in progress.",
+            "false": "The turn reached its outcome, or the agent's final message and tool "
+            "results show the request was carried through (or clearly failed) before the turn "
+            "ended.",
         },
     ),
     Question(
@@ -115,7 +147,7 @@ STAGE_A: tuple[Question, ...] = (
 
 STAGE_B: tuple[Question, ...] = (
     Question(
-        "supported",
+        "grounded",
         "noul",
         "The DRAFT LESSON is supported by the evidence it cites in this turn.",
         "B",
@@ -124,6 +156,19 @@ STAGE_B: tuple[Question, ...] = (
             "or user message shown above.",
             "false": "The lesson asserts something the cited evidence does not show, or cites "
             "nothing relevant.",
+        },
+    ),
+    Question(
+        "faithful",
+        "noul",
+        "The DRAFT LESSON's account of what happened in this turn is right: it does not misread "
+        "the evidence it cites.",
+        "B",
+        {
+            "true": "The lesson's description of the cause, the error, or the fact matches what "
+            "the cited lines actually show.",
+            "false": "The lesson misattributes the cause, describes an error or result that did "
+            "not happen as stated, or draws a rule the evidence contradicts.",
         },
     ),
     Question(
@@ -147,15 +192,31 @@ STAGE_B: tuple[Question, ...] = (
             "false": "It only describes the failure or states a vague intention.",
         },
     ),
+    Question(
+        "enforced",
+        "choice",
+        "Is the DRAFT LESSON already enforced somewhere the agent will meet anyway, so that "
+        "memory would add nothing? Judge the lesson, not the turn.",
+        "B",
+        ENFORCED,
+    ),
 )
 
 ALL_QUESTIONS: tuple[Question, ...] = STAGE_A + STAGE_B
 BY_ID: dict[str, Question] = {q.id: q for q in ALL_QUESTIONS}
 
+# The questions whose probability of clearing gates a write, per questions version.
+WRITE_GATES: tuple[str, ...] = ("grounded", "faithful", "generalizable", "enforced")
+WRITE_GATES_V1: tuple[str, ...] = ("failed", "recurrence", "supported")
+
 DEFAULT_THRESHOLDS: dict[str, float] = {
     "failed": 0.5,
     "recurrence": 0.5,
     "supported": 0.5,
+    "grounded": 0.5,
+    "faithful": 0.5,
+    "generalizable": 0.5,
+    "enforced": 0.5,
     "band": 0.15,
 }
 
@@ -168,17 +229,54 @@ class Derived:
     reasons: list[str] = field(default_factory=list)
 
 
+def write_gates(questions_version: str | None) -> tuple[str, ...]:
+    return WRITE_GATES_V1 if questions_version == "questions_v1" else WRITE_GATES
+
+
+def gate_probability(qid: str, probabilities: Mapping[str, float]) -> float | None:
+    """The probability that a gate is cleared: p(yes) for a noul question, the mass on levels
+    1 and 2 for `generalizable`, and p(none) for `enforced`."""
+    if qid == "generalizable":
+        if "1" not in probabilities and "2" not in probabilities:
+            return None
+        return float(probabilities.get("1", 0.0)) + float(probabilities.get("2", 0.0))
+    if qid == "enforced":
+        return probabilities.get("none")
+    return probabilities.get("yes")
+
+
+def gate_probabilities(
+    probabilities: Mapping[str, Mapping[str, float]], gates: Sequence[str] = WRITE_GATES
+) -> dict[str, float]:
+    """`{question id: probabilities}` from a verdict's answers, reduced to the write gates."""
+    out: dict[str, float] = {}
+    for qid in gates:
+        probs = probabilities.get(qid)
+        if probs is None:
+            continue
+        p = gate_probability(qid, probs)
+        if p is not None:
+            out[qid] = p
+    return out
+
+
 def derive_action(
-    p_true: Mapping[str, float], thresholds: Mapping[str, float] | None = None
+    p_true: Mapping[str, float],
+    thresholds: Mapping[str, float] | None = None,
+    *,
+    gates: Sequence[str] = WRITE_GATES,
+    declined: bool = False,
 ) -> Derived:
-    """write_lesson when failed, recurrence, and supported all clear their thresholds; review
-    when any of the three sits inside the uncertainty band; discard otherwise."""
+    """write_lesson when every gate clears its threshold; review when any gate sits inside the
+    uncertainty band; discard otherwise, and always for a draft the drafter declined."""
+    if declined:
+        return Derived("discard", ["drafter declined: nothing worth keeping"])
     t = {**DEFAULT_THRESHOLDS, **(thresholds or {})}
     band = t["band"]
     reasons = []
     uncertain = False
     all_above = True
-    for key in ("failed", "recurrence", "supported"):
+    for key in gates:
         p = p_true.get(key)
         if p is None:
             reasons.append(f"{key}: no answer")
