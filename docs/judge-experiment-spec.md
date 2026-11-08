@@ -952,3 +952,60 @@ deviations:
   reports the majority-class rate; criterion 6 is evaluated per reference
   drafter on held-out for `questions_v2` runs only; the `incomplete` slice
   appears only when the label exists.
+
+### Charmbracelet labeling interface, built 2026-11-07
+
+This replaces the Rich labeling screens described above, not the label
+definitions or the model's questions. `labels_v2`, `questions_v2`,
+citations, seeded item/draft order, review, backfill, edit history, and
+historical reports are unchanged.
+
+- Python's `LabelController` owns ordering, branching, validation, and
+  persistence. Its screen payload explicitly selects display fields.
+  Drafter identities, slot mappings, model verdicts and probabilities
+  never cross into the frontend. Subject headings identify the turn,
+  one blinded draft, or the comparison. Draft screens include lessons
+  and their cited evidence.
+- One Go process serves a labeling session. Bubble Tea owns lifecycle,
+  keyboard routing and modes; Huh supplies a single embedded selection
+  or note field bound to frontend-owned values; Bubbles supplies
+  viewports and keyboard help; Lip Gloss supplies measured layouts and
+  a shared terminal-aware palette. Dependencies are pinned released v2
+  packages in the packaged `label_ui/go.mod` and `go.sum`.
+- The question and answer list stay visible while Page Up/Down scrolls
+  evidence. `p` opens the full stored projection and `?` the complete
+  guide, both in-app. Esc or q returns without changing the highlight
+  or evidence offset. Back is always navigation, including at comparison;
+  choose draft B with arrows and Enter. Changing an answer removes
+  dependent answers that no longer apply. Notes have Add/edit and
+  Continue actions; letters are literal text, Enter accepts and Esc
+  cancels. Summary and review actions use the same selection controls.
+- Version 1 NDJSON travels over subprocess pipes with increasing request
+  IDs, an 8 MiB frame limit, and one action in flight. Go uses the
+  controlling terminal separately. Both boundaries reject invalid
+  messages without echoing their contents. Display text makes terminal
+  controls visible and preserves literal brackets. Saves publish a
+  private, fsynced label snapshot by atomic replacement. Only a successful
+  Python write allows a Saved notice; a failed write stays at the summary
+  for retry. An interrupted frontend does not undo saved items.
+- Brief opening instructions replace the long opening rubric. The full
+  guide preserves unclear versus incomplete, grounded versus faithful,
+  and human versus parent-agent instructions. Display names such as
+  Project documentation replace internal identifiers; stored values and
+  model prompts do not change.
+- `--plain` uses numbered linear prompts and explicit navigation commands,
+  without cursor controls or Go. Pipes and dumb terminals choose it
+  automatically. It shares the controller, not a second set of branches.
+  Its note input uses `/cancel`, since it reads lines rather than raw keys.
+- Wheels and source distributions include the small Go module. First
+  interactive use with pending work builds it under a private platform
+  cache, keyed by source/dependency bytes, protocol, platform and Go
+  toolchain. Builds hold a file lock, use `-mod=readonly`, and atomically
+  publish the executable. Cache hits do not rebuild. Missing Go and
+  build failures explicitly suggest `--plain`; they never silently
+  switch interfaces. See README for cache locations and commands.
+- Width changes restore terminal tab stops before repainting, using the
+  workaround documented in Bubble Tea issue
+  [#1838](https://github.com/charmbracelet/bubbletea/issues/1838), which
+  remains open for the pinned renderer. This protects terminals that
+  discard tab stops when a window narrows.

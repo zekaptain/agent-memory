@@ -33,6 +33,14 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/agent_memory"]
 
+[tool.hatch.build]
+exclude = ["/.agents", "/.factory"]
+artifacts = [
+    "src/agent_memory/judge/label_ui/*.go",
+    "src/agent_memory/judge/label_ui/go.mod",
+    "src/agent_memory/judge/label_ui/go.sum",
+]
+
 [tool.ruff]
 line-length = 100
 target-version = "py312"

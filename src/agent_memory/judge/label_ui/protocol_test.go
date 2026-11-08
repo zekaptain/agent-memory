@@ -1,0 +1,227 @@
+package main
+
+import (
+	"bufio"
+	"bytes"
+	"encoding/json"
+	"errors"
+	"io"
+	"strings"
+	"testing"
+)
+
+func syntheticScreen() screen {
+	return screen{
+		Item: 1, Total: 3, Subject: "Turn", Key: "1:failed",
+		Metadata:   "project synthetic · closed by completion",
+		Evidence:   strings.Repeat("[1] user: synthetic evidence 界 e\u0301 👩‍💻\n", 100),
+		Projection: strings.Repeat("[1] Full projection [literal brackets]\n", 130),
+		Guide:      strings.Repeat("Grounded: supported by the evidence.\n", 100),
+		Drafts:     []draft{},
+		Question:   "Did the turn fail?",
+		Options:    []option{{"yes", "Yes"}, {"no", "No"}, {"unclear", "Unclear"}},
+		CanBack:    true,
+	}
+}
+
+func wireFrame(t *testing.T, f frame) []byte {
+	t.Helper()
+	data, err := json.Marshal(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return append(data, '\n')
+}
+
+func screenWire(t *testing.T, s screen, id int64) []byte {
+	t.Helper()
+	return wireFrame(t, frame{Version: 1, RequestID: id, Type: "screen", Screen: &s})
+}
+
+func TestProtocolRoundTrip(t *testing.T) {
+	s := syntheticScreen()
+	data := screenWire(t, s, 42)
+	f, err := readFrame(bufio.NewReaderSize(bytes.NewReader(data), 17))
+	if err != nil || f.RequestID != 42 || f.Screen.Key != s.Key ||
+		f.Screen.Evidence != s.Evidence || len(f.Screen.Options) != 3 {
+		t.Fatalf("round trip: frame=%+v error=%v", f, err)
+	}
+	for _, subject := range []string{"Turn", "Draft A", "Draft B", "Compare drafts", "Notes", "Review", "Summary"} {
+		s.Subject = subject
+		if _, err := decodeFrame(screenWire(t, s, 1)); err != nil {
+			t.Fatalf("subject %s: %v", subject, err)
+		}
+	}
+	done, err := decodeFrame([]byte("{\"version\":1,\"request_id\":43,\"type\":\"done\",\"message\":\"Finished\"}\n"))
+	if err != nil || done.Message != "Finished" {
+		t.Fatal("done frame rejected")
+	}
+}
+
+func TestProtocolRejectsMalformedFrames(t *testing.T) {
+	valid := string(screenWire(t, syntheticScreen(), 1))
+	cases := map[string]string{
+		"unknown root field":  strings.Replace(valid, `"version":1`, `"unknown":"private sentinel","version":1`, 1),
+		"unknown screen":      strings.Replace(valid, `"key":`, `"secret":"private sentinel","key":`, 1),
+		"unknown option":      strings.Replace(valid, `"id":"yes"`, `"id":"yes","secret":"private sentinel"`, 1),
+		"duplicate root":      strings.Replace(valid, `"version":1`, `"version":1,"version":1`, 1),
+		"duplicate nested":    strings.Replace(valid, `"id":"yes"`, `"id":"yes","id":"no"`, 1),
+		"missing field":       strings.Replace(valid, `"selected":"",`, "", 1),
+		"null string":         strings.Replace(valid, `"selected":""`, `"selected":null`, 1),
+		"null bool":           strings.Replace(valid, `"can_back":true`, `"can_back":null`, 1),
+		"null array":          strings.Replace(valid, `"drafts":[]`, `"drafts":null`, 1),
+		"fractional id":       strings.Replace(valid, `"request_id":1`, `"request_id":1.1`, 1),
+		"string id":           strings.Replace(valid, `"request_id":1`, `"request_id":"1"`, 1),
+		"zero id":             strings.Replace(valid, `"request_id":1`, `"request_id":0`, 1),
+		"negative id":         strings.Replace(valid, `"request_id":1`, `"request_id":-1`, 1),
+		"overflow id":         strings.Replace(valid, `"request_id":1`, `"request_id":9223372036854775808`, 1),
+		"wrong version":       strings.Replace(valid, `"version":1`, `"version":2`, 1),
+		"unknown selected":    strings.Replace(valid, `"selected":""`, `"selected":"absent"`, 1),
+		"bad subject":         strings.Replace(valid, `"subject":"Turn"`, `"subject":"private sentinel"`, 1),
+		"two objects":         valid[:len(valid)-1] + "{}\n",
+		"physical newline":    "{}\n{}\n",
+		"missing newline":     valid[:len(valid)-1],
+		"not an object":       "[]\n",
+		"invalid JSON":        "{\"private sentinel\":\n",
+		"invalid UTF8":        "{\"version\":\"\xff\"}\n",
+		"unexpected done key": "{\"version\":1,\"request_id\":2,\"type\":\"done\",\"message\":\"\",\"screen\":{}}\n",
+	}
+	for name, data := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := decodeFrame([]byte(data))
+			if !errors.Is(err, errProtocol) || strings.Contains(err.Error(), "private sentinel") {
+				t.Fatalf("expected safe protocol error, got %v", err)
+			}
+		})
+	}
+}
+
+func TestProtocolValidatesScreenSemantics(t *testing.T) {
+	tests := map[string]func(*screen){
+		"negative item":    func(s *screen) { s.Item = -1 },
+		"invalid total":    func(s *screen) { s.Total = 0 },
+		"empty key":        func(s *screen) { s.Key = "" },
+		"control key":      func(s *screen) { s.Key = "1:\x1b[2Jfailed" },
+		"no options":       func(s *screen) { s.Options = []option{} },
+		"duplicate option": func(s *screen) { s.Options = append(s.Options, s.Options[0]) },
+		"empty option":     func(s *screen) { s.Options[0].ID = "" },
+		"control option":   func(s *screen) { s.Options[0].ID = "yes\nno" },
+		"long note":        func(s *screen) { s.Note = strings.Repeat("x", maxNote+1) },
+		"multiline note":   func(s *screen) { s.Note = "line\nline" },
+		"hidden identity":  func(s *screen) { s.Drafts = []draft{{Slot: "model-name"}} },
+		"duplicate slot":   func(s *screen) { s.Drafts = []draft{{Slot: "A"}, {Slot: "A"}} },
+	}
+	for name, edit := range tests {
+		t.Run(name, func(t *testing.T) {
+			s := syntheticScreen()
+			edit(&s)
+			if _, err := decodeFrame(screenWire(t, s, 1)); err != errProtocol {
+				t.Fatalf("expected protocol error, got %v", err)
+			}
+		})
+	}
+}
+
+func TestFrameBoundIncludesNewline(t *testing.T) {
+	base := []byte("{\"version\":1,\"request_id\":1,\"type\":\"done\",\"message\":\"\"}\n")
+	exact := bytes.Replace(base, []byte(`"message":""`),
+		[]byte(`"message":"`+strings.Repeat("x", maxFrame-len(base))+`"`), 1)
+	if len(exact) != maxFrame {
+		t.Fatal("test did not construct exact frame")
+	}
+	if _, err := readFrame(bufio.NewReader(bytes.NewReader(exact))); err != nil {
+		t.Fatalf("exact bound rejected: %v", err)
+	}
+	over := append(append([]byte{}, exact[:len(exact)-1]...), ' ', '\n')
+	if _, err := readFrame(bufio.NewReader(bytes.NewReader(over))); err != errProtocol {
+		t.Fatalf("oversized frame accepted: %v", err)
+	}
+	if _, err := readFrame(bufio.NewReader(strings.NewReader(strings.Repeat("x", maxFrame+1)))); err != errProtocol {
+		t.Fatalf("unbounded non-delimited input accepted: %v", err)
+	}
+}
+
+func TestEOFAndTruncatedFrameAreDistinct(t *testing.T) {
+	if _, err := readFrame(bufio.NewReader(strings.NewReader(""))); err != errClosed {
+		t.Fatalf("EOF: %v", err)
+	}
+	if _, err := readFrame(bufio.NewReader(strings.NewReader("{}"))); err != errProtocol {
+		t.Fatalf("truncated frame: %v", err)
+	}
+	r := bufio.NewReader(bytes.NewReader(append(
+		wireFrame(t, frame{1, 1, "done", nil, "One"}),
+		wireFrame(t, frame{1, 2, "done", nil, "Two"})...)))
+	for _, id := range []int64{1, 2} {
+		f, err := readFrame(r)
+		if err != nil || f.RequestID != id {
+			t.Fatal("frame boundaries were lost")
+		}
+	}
+	if _, err := readFrame(r); err != errClosed {
+		t.Fatal("expected EOF after two frames")
+	}
+}
+
+func TestSanitizeTerminalControlsButKeepLiteralText(t *testing.T) {
+	original := "[red]界 👩‍💻 e\u0301[/red]\x1b[31m red\x1b[0m\x1b]52;c;c2VjcmV0\a\x1b[2J\x00\x7f\u009b\u202e\n\tend"
+	got := clean(original)
+	if got != "[red]界 👩‍💻 e\u0301[/red] red\n    end" {
+		t.Fatalf("sanitization: %q", got)
+	}
+	s := syntheticScreen()
+	s.Question = original
+	s.Options[0].Label = "[blue]Yes[/blue]\x1b[31m"
+	s.Drafts = []draft{{"A", original, original}}
+	f, err := decodeFrame(screenWire(t, s, 1))
+	if err != nil || f.Screen.Question != got || f.Screen.Drafts[0].Lesson != got ||
+		f.Screen.Options[0].Label != "[blue]Yes[/blue]" {
+		t.Fatal("display fields were not sanitized")
+	}
+}
+
+func TestActionValidationAndBounds(t *testing.T) {
+	for _, name := range []string{"answer", "back", "skip", "quit", "redo", "note"} {
+		value := ""
+		if name == "answer" {
+			value = "B"
+		}
+		if name == "note" {
+			value = strings.Repeat("界", maxNote/3) + "x"
+		}
+		a := action{1, 9, "action", name, value}
+		var buf bytes.Buffer
+		if err := writeAction(&buf, a); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		var got action
+		if err := json.Unmarshal(buf.Bytes(), &got); err != nil || got != a ||
+			buf.Bytes()[buf.Len()-1] != '\n' {
+			t.Fatal("action frame does not match")
+		}
+	}
+	for _, a := range []action{
+		{2, 1, "action", "skip", ""}, {1, 0, "action", "skip", ""},
+		{1, 1, "screen", "skip", ""}, {1, 1, "action", "bad", ""},
+		{1, 1, "action", "back", "B"}, {1, 1, "action", "note", "a\nb"},
+		{1, 1, "action", "note", strings.Repeat("界", maxNote/3+1)},
+		{1, 1, "action", "answer", strings.Repeat("x", maxFrame)},
+	} {
+		if _, err := encodeAction(a); err != errProtocol {
+			t.Fatalf("invalid action accepted: %v", err)
+		}
+	}
+	if err := writeAction(shortWriter{}, action{1, 1, "action", "quit", ""}); err != errWrite {
+		t.Fatalf("short write not detected: %v", err)
+	}
+	if err := writeAction(errorWriter{}, action{1, 1, "action", "quit", ""}); err != errWrite {
+		t.Fatalf("write error not safe: %v", err)
+	}
+}
+
+type shortWriter struct{}
+
+func (shortWriter) Write(p []byte) (int, error) { return len(p) - 1, nil }
+
+type errorWriter struct{}
+
+func (errorWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }

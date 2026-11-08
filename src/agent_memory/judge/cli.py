@@ -14,7 +14,7 @@ from rich.table import Table
 
 from ..config import Config, load_config
 from .backends.base import REMOTE_ENV
-from .labeling import label_items
+from .label_frontend import label_session
 from .pipeline import (
     build_candidates,
     decide_items,
@@ -247,13 +247,25 @@ def label(
         bool,
         typer.Option("--review", help="Step through labeled items showing their current labels."),
     ] = False,
+    plain: Annotated[
+        bool,
+        typer.Option("--plain", help="Use numbered, linear prompts without the Go frontend."),
+    ] = False,
     live: LIVE_DAY = None,
 ) -> None:
     """Review items in the terminal. Verdicts are never shown. Resumable."""
     cfg = _config(ctx)
     store = _store(cfg, run, live)
     store.read_run()
-    label_items(store, console=console, limit=limit, seed=seed, item_ids=item or (), review=review)
+    label_session(
+        store,
+        plain=plain,
+        limit=limit,
+        seed=seed,
+        item_ids=tuple(item or ()),
+        review=review,
+        progress=_warn,
+    )
 
 
 @judge_app.command()

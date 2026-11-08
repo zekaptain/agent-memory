@@ -231,6 +231,38 @@ launchctl bootout gui/$(id -u)/com.agent-memory.serve
 
 ## Development
 
+### Labeling judge experiments
+
+`uv run mem --home /path/to/experiment judge label --run RUN` opens a
+full-screen, blinded review. Use arrows and Enter to answer, Page Up/Down
+to scroll evidence, `b` to go back, `p` for the full projection, and `?`
+for the guide. Notes are literal text; Enter accepts and Esc cancels.
+Review each item's summary before saving. Skip and quit never save the
+current item's unfinished answers.
+
+The interactive interface needs Go 1.26.4 or newer (pinned in
+`src/agent_memory/judge/label_ui/go.mod`). Its pinned dependencies may
+need network access on the first build. Sources ship in the Python
+wheel and source distribution. The first launch with work to label
+builds a private cached helper; unchanged launches reuse it. The cache
+is under `~/Library/Caches/agent-memory/label-ui` on macOS and
+`${XDG_CACHE_HOME:-~/.cache}/agent-memory/label-ui` on Linux. Source,
+dependency, protocol, platform, or Go toolchain changes trigger a new
+build. No experiment text is passed in command arguments or logs.
+
+Use `judge label --run RUN --plain` for numbered, linear prompts with
+no Go dependency or cursor controls. Pipes and `TERM=dumb` select plain
+mode automatically. Enter a choice number or a navigation command
+(`back`, `evidence`, `help`, `redo`, `skip`, `quit`). In the note input,
+letters are text and `/cancel` cancels the edit. Both interfaces share
+the same Python branching, blinding, resume, backfill, review, and
+label-history rules. Other judge commands still use Rich.
+
+Never label against the production home. See
+`docs/judge-experiment-spec.md` for experiment setup.
+
+### Checks
+
 ```sh
 uv sync
 uv run pytest            # unit, schema, policy, and end-to-end Quack tests
@@ -239,6 +271,10 @@ uv run ruff format .     # format
 uv run pyrefly check     # type check
 uv run mem smoke         # end-to-end check against a throwaway server
 ```
+
+For the Go labeling helper, run `gofmt -l .`, `go test ./...`,
+`go vet ./...`, and `go build -mod=readonly -o /tmp/agent-memory-label-ui .`
+from `src/agent_memory/judge/label_ui`.
 
 Schema changes go in a new file under `src/agent_memory/migrations/`
 (`NNNN_name.sql`). Applied migrations are checksummed and must not be edited.
