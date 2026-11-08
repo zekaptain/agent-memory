@@ -170,8 +170,8 @@ func compareScreen() screen {
 	s.Subject, s.Key, s.Question = "Compare drafts", "1:preferred", "Which lesson is better?"
 	s.Options = []option{{"A", "Draft A"}, {"B", "Draft B"}, {"tie", "Tie"}}
 	s.Drafts = []draft{
-		{"A", "Lesson Alpha [literal]", strings.Repeat("Alpha cited evidence 界\n", 50)},
-		{"B", "Lesson Beta", strings.Repeat("Beta cited evidence e\u0301\n", 50)},
+		{"A", "Lesson Alpha [literal]", strings.Repeat("Alpha cited evidence 界\n", 50), ""},
+		{"B", "Lesson Beta", strings.Repeat("Beta cited evidence e\u0301\n", 50), ""},
 	}
 	s.Evidence = ""
 	return s
@@ -280,7 +280,7 @@ func TestWaitingSaveRequiresControllerAcknowledgment(t *testing.T) {
 	if !strings.Contains(v, "Waiting for controller") || strings.Contains(v, "Saved") {
 		t.Fatal("frontend claimed local save success")
 	}
-	_, done := m.Update(frameMsg{frame: frame{1, 2, "done", nil, "Saved"}})
+	_, done := m.Update(frameMsg{frame: frame{protocolVersion, 2, "done", nil, "Saved"}})
 	if done == nil || m.err != nil {
 		t.Fatal("done acknowledgment did not quit cleanly")
 	}
@@ -326,7 +326,7 @@ func TestModelRejectsRequestReorderingAndUnsolicitedScreens(t *testing.T) {
 	}{{1, false}, {0, true}, {1, true}, {2, false}} {
 		m, _ := testModel(t, syntheticScreen())
 		m.waiting = tc.waiting
-		f := frame{1, tc.id, "screen", m.screen, ""}
+		f := frame{protocolVersion, tc.id, "screen", m.screen, ""}
 		_, cmd := m.Update(frameMsg{frame: f})
 		if m.err != errProtocol || cmd == nil {
 			t.Fatalf("invalid request accepted: %+v", tc)
@@ -499,6 +499,29 @@ func TestComparisonColumnsStackAtNarrowWidths(t *testing.T) {
 	press(m, "end") // Not a selection jump.
 	if m.selected != "A" {
 		t.Fatal("disabled letter/jump navigation returned")
+	}
+}
+
+func TestClaimFocusTitleAndEvidenceTag(t *testing.T) {
+	s := syntheticScreen()
+	s.Subject, s.Key = "Draft A", "1:A.c2.grounded"
+	s.Question = "Does this claim have evidence in the lines it cites?"
+	s.Evidence = ""
+	s.Drafts = []draft{{"A", "Rule: Check first.\nClaims:\n▶ 2. Claim text.", "[2] evidence", "Claim 2 of 3"}}
+	m, _ := testModel(t, s)
+	for _, width := range []int{40, 80, 140} {
+		m.Update(tea.WindowSizeMsg{Width: width, Height: 40})
+		assertFits(t, m, width, 40)
+		view := ansi.Strip(m.View().Content)
+		if strings.Count(view, "Draft A · Claim 2 of 3") != 2 {
+			t.Fatalf("claim title and evidence tag missing at %d:\n%s", width, view)
+		}
+	}
+	m, _ = testModel(t, compareScreen())
+	view := ansi.Strip(m.evidenceContent(140))
+	if !strings.Contains(view, "Draft A · Lesson") ||
+		!strings.Contains(view, "Draft B · Lesson") || strings.Contains(view, "Claim 2") {
+		t.Fatal("comparison inherited claim focus")
 	}
 }
 

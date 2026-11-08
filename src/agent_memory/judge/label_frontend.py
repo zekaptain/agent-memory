@@ -138,8 +138,10 @@ class PlainFrontend:
             self.write(screen.notice)
         self.write(screen.evidence)
         for draft in screen.drafts:
+            focus = f"\n{draft.focus}" if draft.focus else ""
             self.write(
-                f"\nDraft {draft.slot}\n{draft.lesson}\nCited evidence\n{draft.cited_evidence}"
+                f"\nDraft {draft.slot}{focus}\n{draft.lesson}"
+                f"\nCited evidence\n{draft.cited_evidence}"
             )
         while True:
             self.write("\n" + screen.question)

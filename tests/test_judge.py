@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
 import os
 import stat
 from collections.abc import Sequence
@@ -28,18 +30,33 @@ from agent_memory.judge.backends.llm import (
 )
 from agent_memory.judge.backends.readout import ReadoutBackend, _letter_logits, first_letter
 from agent_memory.judge.backends.rules import RulesBackend
-from agent_memory.judge.drafter import draft_hash, make_drafter, parse_draft
+from agent_memory.judge.drafter import SYSTEM, Draft, draft_hash, drafter_prompt, make_drafter
 from agent_memory.judge.label_controller import LabelController
+from agent_memory.judge.lesson import (
+    LESSON_KINDS,
+    LESSON_SCHEMA,
+    MAX_TEXT_CHARS,
+    Claim,
+    DraftReply,
+    Lesson,
+    entry_numbers,
+    lesson_from_row,
+    parse_lesson,
+    render_lesson,
+)
 from agent_memory.judge.pipeline import assign_splits
 from agent_memory.judge.projection import FullEvent, build_projection, drafter_rendering
 from agent_memory.judge.questions import (
     ALL_QUESTIONS,
     BY_ID,
+    QUESTIONS_VERSION,
     STAGE_A,
     STAGE_B,
     WRITE_GATES_V1,
+    aggregate_claims,
     derive_action,
     gate_probabilities,
+    stage_b_for,
     thresholds_from_run,
 )
 from agent_memory.judge.report import build_report
@@ -1041,7 +1058,7 @@ def test_llamacpp_judge_end_to_end_over_http():
     assert content_type == "application/json"
     assert body["response_format"] == {"type": "json_object"}
     assert (
-        "EVIDENCE\nS\n\nDRAFT LESSON: Run tests first.\n\nQUESTIONS"
+        "EVIDENCE\nS\n\nDRAFT LESSON:\nRun tests first.\n\nQUESTIONS"
         in body["messages"][1]["content"]
     )
     assert answers["failed"].value == "yes"
@@ -1130,18 +1147,31 @@ def test_llm_json_parsing():
         parse_judge_json("nothing here")
 
 
+def lesson_reply(rule="Stop the server first.", *, cited=(3, 5), claims=None):
+    return {
+        "lesson": {
+            "rule": rule,
+            "kind": "project_fact",
+            "claims": claims
+            if claims is not None
+            else [{"text": "The database was locked.", "cited": list(cited)}],
+        }
+    }
+
+
 def test_drafter_parsing_and_spec(monkeypatch):
     from agent_memory.judge.drafter import OpenAIChatDrafter
 
-    lesson, cited = parse_draft({"lesson": "Stop  the server\nfirst.", "cited": ["[3]", 5, "x", 3]})
-    assert lesson == "Stop the server first."
-    assert cited == [3, 5]
+    lesson = parse_lesson(lesson_reply("Stop  the server\nfirst.", cited=("[3]", 5, "x", 3)))
+    assert lesson is not None
+    assert lesson.rule == "Stop the server first."
+    assert lesson.claims[0].cited == (3, 5)
     # A declined draft is an explicit null; a missing or empty lesson is a drafter fault.
-    assert parse_draft({"lesson": None, "cited": [2]}) == (None, [2])
+    assert parse_lesson({"lesson": None}) is None
     with pytest.raises(JudgeError, match="empty"):
-        parse_draft({"lesson": ""})
-    with pytest.raises(JudgeError, match="no lesson field"):
-        parse_draft({"cited": [1]})
+        parse_lesson(lesson_reply(""))
+    with pytest.raises(JudgeError, match="lesson: Field required"):
+        parse_lesson({})
     assert draft_hash(None) is None
     assert draft_hash("x") == draft_hash("x") != draft_hash("y")
     assert make_drafter("ollama:gemma4:26b").name == "ollama:gemma4:26b"
@@ -1162,9 +1192,9 @@ def test_drafter_parsing_and_spec(monkeypatch):
     def fake_post(url, body, headers=None, **kwargs):
         bodies.append((url, body, headers))
         content = (
-            '{"lesson": null, "cited": []}'
+            '{"lesson": null}'
             if len(bodies) == 2
-            else ('{"lesson": "Run the tests before claiming done.", "cited": [2]}')
+            else json.dumps(lesson_reply("Run the tests before claiming done.", cited=(2,)))
         )
         return {
             "model": "served-model",
@@ -1175,7 +1205,8 @@ def test_drafter_parsing_and_spec(monkeypatch):
     monkeypatch.setattr(judge_http, "post_json", fake_post)
     draft = local.draft("i1", "[1] REQUEST: x\n[2] TOOL RESULT (ok): 3 passed")
     assert (draft.lesson, draft.cited, draft.declined) == (
-        "Run the tests before claiming done.",
+        "Rule: Run the tests before claiming done.\nKind: project_fact\nClaims:\n"
+        "1. The database was locked. [2]",
         [2],
         False,
     )
@@ -1184,8 +1215,14 @@ def test_drafter_parsing_and_spec(monkeypatch):
     assert draft.to_dict()["declined"] is False
     url, body, headers = bodies[0]
     assert headers == {}
-    assert body["max_tokens"] == 400
-    assert body["response_format"] == {"type": "json_object"}
+    assert body["max_tokens"] == 700
+    assert body["response_format"] == {
+        "type": "json_schema",
+        "json_schema": {"name": "lesson", "schema": LESSON_SCHEMA},
+    }
+    assert draft.schema_enforced
+    assert draft.rule == "Run the tests before claiming done."
+    assert draft.to_dict()["claims"] == [{"text": "The database was locked.", "cited": [2]}]
     assert body["reasoning_effort"] == "none"
     assert "closed_by" in body["messages"][0]["content"]
     assert '{"lesson": null}' in body["messages"][0]["content"]
@@ -1207,12 +1244,32 @@ def test_drafter_parsing_and_spec(monkeypatch):
     assert url == "https://openrouter.ai/api/v1/chat/completions"
     assert headers == {"Authorization": "Bearer sk-test"}
     assert body["usage"] == {"include": True}
+    assert body["response_format"]["json_schema"]["strict"] is True
+    assert body["response_format"]["json_schema"]["schema"] == LESSON_SCHEMA
+
+
+def test_drafter_prompt_leads_with_the_decline():
+    # Given the lesson template first, both local and hosted models filled it for every turn.
+    # The decline comes first in both messages, and a harness refusal is named as not a lesson
+    # in one sentence: a longer harness paragraph made the local model decline nearly everything.
+    assert SYSTEM.index('{"lesson": null}') < SYSTEM.index("1 to 4 claims")
+    assert SYSTEM.index("Most turns hold nothing worth keeping") < SYSTEM.index("Write a lesson")
+    harness = "A refusal the harness itself issued"
+    assert SYSTEM.count("harness") == 1
+    assert SYSTEM.index(harness) < SYSTEM.index('{"lesson": null}')
+    assert "plan is approved, is not a lesson" in SYSTEM
+    user = drafter_prompt("[1] REQUEST: x")
+    assert user.startswith("EVIDENCE\n[1] REQUEST: x\n\n")
+    assert user.index('{"lesson": null}') < user.index('"rule"')
+    assert user.index("tool_quirk: how a tool") > user.index('"claims"')
 
 
 def test_drafter_retries_a_cut_off_draft_with_more_room(monkeypatch):
     from agent_memory.judge.drafter import MAX_DRAFT_TOKENS, RETRY_DRAFT_TOKENS, OllamaDrafter
 
-    full = '{"lesson": "Check the script with ShellCheck before running it.", "cited": [4]}'
+    full = json.dumps(
+        lesson_reply("Check the script with ShellCheck before running it.", cited=(4,))
+    )
     partial = full[:40]
     bodies = []
 
@@ -1233,7 +1290,7 @@ def test_drafter_retries_a_cut_off_draft_with_more_room(monkeypatch):
     monkeypatch.setattr(judge_http, "post_json", openai_post)
     local = make_drafter("llamacpp:m")
     draft = local.draft("i1", "[4] TOOL RESULT: shellcheck ok")
-    assert draft.lesson == "Check the script with ShellCheck before running it."
+    assert draft.rule == "Check the script with ShellCheck before running it."
     assert [b["max_tokens"] for b in bodies] == [MAX_DRAFT_TOKENS, RETRY_DRAFT_TOKENS]
     assert bodies[0]["seed"] == bodies[1]["seed"]
     assert draft.latency_ms == 200.0
@@ -1271,6 +1328,317 @@ def test_drafter_retries_a_cut_off_draft_with_more_room(monkeypatch):
     assert draft.cited == [4]
     assert [b["num_predict"] for b in bodies] == [MAX_DRAFT_TOKENS, RETRY_DRAFT_TOKENS]
     assert draft.latency_ms == 100.0
+    assert draft.schema_enforced
+
+
+def test_http_status_error_exposes_code(monkeypatch):
+    import io
+    import urllib.error
+    from email.message import Message
+
+    def reject(*args, **kwargs):
+        raise urllib.error.HTTPError(
+            "http://localhost/test", 422, "bad schema", Message(), io.BytesIO(b"unsupported")
+        )
+
+    monkeypatch.setattr(judge_http.urllib.request, "urlopen", reject)
+    with pytest.raises(judge_http.HttpStatusError, match="HTTP 422") as error:
+        judge_http.post_json("http://localhost/test", {})
+    assert error.value.code == 422
+    assert error.value.latency_ms > 0
+
+
+@pytest.mark.parametrize(
+    ("change", "location"),
+    [
+        ({"kind": "PRIVATE_BAD_KIND"}, "lesson.kind"),
+        ({"claims": []}, "lesson.claims"),
+        ({"claims": [{"text": "PRIVATE_TEXT", "cited": []}] * 5}, "lesson.claims"),
+        ({"rule": " \n\t"}, "lesson.rule"),
+        ({"claims": [{"text": " ", "cited": []}]}, "lesson.claims.0.text"),
+        ({"PRIVATE_KEY": "PRIVATE_EXTRA"}, "lesson.[unexpected key]: Extra inputs"),
+        (
+            {"claims": [{"text": "PRIVATE_TEXT", "cited": [], "PRIVATE_KEY": 1}]},
+            "lesson.claims.0.[unexpected key]: Extra inputs",
+        ),
+    ],
+)
+def test_structured_reply_rejects_invalid_content_without_echoing(change, location):
+    data = lesson_reply("PRIVATE_RULE")
+    data["lesson"].update(change)
+    with pytest.raises(JudgeError, match="drafter reply rejected:") as error:
+        parse_lesson(data)
+    assert location in str(error.value)
+    assert "PRIVATE_" not in str(error.value)
+
+
+def test_structured_reply_coercion_bounds_declines_and_frozen_models():
+    assert parse_lesson({"lesson": None}) is None
+    for data in ({"lesson": None, "extra": "PRIVATE"}, {"lesson": "PRIVATE"}):
+        with pytest.raises(JudgeError) as error:
+            parse_lesson(data)
+        assert "PRIVATE" not in str(error.value)
+    lesson = parse_lesson(
+        lesson_reply(
+            " \tStop  the\nserver. ",
+            claims=[
+                {"text": " Too  much\ntext " + "x" * 400, "cited": ["[3]", 3, "x", -1, 0, 2, None]},
+                {"text": "Uncited.", "cited": []},
+                {"text": "Single.", "cited": "[7]"},
+                {"text": "Junk.", "cited": {"junk": 1}},
+            ],
+        )
+    )
+    assert lesson is not None
+    assert lesson.rule == "Stop the server."
+    assert len(lesson.claims[0].text) == MAX_TEXT_CHARS
+    assert lesson.claims[0].text.startswith("Too much text ")
+    assert [claim.cited for claim in lesson.claims] == [(3, 2), (), (7,), ()]
+    assert Lesson.model_fields["kind"].annotation is not None
+    assert set(LESSON_KINDS) == set(LESSON_SCHEMA["$defs"]["Lesson"]["properties"]["kind"]["enum"])
+    for model, field in (
+        (lesson, "rule"),
+        (lesson.claims[0], "text"),
+        (DraftReply(lesson=lesson), "lesson"),
+    ):
+        with pytest.raises(ValueError, match="frozen"):
+            setattr(model, field, None)
+
+
+def test_sampler_schema_keyword_set_is_grammar_safe():
+    keywords = set()
+
+    def visit(schema):
+        keywords.update(schema)
+        for key, value in schema.items():
+            if key in ("properties", "$defs"):
+                for child in value.values():
+                    visit(child)
+            elif key == "items":
+                visit(value)
+            elif key == "anyOf":
+                for child in value:
+                    visit(child)
+
+    visit(LESSON_SCHEMA)
+    assert keywords == {
+        "type",
+        "properties",
+        "required",
+        "additionalProperties",
+        "enum",
+        "anyOf",
+        "items",
+        "minItems",
+        "maxItems",
+        "$defs",
+        "$ref",
+    }
+    assert LESSON_SCHEMA["$defs"]["Lesson"]["properties"]["claims"]["minItems"] == 1
+    assert LESSON_SCHEMA["$defs"]["Lesson"]["properties"]["claims"]["maxItems"] == 4
+    for name in ("Claim", "Lesson"):
+        assert LESSON_SCHEMA["$defs"][name]["additionalProperties"] is False
+    assert LESSON_SCHEMA["additionalProperties"] is False
+
+
+def structured_draft(item_id="i", *, claims=None, drafter="ollama:m"):
+    lesson = parse_lesson(lesson_reply(claims=claims))
+    assert lesson is not None
+    return Draft.from_lesson(item_id, lesson, drafter=drafter, model_snapshot="m", latency_ms=12.0)
+
+
+def test_render_lesson_and_hash_cover_each_structured_field():
+    lesson = Lesson(
+        rule="Stop `mem serve` before running migrations on the same home.",
+        kind="project_fact",
+        claims=[
+            Claim(text='The migration failed with "database is locked".', cited=(7,)),
+            Claim(text="`mem serve` was still running on that home.", cited=(2, 4)),
+            Claim(text="An uncited claim.", cited=()),
+        ],
+    )
+    expected = (
+        "Rule: Stop `mem serve` before running migrations on the same home.\n"
+        "Kind: project_fact\nClaims:\n"
+        '1. The migration failed with "database is locked". [7]\n'
+        "2. `mem serve` was still running on that home. [2, 4]\n"
+        "3. An uncited claim. [no citation]"
+    )
+    assert render_lesson(lesson) == expected
+    assert draft_hash(expected) == hashlib.sha256(expected.encode()).hexdigest()
+    data = lesson.model_dump(mode="json")
+    assert lesson_from_row({**data, "lesson": expected}) == lesson
+    assert lesson_from_row({"lesson": "v2"}) is None
+    assert lesson_from_row({"lesson": None, "claims": [], "declined": True}) is None
+    assert entry_numbers("Header\n[2] hello\ncontinued\n[7] other\n") == {2, 7}
+    for key, value in (
+        ("rule", "Different."),
+        ("kind", "process"),
+        ("claims", [Claim(text="Other.", cited=(1,))]),
+    ):
+        changed = Lesson.model_validate({**data, key: value})
+        assert draft_hash(render_lesson(changed)) != draft_hash(expected)
+    changed = Lesson.model_validate(
+        {**data, "claims": [{**data["claims"][0], "cited": [8]}, *data["claims"][1:]]}
+    )
+    assert draft_hash(render_lesson(changed)) != draft_hash(expected)
+
+
+@pytest.mark.parametrize("code", [400, 422])
+def test_openrouter_schema_fallback_once_and_validates_reply(monkeypatch, code):
+    monkeypatch.setenv(REMOTE_ENV, "1")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    bodies = []
+
+    def post(url, body, **kwargs):
+        bodies.append(copy.deepcopy(body))
+        if len(bodies) == 1:
+            raise judge_http.HttpStatusError("schema unsupported", code, latency_ms=7.0)
+        return {"choices": [{"message": {"content": json.dumps(lesson_reply())}}]}, 20.0
+
+    monkeypatch.setattr(judge_http, "post_json", post)
+    draft = make_drafter("openrouter:m").draft("i", "state")
+    assert bodies[0]["response_format"] == {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "lesson",
+            "schema": LESSON_SCHEMA,
+            "strict": True,
+        },
+    }
+    assert bodies[1]["response_format"] == {"type": "json_object"}
+    assert len(bodies) == 2
+    assert draft.schema_enforced is False
+    assert draft.to_dict()["schema_enforced"] is False
+    assert draft.to_dict()["drafter_version"] == "drafter_v3"
+    assert draft.cited == [3, 5]
+    assert draft.latency_ms == 27.0
+
+    def rejected(url, body, **kwargs):
+        bodies.append(copy.deepcopy(body))
+        if body["response_format"]["type"] == "json_schema":
+            raise judge_http.HttpStatusError("unsupported", code)
+        return {"choices": [{"message": {"content": '{"lesson":"PRIVATE_INVALID"}'}}]}, 10.0
+
+    monkeypatch.setattr(judge_http, "post_json", rejected)
+    with pytest.raises(JudgeError, match="drafter reply rejected") as error:
+        make_drafter("openrouter:m").draft("i", "state")
+    assert "PRIVATE_INVALID" not in str(error.value)
+
+
+@pytest.mark.parametrize(
+    ("spec", "code"),
+    [
+        ("openrouter:m", 500),
+        ("openrouter:m", 503),
+        ("openrouter:m", 401),
+        ("openrouter:m", 402),
+        ("openrouter:m", 429),
+        ("llamacpp:m", 400),
+        ("openrouter:m", 400),
+    ],
+)
+def test_schema_fallback_does_not_swallow_server_or_repeated_errors(monkeypatch, spec, code):
+    monkeypatch.setenv(REMOTE_ENV, "1")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    calls = []
+
+    def post(*args, **kwargs):
+        calls.append(1)
+        raise judge_http.HttpStatusError("rejected", code)
+
+    monkeypatch.setattr(judge_http, "post_json", post)
+    with pytest.raises(judge_http.HttpStatusError) as error:
+        make_drafter(spec).draft("i", "state")
+    assert error.value.code == code
+    assert len(calls) == (2 if spec == "openrouter:m" and code == 400 else 1)
+
+
+def test_claim_questions_aggregation_and_rules():
+    lesson = parse_lesson(
+        lesson_reply(
+            claims=[
+                {"text": "The migration database was locked.", "cited": [2]},
+                {"text": "The migration database was locked.", "cited": [1]},
+                {"text": "The migration database was locked.", "cited": []},
+            ]
+        )
+    )
+    assert lesson is not None
+    questions = stage_b_for(lesson)
+    assert [q.id for q in questions] == [
+        "grounded.1",
+        "faithful.1",
+        "grounded.2",
+        "faithful.2",
+        "grounded.3",
+        "faithful.3",
+        "generalizable",
+        "actionable",
+        "enforced",
+    ]
+    assert (
+        "Claim 3: The migration database was locked. (cites nothing)" in questions[4].instructions
+    )
+    assert stage_b_for(None) is STAGE_B
+    assert stage_b_for(Lesson.model_construct(rule="r", kind="process", claims=[])) is STAGE_B
+    assert "Every claim" not in " ".join(questions[0].option_descriptions())
+    assert "This claim" in " ".join(questions[1].option_descriptions())
+    inp = JudgeInput(
+        item_id="i",
+        state="[1] REQUEST: Read a file.\n[2] ERROR: migration database was locked.",
+        facts={},
+        draft=render_lesson(lesson),
+        claims=tuple(lesson.claims),
+    )
+    assert "\nDRAFT LESSON:\nRule: " in inp.state_with_draft()
+    answers = RulesBackend().decide(inp, questions)
+    check_contract(answers, questions)
+    assert [answers[f"grounded.{i}"].p_true for i in range(1, 4)] == [0.8, 0.2, 0.1]
+    assert [answers[f"faithful.{i}"].p_true for i in range(1, 4)] == [0.65, 0.35, 0.1]
+    aggregated = aggregate_claims(answers)
+    for key in ("grounded", "faithful"):
+        assert aggregated[key].p_true == 0.1
+        assert aggregated[key].method == "min_over_claims"
+        assert aggregated[key].latency_ms == aggregated[key].cost_usd == 0
+        assert key not in answers
+    assert aggregate_claims({}) == {}
+    assert aggregate_claims({"grounded": aggregated["grounded"]}) == {}
+
+
+def test_judge_draft_keeps_claim_answers_and_derived_gates():
+    from agent_memory.judge.pipeline import decision_record, judge_item
+
+    draft = structured_draft(
+        claims=[
+            {"text": "The database was locked.", "cited": [1]},
+            {"text": "The server kept running.", "cited": []},
+        ]
+    ).to_dict()
+    item = {
+        "item_id": "i",
+        "facts": {},
+        "flags": ["T0"],
+        "projection_hash": "h",
+        "stratum": "T0",
+        "turn_event_id": "t",
+    }
+    verdict = judge_item(
+        RulesBackend(), item, "[1] The database was locked.", draft, {}, run_id="s"
+    )
+    assert verdict["claims"] == 2
+    assert verdict["draft_hash"] == draft_hash(draft["lesson"])
+    assert verdict["questions_version"] == "questions_v3"
+    assert verdict["action"] == "review"  # enforced=0.6 still lies inside the unchanged band
+    assert "grounded=0.10 below 0.50" in verdict["reasons"]
+    assert verdict["answers"]["grounded.1"]["probabilities"]["yes"] == 0.8
+    assert verdict["answers"]["grounded"]["probabilities"]["yes"] == 0.1
+    assert verdict["answers"]["grounded"]["method"] == "min_over_claims"
+    assert verdict["answers"]["faithful"]["probabilities"]["yes"] == 0.1
+    record = decision_record(verdict, item, "2026-01-01T00:00:00+00:00")
+    assert record.payload is not None
+    assert record.payload["judge"]["answers"]["grounded.1"]["value"] == "yes"
+    assert "database was locked" not in json.dumps(record.payload)
 
 
 # Metrics
@@ -1389,7 +1757,7 @@ def _verdict(
         "item_id": item_id,
         "backend": backend,
         "projection_hash": f"h{i}",
-        "questions_version": "questions_v1" if v1 else "questions_v2",
+        "questions_version": "questions_v1" if v1 else QUESTIONS_VERSION,
         "latency_ms": latency,
         "cost_usd": 0.0,
         "answers": answers,
@@ -1406,12 +1774,14 @@ def _verdict(
 
 
 def synthetic_run(tmp_path: Path, *, n: int = 20, v1: bool = False) -> RunStore:
-    """A labeled run with `rules` and `llm:ref` verdicts. v2 by default: one `ollama:m` draft per
-    item with per-draft labels. `v1` builds an exp2-shaped run: no drafter on verdicts,
+    """A current run with legacy-shaped drafts and labels, exercising Stage B's fallback.
+    `v1` builds an exp2-shaped run: no drafter on verdicts,
     `supported`/`generalizable`/`enforced_by` on the item."""
     cfg = Config(home=tmp_path / "exp")
     store = RunStore(cfg, "syn")
-    store.create({"questions_version": "questions_v1" if v1 else "questions_v2", "thresholds": {}})
+    store.create(
+        {"questions_version": "questions_v1" if v1 else QUESTIONS_VERSION, "thresholds": {}}
+    )
     items, labels, drafts, rules, llm = [], [], [], [], []
     for i in range(n):
         item_id = f"{i:08d}-0000-0000-0000-000000000000"
@@ -1589,7 +1959,7 @@ def test_report_cli_keeps_raw_stdout_clean_and_warns_about_width(tmp_path, capsy
     assert "Judge report: syn" in out
     assert "written to" not in out
     assert "squeezed into 100 columns and need about 150" in err
-    assert "Versions: unknown, unknown, questions_v2" in out
+    assert "Versions: unknown, unknown, questions_v3" in out
 
 
 def test_labeling_shows_rubric_cited_evidence_and_incomplete(tmp_path):
@@ -1658,7 +2028,7 @@ def test_drafter_caps_output_and_draft_items_skips_bad_items(tmp_path, monkeypat
             raise JudgeError("http://x: timed out after 300s")
         return {
             "model": "m",
-            "message": {"content": '{"lesson": "Run tests first.", "cited": [1]}'},
+            "message": {"content": json.dumps(lesson_reply("Run tests first.", cited=(1,)))},
         }, 12.0
 
     monkeypatch.setattr(judge_http, "post_json", fake_post)
@@ -1669,7 +2039,8 @@ def test_drafter_caps_output_and_draft_items_skips_bad_items(tmp_path, monkeypat
         cfg, "syn", "ollama:m", store=store, log=logs.append, warn=warnings.append
     )
     assert (summary.written, summary.declined, summary.failed) == (3, 0, 1)
-    assert bodies[0]["options"]["num_predict"] == 400
+    assert bodies[0]["options"]["num_predict"] == 700
+    assert bodies[0]["format"] == LESSON_SCHEMA
     assert bodies[0]["think"] is False
     # The drafter never sees the next message.
     assert "NEXT MESSAGE" not in bodies[0]["messages"][1]["content"]
@@ -1680,7 +2051,7 @@ def test_drafter_caps_output_and_draft_items_skips_bad_items(tmp_path, monkeypat
     rows = store.read_jsonl(store.drafts_path)
     assert len(rows) == 3
     assert all(r["drafter"] == "ollama:m" and r["declined"] is False for r in rows)
-    assert rows[0]["drafter_version"] == "drafter_v2"
+    assert rows[0]["drafter_version"] == "drafter_v3"
     # The skipped item is picked up by the next run.
     assert pipeline.draft_items(cfg, "syn", "ollama:m", store=store).written == 1
     assert isinstance(pipeline.make_drafter("ollama:m"), OllamaDrafter)
@@ -1691,9 +2062,9 @@ def test_drafter_caps_output_and_draft_items_skips_bad_items(tmp_path, monkeypat
     # A second drafter adds its own rows and leaves the first's alone; a decline is a row too.
     def fake_openai(url, body, headers=None, **kwargs):
         content = (
-            '{"lesson": null, "cited": []}'
+            '{"lesson": null}'
             if len(bodies) % 2
-            else ('{"lesson": "Check first.", "cited": [1]}')
+            else json.dumps(lesson_reply("Check first.", cited=(1,)))
         )
         bodies.append(body)
         return {
@@ -1898,3 +2269,296 @@ def test_decide_items_judges_each_draft_and_reuses_stage_a(tmp_path, monkeypatch
     assert pipeline.decide_items(cfg, "syn", ["rules"], store=store, record_events=False) == {
         "rules": 0
     }
+
+
+def test_draft_refuses_mixed_versions_before_request_or_write(tmp_path, monkeypatch):
+    from agent_memory.judge import pipeline
+
+    store = synthetic_run(tmp_path, n=1)
+    rows = store.read_jsonl(store.drafts_path)
+    rows[0]["drafter_version"] = "drafter_v2"
+    store.write_jsonl(store.drafts_path, rows)
+    before = (store.run_json.read_bytes(), store.drafts_path.read_bytes())
+
+    def unexpected(*args):
+        pytest.fail("mixed-version guard must run before constructing a drafter")
+
+    monkeypatch.setattr(pipeline, "make_drafter", unexpected)
+    with pytest.raises(
+        JudgeError,
+        match=(
+            r"run syn holds drafter_v2 drafts; drafter_v3 arms cannot be mixed in\. "
+            r"Start a new run\."
+        ),
+    ):
+        pipeline.draft_items(store.cfg, store.run_id, "llamacpp:new", store=store)
+    assert (store.run_json.read_bytes(), store.drafts_path.read_bytes()) == before
+
+
+def test_questions_v2_reports_but_mutating_commands_are_read_only(tmp_path):
+    from agent_memory.judge import pipeline
+
+    store = synthetic_run(tmp_path)
+    store.update_run(questions_version="questions_v2")
+    assert "## Claims" not in build_report(store)
+    assert "questions_v2" in build_report(store, freeze=True)
+    assert "criterion 6" in build_report(store)
+    paths = [store.run_json, store.drafts_path, store.labels_path, store.verdicts_path("rules")]
+    before = [path.read_bytes() for path in paths]
+    for call in (
+        lambda: pipeline.draft_items(store.cfg, store.run_id, "ollama:m", store=store),
+        lambda: pipeline.decide_items(store.cfg, store.run_id, ["rules"], store=store),
+        lambda: LabelController(store),
+        lambda: LabelController(store, review=True),
+    ):
+        with pytest.raises(JudgeError, match="questions_v2"):
+            call()
+    assert [path.read_bytes() for path in paths] == before
+
+
+def test_per_claim_labels_round_trip_partial_backfill_and_changes():
+    from agent_memory.judge.labeling import (
+        assemble,
+        changed_values,
+        missing_steps,
+        order_drafts,
+        raw_answers,
+        steps_for,
+    )
+
+    draft = structured_draft(
+        claims=[
+            {"text": "First claim.", "cited": [1]},
+            {"text": "Second claim.", "cited": []},
+        ]
+    )
+    views = order_drafts("i", [draft.to_dict()], 1)
+    assert len(views[0].claims) == 2
+    raw = {
+        "failed": "n",
+        "worth_remembering": "n",
+        "A.c1.grounded": "y",
+        "A.c1.faithful": "y",
+        "A.c2.grounded": "n",
+        "A.c2.faithful": "n",
+        "A.generalizable": "1",
+        "A.enforced_by": "1",
+        "note": "",
+    }
+    assert steps_for(raw, views, False) == list(raw)
+    row = assemble(raw, views, False)
+    entry = row["drafts"]["ollama:m"]
+    assert entry == {
+        "slot": "A",
+        "draft_hash": draft_hash(draft.lesson),
+        "declined": False,
+        "claims": [{"grounded": True, "faithful": True}, {"grounded": False, "faithful": False}],
+        "grounded": False,
+        "faithful": False,
+        "generalizable": 1,
+        "enforced_by": "none",
+    }
+    assert raw_answers(row, views) == raw
+    assert missing_steps(row, views, False) == []
+    edited = assemble({**raw, "A.c1.grounded": "n"}, views, False)
+    assert changed_values(row, edited) == {"drafts.ollama:m.claims.1.grounded": True}
+    partial = assemble(
+        {key: value for key, value in raw.items() if not key.startswith("A.c2")}, views, False
+    )
+    assert partial["drafts"]["ollama:m"]["grounded"] is None
+    assert missing_steps(partial, views, False) == ["A.c2.grounded", "A.c2.faithful"]
+    partial = assemble({"A.c1.grounded": "n"}, views, False)
+    assert partial["drafts"]["ollama:m"]["grounded"] is False
+    complete = assemble({**raw, "A.c2.grounded": "y", "A.c2.faithful": "y"}, views, False)
+    assert complete["drafts"]["ollama:m"]["grounded"] is True
+    assert complete["drafts"]["ollama:m"]["faithful"] is True
+
+
+def test_claim_controller_focus_evidence_summary_navigation_and_history(tmp_path):
+    from agent_memory.judge.label_controller import Action
+
+    store = synthetic_run(tmp_path, n=1)
+    store.labels_path.unlink()
+    item_id = store.read_jsonl(store.items_path)[0]["item_id"]
+    store.write_jsonl(
+        store.drafts_path,
+        [
+            structured_draft(
+                item_id,
+                claims=[
+                    {"text": "The database was locked.", "cited": [2]},
+                    {"text": "The server was running.", "cited": [1, 9]},
+                    {"text": "No evidence here.", "cited": []},
+                ],
+            ).to_dict()
+        ],
+    )
+    store.write_projection(item_id, "[1] Server evidence.\n[2] Lock evidence.\n[3] Other evidence.")
+    controller = LabelController(store)
+    for value in ("n", "n"):
+        controller.apply(Action("answer", value))
+    assert controller.step == "A.c1.grounded"
+    screen = controller.screen()
+    assert screen.subject == "Draft A"
+    assert screen.question == "Does this claim have evidence in the lines it cites?"
+    assert screen.drafts[0].focus == "Claim 1 of 3"
+    assert screen.drafts[0].lesson.count("▶") == 1
+    assert "▶ 1. The database was locked." in screen.drafts[0].lesson
+    assert "[2] Lock evidence." in screen.drafts[0].cited_evidence
+    assert "[1]" not in screen.drafts[0].cited_evidence
+    controller.apply(Action("answer", "y"))
+    assert controller.screen().question == "Does this claim read those lines correctly?"
+    controller.apply(Action("answer", "y"))
+    assert controller.step == "A.c2.grounded"
+    screen = controller.screen()
+    assert screen.drafts[0].focus == "Claim 2 of 3"
+    assert "[1] Server evidence." in screen.drafts[0].cited_evidence
+    assert "Missing citations: [9]" in screen.drafts[0].cited_evidence
+    assert "[2]" not in screen.drafts[0].cited_evidence
+    controller.apply(Action("answer", "n"))
+    controller.apply(Action("back"))
+    assert controller.step == "A.c2.grounded"
+    assert controller.screen().selected == "n"
+    controller.apply(Action("answer", "n"))
+    controller.apply(Action("answer", "n"))
+    assert controller.screen().drafts[0].cited_evidence == "No cited evidence."
+    controller.apply(Action("answer", "n"))
+    controller.apply(Action("answer", "n"))
+    assert controller.step == "A.generalizable"
+    screen = controller.screen()
+    assert screen.drafts[0].focus == ""
+    assert "▶" not in screen.drafts[0].lesson
+    assert "[1] Server evidence." in screen.drafts[0].cited_evidence
+    assert "[2] Lock evidence." in screen.drafts[0].cited_evidence
+    controller.apply(Action("answer", "1"))
+    controller.apply(Action("answer", "1"))
+    controller.apply(Action("answer", "continue"))
+    assert "Draft A claim 2: Grounded: No" in controller.screen().evidence
+    controller.apply(Action("answer", "save"))
+    saved = store.read_jsonl(store.labels_path)[0]
+    assert saved["labels_version"] == "labels_v3"
+    assert saved["drafts"]["ollama:m"]["grounded"] is False
+    review = LabelController(store, item_ids=[item_id])
+    while review.step != "A.c1.grounded":
+        review.apply(Action("answer", review.screen().selected))
+    review.apply(Action("answer", "n"))
+    while review.step != "summary":
+        review.apply(
+            Action("answer", "continue" if review.step == "note" else review.screen().selected)
+        )
+    review.apply(Action("answer", "save"))
+    saved = store.read_jsonl(store.labels_path)[0]
+    assert saved["history"][0]["changed"] == {"drafts.ollama:m.claims.1.grounded": True}
+    # Backfill a single missing claim answer, not the entire draft.
+    saved["drafts"]["ollama:m"]["claims"][1]["faithful"] = None
+    store.write_jsonl(store.labels_path, [saved])
+    backfill = LabelController(store)
+    assert backfill.plan == ["A.c2.faithful"]
+    backfill.apply(Action("answer", "n"))
+    backfill.apply(Action("answer", "save"))
+    assert LabelController(store).done
+
+
+def test_claim_focus_survives_a_lesson_text_that_is_not_the_rendering(tmp_path):
+    from agent_memory.judge.label_controller import Action
+
+    store = synthetic_run(tmp_path, n=1)
+    store.labels_path.unlink()
+    item_id = store.read_jsonl(store.items_path)[0]["item_id"]
+    row = structured_draft(item_id, claims=[{"text": "Only claim.", "cited": [1]}]).to_dict()
+    store.write_jsonl(store.drafts_path, [{**row, "lesson": "Edited by hand"}])
+    store.write_projection(item_id, "[1] Evidence.")
+    controller = LabelController(store)
+    for value in ("n", "n"):
+        controller.apply(Action("answer", value))
+    assert controller.step == "A.c1.grounded"
+    screen = controller.screen()
+    assert screen.drafts[0].focus == "Claim 1 of 1"
+    assert screen.drafts[0].lesson == "Edited by hand"
+    assert "[1] Evidence." in screen.drafts[0].cited_evidence
+
+
+def test_lesson_from_row_reports_a_bad_row_without_echoing_it():
+    row = {
+        "item_id": "i",
+        "drafter": "ollama:m",
+        "lesson": "x",
+        "rule": "r",
+        "kind": "PRIVATE_KIND",
+        "claims": [{"text": "PRIVATE_TEXT", "cited": [], "PRIVATE_KEY": 1}],
+    }
+    with pytest.raises(JudgeError, match="draft row for item 'i' by 'ollama:m'") as error:
+        lesson_from_row(row)
+    assert "kind: Input should be" in str(error.value)
+    assert "claims.0.[unexpected key]: Extra inputs" in str(error.value)
+    assert "PRIVATE" not in str(error.value)
+
+
+def test_claim_report_rates_metrics_kind_and_legacy_absence(tmp_path):
+    from agent_memory.judge import pipeline
+    from agent_memory.judge.labeling import assemble, order_drafts
+
+    store = synthetic_run(tmp_path, n=3)
+    assert "## Claims" not in build_report(store)
+    items = store.read_jsonl(store.items_path)
+    drafts, labels = [], []
+    for i, item in enumerate(items):
+        if i == 2:
+            draft = Draft.from_lesson(
+                item["item_id"], None, drafter="ollama:m", model_snapshot="m", latency_ms=10.0
+            )
+        else:
+            draft = structured_draft(
+                item["item_id"],
+                claims=[
+                    {"text": "The database was locked.", "cited": [1]},
+                    {"text": "The server was running.", "cited": []},
+                    {"text": "Missing evidence.", "cited": [9]},
+                ],
+            )
+        drafts.append(draft.to_dict())
+        views = order_drafts(item["item_id"], [draft.to_dict()], 1)
+        label = assemble(
+            {
+                "failed": "n",
+                "worth_remembering": "y",
+                "lesson_kind": "1" if i == 0 else "3",
+                "A.c1.grounded": "y",
+                "A.c1.faithful": "y",
+                "A.c2.grounded": "n",
+                "A.c2.faithful": "n",
+                "A.c3.grounded": "y",
+                "A.c3.faithful": "n",
+                "A.generalizable": "1",
+                "A.enforced_by": "1",
+                "note": "",
+            },
+            views,
+            False,
+        )
+        labels.append({"item_id": item["item_id"], **label})
+        store.write_projection(item["item_id"], "[1] The database was locked.")
+    store.write_jsonl(store.drafts_path, drafts)
+    store.write_jsonl(store.labels_path, labels)
+    store.verdicts_path("rules").unlink()
+    store.verdicts_path("llm:ref").unlink()
+    pipeline.decide_items(store.cfg, store.run_id, ["rules"], store=store, record_events=False)
+    report = build_report(store)
+    assert "## Claims" in report
+    assert (
+        "| ollama:m | 3 | 2.00 | 6 | 0.333 | 0.500 | 6 | 0.667 | 6 | 0.333 | 2 | 0.500 |"
+    ) in report
+    assert "| rules | calibration | grounded | 6 | 0.667 | 1.000 | 0.500 | 0.667 |" in report
+    assert "| rules | calibration | faithful | 6 | 1.000 | 1.000 | 1.000 | 1.000 |" in report
+    assert "The database was locked" not in report
+    # Claim decisions obey the same held-out lock as draft-level metrics.
+    items[1]["split"] = "held_out"
+    store.write_jsonl(store.items_path, items)
+    report = build_report(store)
+    assert "| rules | held_out | grounded |" not in report
+    report = build_report(store, freeze=True)
+    assert "| rules | held_out | grounded | 3 |" in report
+    # Purging evidence does not invent missing-citation failures.
+    store.purge_projections()
+    report = build_report(store)
+    assert "4 citation reference(s) could not be checked" in report

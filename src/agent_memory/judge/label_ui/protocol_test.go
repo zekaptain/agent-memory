@@ -35,7 +35,7 @@ func wireFrame(t *testing.T, f frame) []byte {
 
 func screenWire(t *testing.T, s screen, id int64) []byte {
 	t.Helper()
-	return wireFrame(t, frame{Version: 1, RequestID: id, Type: "screen", Screen: &s})
+	return wireFrame(t, frame{Version: protocolVersion, RequestID: id, Type: "screen", Screen: &s})
 }
 
 func TestProtocolRoundTrip(t *testing.T) {
@@ -52,7 +52,7 @@ func TestProtocolRoundTrip(t *testing.T) {
 			t.Fatalf("subject %s: %v", subject, err)
 		}
 	}
-	done, err := decodeFrame([]byte("{\"version\":1,\"request_id\":43,\"type\":\"done\",\"message\":\"Finished\"}\n"))
+	done, err := decodeFrame([]byte("{\"version\":2,\"request_id\":43,\"type\":\"done\",\"message\":\"Finished\"}\n"))
 	if err != nil || done.Message != "Finished" {
 		t.Fatal("done frame rejected")
 	}
@@ -61,10 +61,10 @@ func TestProtocolRoundTrip(t *testing.T) {
 func TestProtocolRejectsMalformedFrames(t *testing.T) {
 	valid := string(screenWire(t, syntheticScreen(), 1))
 	cases := map[string]string{
-		"unknown root field":  strings.Replace(valid, `"version":1`, `"unknown":"private sentinel","version":1`, 1),
+		"unknown root field":  strings.Replace(valid, `"version":2`, `"unknown":"private sentinel","version":2`, 1),
 		"unknown screen":      strings.Replace(valid, `"key":`, `"secret":"private sentinel","key":`, 1),
 		"unknown option":      strings.Replace(valid, `"id":"yes"`, `"id":"yes","secret":"private sentinel"`, 1),
-		"duplicate root":      strings.Replace(valid, `"version":1`, `"version":1,"version":1`, 1),
+		"duplicate root":      strings.Replace(valid, `"version":2`, `"version":2,"version":2`, 1),
 		"duplicate nested":    strings.Replace(valid, `"id":"yes"`, `"id":"yes","id":"no"`, 1),
 		"missing field":       strings.Replace(valid, `"selected":"",`, "", 1),
 		"null string":         strings.Replace(valid, `"selected":""`, `"selected":null`, 1),
@@ -75,7 +75,7 @@ func TestProtocolRejectsMalformedFrames(t *testing.T) {
 		"zero id":             strings.Replace(valid, `"request_id":1`, `"request_id":0`, 1),
 		"negative id":         strings.Replace(valid, `"request_id":1`, `"request_id":-1`, 1),
 		"overflow id":         strings.Replace(valid, `"request_id":1`, `"request_id":9223372036854775808`, 1),
-		"wrong version":       strings.Replace(valid, `"version":1`, `"version":2`, 1),
+		"wrong version":       strings.Replace(valid, `"version":2`, `"version":1`, 1),
 		"unknown selected":    strings.Replace(valid, `"selected":""`, `"selected":"absent"`, 1),
 		"bad subject":         strings.Replace(valid, `"subject":"Turn"`, `"subject":"private sentinel"`, 1),
 		"two objects":         valid[:len(valid)-1] + "{}\n",
@@ -84,7 +84,7 @@ func TestProtocolRejectsMalformedFrames(t *testing.T) {
 		"not an object":       "[]\n",
 		"invalid JSON":        "{\"private sentinel\":\n",
 		"invalid UTF8":        "{\"version\":\"\xff\"}\n",
-		"unexpected done key": "{\"version\":1,\"request_id\":2,\"type\":\"done\",\"message\":\"\",\"screen\":{}}\n",
+		"unexpected done key": "{\"version\":2,\"request_id\":2,\"type\":\"done\",\"message\":\"\",\"screen\":{}}\n",
 	}
 	for name, data := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -93,6 +93,25 @@ func TestProtocolRejectsMalformedFrames(t *testing.T) {
 				t.Fatalf("expected safe protocol error, got %v", err)
 			}
 		})
+	}
+}
+
+func TestProtocolRequiresDraftFocus(t *testing.T) {
+	s := syntheticScreen()
+	s.Subject = "Draft A"
+	s.Drafts = []draft{{"A", "Rule: Check first.", "[2] evidence", "Claim 2 of 3"}}
+	valid := screenWire(t, s, 1)
+	f, err := decodeFrame(valid)
+	if err != nil || f.Screen.Drafts[0].Focus != "Claim 2 of 3" {
+		t.Fatalf("focus rejected: %v", err)
+	}
+	missing := strings.Replace(string(valid), `,"focus":"Claim 2 of 3"`, "", 1)
+	if _, err := decodeFrame([]byte(missing)); err != errProtocol {
+		t.Fatalf("missing focus accepted: %v", err)
+	}
+	s.Drafts[0].Focus = ""
+	if _, err := decodeFrame(screenWire(t, s, 1)); err != nil {
+		t.Fatalf("empty draft-level focus rejected: %v", err)
 	}
 }
 
@@ -123,7 +142,7 @@ func TestProtocolValidatesScreenSemantics(t *testing.T) {
 }
 
 func TestFrameBoundIncludesNewline(t *testing.T) {
-	base := []byte("{\"version\":1,\"request_id\":1,\"type\":\"done\",\"message\":\"\"}\n")
+	base := []byte("{\"version\":2,\"request_id\":1,\"type\":\"done\",\"message\":\"\"}\n")
 	exact := bytes.Replace(base, []byte(`"message":""`),
 		[]byte(`"message":"`+strings.Repeat("x", maxFrame-len(base))+`"`), 1)
 	if len(exact) != maxFrame {
@@ -149,8 +168,8 @@ func TestEOFAndTruncatedFrameAreDistinct(t *testing.T) {
 		t.Fatalf("truncated frame: %v", err)
 	}
 	r := bufio.NewReader(bytes.NewReader(append(
-		wireFrame(t, frame{1, 1, "done", nil, "One"}),
-		wireFrame(t, frame{1, 2, "done", nil, "Two"})...)))
+		wireFrame(t, frame{protocolVersion, 1, "done", nil, "One"}),
+		wireFrame(t, frame{protocolVersion, 2, "done", nil, "Two"})...)))
 	for _, id := range []int64{1, 2} {
 		f, err := readFrame(r)
 		if err != nil || f.RequestID != id {
@@ -171,10 +190,10 @@ func TestSanitizeTerminalControlsButKeepLiteralText(t *testing.T) {
 	s := syntheticScreen()
 	s.Question = original
 	s.Options[0].Label = "[blue]Yes[/blue]\x1b[31m"
-	s.Drafts = []draft{{"A", original, original}}
+	s.Drafts = []draft{{"A", original, original, original}}
 	f, err := decodeFrame(screenWire(t, s, 1))
 	if err != nil || f.Screen.Question != got || f.Screen.Drafts[0].Lesson != got ||
-		f.Screen.Options[0].Label != "[blue]Yes[/blue]" {
+		f.Screen.Options[0].Label != "[blue]Yes[/blue]" || f.Screen.Drafts[0].Focus != got {
 		t.Fatal("display fields were not sanitized")
 	}
 }
@@ -188,7 +207,7 @@ func TestActionValidationAndBounds(t *testing.T) {
 		if name == "note" {
 			value = strings.Repeat("界", maxNote/3) + "x"
 		}
-		a := action{1, 9, "action", name, value}
+		a := action{protocolVersion, 9, "action", name, value}
 		var buf bytes.Buffer
 		if err := writeAction(&buf, a); err != nil {
 			t.Fatalf("%s: %v", name, err)
@@ -200,20 +219,20 @@ func TestActionValidationAndBounds(t *testing.T) {
 		}
 	}
 	for _, a := range []action{
-		{2, 1, "action", "skip", ""}, {1, 0, "action", "skip", ""},
-		{1, 1, "screen", "skip", ""}, {1, 1, "action", "bad", ""},
-		{1, 1, "action", "back", "B"}, {1, 1, "action", "note", "a\nb"},
-		{1, 1, "action", "note", strings.Repeat("界", maxNote/3+1)},
-		{1, 1, "action", "answer", strings.Repeat("x", maxFrame)},
+		{1, 1, "action", "skip", ""}, {protocolVersion, 0, "action", "skip", ""},
+		{protocolVersion, 1, "screen", "skip", ""}, {protocolVersion, 1, "action", "bad", ""},
+		{protocolVersion, 1, "action", "back", "B"}, {protocolVersion, 1, "action", "note", "a\nb"},
+		{protocolVersion, 1, "action", "note", strings.Repeat("界", maxNote/3+1)},
+		{protocolVersion, 1, "action", "answer", strings.Repeat("x", maxFrame)},
 	} {
 		if _, err := encodeAction(a); err != errProtocol {
 			t.Fatalf("invalid action accepted: %v", err)
 		}
 	}
-	if err := writeAction(shortWriter{}, action{1, 1, "action", "quit", ""}); err != errWrite {
+	if err := writeAction(shortWriter{}, action{protocolVersion, 1, "action", "quit", ""}); err != errWrite {
 		t.Fatalf("short write not detected: %v", err)
 	}
-	if err := writeAction(errorWriter{}, action{1, 1, "action", "quit", ""}); err != errWrite {
+	if err := writeAction(errorWriter{}, action{protocolVersion, 1, "action", "quit", ""}); err != errWrite {
 		t.Fatalf("write error not safe: %v", err)
 	}
 }

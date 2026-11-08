@@ -44,7 +44,8 @@ YN = [Option("y", "Yes"), Option("n", "No")]
 
 
 def question(step: str, slots: list[str]) -> tuple[str, list[Option]]:
-    key = step.partition(".")[2] if "." in step else step
+    key = step.rsplit(".", 1)[-1]
+    per_claim = ".c" in step
     if key == "failed":
         return "Did the agent fail?", [*YN, Option("u", "Unclear"), Option("i", "Incomplete")]
     if key == "worth_remembering":
@@ -52,8 +53,12 @@ def question(step: str, slots: list[str]) -> tuple[str, list[Option]]:
     if key == "error_intended":
         return "Was the tool error expected and used?", YN
     if key == "grounded":
+        if per_claim:
+            return "Does this claim have evidence in the lines it cites?", YN
         return "Does every claim have evidence?", YN
     if key == "faithful":
+        if per_claim:
+            return "Does this claim read those lines correctly?", YN
         return "Does the lesson read the evidence correctly?", YN
     if key == "generalizable":
         return "Where would this lesson help?", [
@@ -121,6 +126,10 @@ Grounded: every claim traces to relevant evidence, especially the cited entries.
 cause or rule is asserted without evidence.
 Faithful: the lesson reads that evidence correctly, including its cause, error and facts.
 A lesson can cite the right entry and still misread it.
+
+For structured lessons, answer Grounded and Faithful for each highlighted claim separately.
+Only that claim's citations appear below it. An uncited claim still needs both answers.
+The draft is grounded or faithful only when every claim is.
 
 Reuse and existing enforcement
 Choose Only this request, This project, or Any project.

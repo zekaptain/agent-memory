@@ -1,4 +1,4 @@
-"""The typed question set (`questions_v2`) and the action derived from its answers.
+"""The typed question set (`questions_v3`) and the action derived from its answers.
 
 Stage A is asked once per item from the projection alone; Stage B once per draft. The write
 rule reads only Stage B: a lesson is written when it is grounded, faithful, reusable beyond
@@ -11,9 +11,14 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
-QUESTIONS_VERSION = "questions_v2"
+from .lesson import Claim, Lesson
+
+if TYPE_CHECKING:
+    from .backends.base import Answer
+
+QUESTIONS_VERSION = "questions_v3"
 
 QuestionType = Literal["noul", "choice", "score"]
 Stage = Literal["A", "B"]
@@ -204,6 +209,71 @@ STAGE_B: tuple[Question, ...] = (
 
 ALL_QUESTIONS: tuple[Question, ...] = STAGE_A + STAGE_B
 BY_ID: dict[str, Question] = {q.id: q for q in ALL_QUESTIONS}
+
+
+def claim_questions(claims: Sequence[Claim]) -> tuple[Question, ...]:
+    criteria = {
+        "grounded": {
+            "true": "This claim can be traced to a relevant cited entry.",
+            "false": "The cited entries do not support this claim, "
+            "or it cites no relevant evidence.",
+        },
+        "faithful": {
+            "true": "This claim's cause, error, or fact matches what its cited entries show.",
+            "false": "This claim misreads its cited entries "
+            "or describes something they do not show.",
+        },
+    }
+    out = []
+    for i, claim in enumerate(claims, 1):
+        lines = ", ".join(map(str, claim.cited)) or "nothing"
+        for key, instruction in (
+            ("grounded", "is supported by the lines it cites"),
+            (
+                "faithful",
+                "reads those lines correctly: the cause, error, or fact it states matches "
+                "what they show",
+            ),
+        ):
+            out.append(
+                Question(
+                    f"{key}.{i}",
+                    "noul",
+                    f"Claim {i} of the DRAFT LESSON {instruction}. "
+                    f"Claim {i}: {claim.text} (cites {lines})",
+                    "B",
+                    criteria[key],
+                )
+            )
+    return tuple(out)
+
+
+def stage_b_for(lesson: Lesson | None) -> tuple[Question, ...]:
+    if lesson is None or not lesson.claims:
+        return STAGE_B
+    return claim_questions(lesson.claims) + tuple(
+        q for q in STAGE_B if q.id not in ("grounded", "faithful")
+    )
+
+
+def aggregate_claims(answers: Mapping[str, Answer]) -> dict[str, Answer]:
+    """Derived draft gates cost nothing: every claim must clear each gate."""
+    from .backends.base import answer_from_probabilities
+
+    out = {}
+    for key in ("grounded", "faithful"):
+        probabilities = [
+            float(answer.probabilities["yes"])
+            for qid, answer in answers.items()
+            if qid.startswith(key + ".")
+        ]
+        if probabilities:
+            p = min(probabilities)
+            out[key] = answer_from_probabilities(
+                BY_ID[key], {"yes": p, "no": 1 - p}, method="min_over_claims"
+            )
+    return out
+
 
 # The questions whose probability of clearing gates a write, per questions version.
 WRITE_GATES: tuple[str, ...] = ("grounded", "faithful", "generalizable", "enforced")

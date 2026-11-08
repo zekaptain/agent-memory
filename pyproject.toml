@@ -8,6 +8,8 @@ dependencies = [
     "duckdb>=2.0.0",
     # mcp 2.x renamed FastMCP to MCPServer; the 1.x API is not compatible.
     "mcp>=2,<3",
+    # Drafter reply validation (mcp already pulls it in; declared because we import it).
+    "pydantic>=2",
     # duckdb's Python client needs pytz to return TIMESTAMPTZ values.
     "pytz>=2024.1",
     # Terminal rendering for mem judge (typer already pulls it in; declared because we import it).

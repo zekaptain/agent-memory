@@ -15,6 +15,15 @@ DEFAULT_TIMEOUT = 300.0
 TIMEOUT_RETRIES = 1
 
 
+class HttpStatusError(JudgeError):
+    """An HTTP rejection, distinguishable from transport and reply faults."""
+
+    def __init__(self, message: str, code: int, *, latency_ms: float = 0.0) -> None:
+        super().__init__(message)
+        self.code = code
+        self.latency_ms = latency_ms
+
+
 def post_json(
     url: str,
     body: Mapping[str, Any],
@@ -47,7 +56,11 @@ def _send(
             break
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", "replace")[:500]
-            raise JudgeError(f"{url}: HTTP {exc.code}: {detail}") from None
+            raise HttpStatusError(
+                f"{url}: HTTP {exc.code}: {detail}",
+                exc.code,
+                latency_ms=(time.perf_counter() - started) * 1000,
+            ) from None
         except TimeoutError:
             if attempt == TIMEOUT_RETRIES:
                 raise JudgeError(f"{url}: timed out after {timeout:.0f}s") from None

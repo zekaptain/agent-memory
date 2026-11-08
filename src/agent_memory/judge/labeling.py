@@ -11,15 +11,18 @@ many labels moved.
 from __future__ import annotations
 
 import random
-import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
 from .drafter import draft_hash
+from .lesson import LESSON_KINDS as LESSON_KINDS
+from .lesson import Claim, lesson_from_row
+from .lesson import cited_entries as cited_entries
+from .lesson import entry_numbers as entry_numbers
 from .questions import CATEGORIES, ENFORCED
 
-LABELS_VERSION = "labels_v2"
+LABELS_VERSION = "labels_v3"
 LABEL_KEYS = (
     "failed",
     "incomplete",
@@ -35,33 +38,9 @@ DRAFT_LABEL_KEYS = ("grounded", "faithful", "generalizable", "enforced_by")
 CATEGORY_ORDER = tuple(CATEGORIES)
 ENFORCED_BY = ENFORCED
 ENFORCED_ORDER = tuple(ENFORCED_BY)
-LESSON_KINDS = {
-    "project_fact": "where things are, conventions, commands, how the project is run",
-    "tool_quirk": "how a tool, CLI, or API behaves, and what trips it",
-    "process": "how to work: verify before claiming, read before editing, run the tests",
-    "environment": "a fact about this machine or setup: ports, paths, installed versions",
-    "user_preference": "how this person wants things done or reported",
-}
 LESSON_ORDER = tuple(LESSON_KINDS)
 SLOTS = "ABCD"
 PREFERRED_OTHER = ("same", "neither")
-_ENTRY = re.compile(r"^\[(\d+)\] ", re.MULTILINE)
-EXCERPT_CHARS = 320
-
-
-def cited_entries(projection: str, cited: Sequence[int]) -> list[tuple[int, str]]:
-    """The numbered projection entries a draft cites, each cut to a short excerpt."""
-    starts = [(int(m.group(1)), m.start()) for m in _ENTRY.finditer(projection)]
-    out = []
-    for i, (number, start) in enumerate(starts):
-        if number not in cited:
-            continue
-        end = starts[i + 1][1] if i + 1 < len(starts) else len(projection)
-        body = projection[start:end].strip()
-        if len(body) > EXCERPT_CHARS:
-            body = body[:EXCERPT_CHARS].rstrip() + " …"
-        out.append((number, body))
-    return out
 
 
 @dataclass
@@ -80,6 +59,7 @@ class DraftView:
     drafter: str
     lesson: str | None
     cited: tuple[int, ...]
+    claims: tuple[Claim, ...] = ()
 
     @property
     def declined(self) -> bool:
@@ -94,15 +74,19 @@ def order_drafts(item_id: str, rows: Sequence[Mapping[str, Any]], seed: int) -> 
     """Seeded per item, so the same drafter does not always sit in slot A."""
     ordered = sorted(rows, key=lambda r: str(r.get("drafter") or ""))
     random.Random(f"{seed}:{item_id}").shuffle(ordered)
-    return [
-        DraftView(
-            slot=SLOTS[i],
-            drafter=str(row.get("drafter") or ""),
-            lesson=row.get("lesson") or None,
-            cited=tuple(int(n) for n in row.get("cited") or []),
+    views = []
+    for i, row in enumerate(ordered[: len(SLOTS)]):
+        lesson = lesson_from_row(row)
+        views.append(
+            DraftView(
+                slot=SLOTS[i],
+                drafter=str(row.get("drafter") or ""),
+                lesson=row.get("lesson") or None,
+                cited=tuple(int(n) for n in row.get("cited") or []),
+                claims=tuple(lesson.claims) if lesson else (),
+            )
         )
-        for i, row in enumerate(ordered[: len(SLOTS)])
-    ]
+    return views
 
 
 def steps_for(
@@ -118,7 +102,15 @@ def steps_for(
         steps.append("error_intended")
     for draft in drafts:
         if not draft.declined:
-            steps.extend(f"{draft.slot}.{key}" for key in DRAFT_LABEL_KEYS)
+            if draft.claims:
+                steps.extend(
+                    f"{draft.slot}.c{i}.{key}"
+                    for i in range(1, len(draft.claims) + 1)
+                    for key in ("grounded", "faithful")
+                )
+                steps.extend(f"{draft.slot}.{key}" for key in ("generalizable", "enforced_by"))
+            else:
+                steps.extend(f"{draft.slot}.{key}" for key in DRAFT_LABEL_KEYS)
     if len(drafts) >= 2:
         steps.append("preferred")
     steps.append("note")
@@ -162,6 +154,27 @@ def assemble(
                 entry[key] = ENFORCED_ORDER[int(value) - 1]
             else:
                 entry[key] = value == "y"
+        if draft.claims:
+            entry["claims"] = [
+                {
+                    key: (
+                        raw[f"{draft.slot}.c{i}.{key}"] == "y"
+                        if f"{draft.slot}.c{i}.{key}" in raw
+                        else None
+                    )
+                    for key in ("grounded", "faithful")
+                }
+                for i in range(1, len(draft.claims) + 1)
+            ]
+            for key in ("grounded", "faithful"):
+                values = [claim[key] for claim in entry["claims"]]
+                entry[key] = (
+                    False
+                    if any(value is False for value in values)
+                    else True
+                    if all(value is True for value in values)
+                    else None
+                )
         row["drafts"][draft.drafter] = entry
     preferred = raw.get("preferred")
     if preferred in PREFERRED_OTHER:
@@ -193,6 +206,8 @@ def raw_answers(row: Mapping[str, Any], drafts: Sequence[DraftView]) -> dict[str
         if entry.get("draft_hash") != draft.hash:
             continue  # the draft changed since; its labels no longer apply
         for key in DRAFT_LABEL_KEYS:
+            if draft.claims and key in ("grounded", "faithful"):
+                continue
             value = entry.get(key)
             if value is None:
                 continue
@@ -203,6 +218,11 @@ def raw_answers(row: Mapping[str, Any], drafts: Sequence[DraftView]) -> dict[str
                     raw[f"{draft.slot}.{key}"] = str(ENFORCED_ORDER.index(value) + 1)
             else:
                 raw[f"{draft.slot}.{key}"] = "y" if value else "n"
+        if draft.claims:
+            for i, claim in enumerate(entry.get("claims") or [], 1):
+                for key in ("grounded", "faithful"):
+                    if claim.get(key) is not None:
+                        raw[f"{draft.slot}.c{i}.{key}"] = "y" if claim[key] else "n"
     preferred = row.get("preferred")
     if preferred in PREFERRED_OTHER:
         raw["preferred"] = str(preferred)
@@ -230,7 +250,12 @@ def _flatten(row: Mapping[str, Any]) -> dict[str, Any]:
         if key == "drafts" and isinstance(value, dict):
             for drafter, entry in value.items():
                 for k, v in (entry or {}).items():
-                    if k not in ("slot",):
+                    if k == "claims":
+                        # Numbered from 1, like the `A.c1` steps and the `grounded.1` answers.
+                        for i, claim in enumerate(v or [], 1):
+                            for claim_key, claim_value in claim.items():
+                                flat[f"drafts.{drafter}.claims.{i}.{claim_key}"] = claim_value
+                    elif k not in ("slot",):
                         flat[f"drafts.{drafter}.{k}"] = v
             continue
         flat[key] = value

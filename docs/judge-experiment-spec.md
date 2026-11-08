@@ -1,7 +1,8 @@
 # Judge experiment spec: decision models as failure and lesson triage
 
 Status: approved and implemented, 2026-10-26; exp3 changes implemented
-2026-11-07 (see "As built" at the end).
+2026-11-07; structured drafts and per-claim Stage B implemented 2026-11-08
+(see the exp4 amendment at the end).
 Builds on Phase 0 and Phase 1 (`PLAN.md`, `docs/phase-1-spec.md`, migration
 0001). Not part of the Phase 4 roadmap yet; this is the bounded experiment
 that decides whether a decision model earns a place there. The experiment
@@ -1009,3 +1010,156 @@ historical reports are unchanged.
   [#1838](https://github.com/charmbracelet/bubbletea/issues/1838), which
   remains open for the pinned renderer. This protects terminals that
   discard tab stops when a window narrows.
+
+### exp4 design: structured drafts and per-claim Stage B
+
+Decided and implemented 2026-11-08. New runs use `drafter_v3`,
+`questions_v3`, and `labels_v3`. Stage A, candidate sampling, projections,
+thresholds, freeze, and the ledger schema do not change.
+
+The drafter returns a structured lesson, or `{"lesson": null}` to decline:
+
+```json
+{
+  "lesson": {
+    "rule": "Stop mem serve before running migrations on the same home.",
+    "kind": "project_fact",
+    "claims": [
+      {"text": "The migration failed with database is locked.", "cited": [7]},
+      {"text": "mem serve was still running on that home.", "cited": [2, 4]}
+    ]
+  }
+}
+```
+
+`rule` is one sentence saying what to do differently or what fact to
+remember. `kind` uses the same five options as the item's `lesson_kind`
+label. A lesson has 1 to 4 claims, each one sentence about this turn
+with its own cited entry numbers. Uncited claims are allowed; neither
+the judge nor the labeler skips their questions or supplies automatic
+answers. The drafter still sees only `for_drafter`, with the same
+`closed_by` guidance and no next message.
+
+The `drafter_v3` prompt leads with the decline. Its first wording gave
+the lesson template first and appended `or {"lesson": null}`; on 16
+items from this repository's own sessions (10 clean, 6 with a tool
+error) both `ollama:gemma4:26b` and `openrouter:openai/gpt-6-luna`
+then declined 0/16, where `drafter_v2` had gemma declining 6/16 and
+gpt-6-luna 0/16 (1/200 in exp3). The schema was not the cause: the
+same prompt with no schema also declined 0/16 on both models, and
+under every wording tried the schema and no-schema decline counts
+matched on both models, so OpenRouter's strict mode shows no sign of
+putting the schema in the model's context. The shipped wording says
+first that most turns hold nothing worth keeping (a routine request,
+no project-specific fact, advice any competent agent follows), names
+the exceptions (a project-specific fact, a tool quirk, a correction a
+future session would otherwise repeat), adds one sentence that a
+refusal the harness itself issued, such as a tool call cancelled until
+a plan is approved, is not a lesson about a tool, and only then
+describes the lesson shape; the user message opens with
+`Return {"lesson": null} unless ...`. On the same 16 items this
+declines 8/16 with gemma and 4/16 with gpt-6-luna; both keep the arXiv
+export API, the transitive Pydantic dependency, and the Ollama
+`done_reason` facts, and gpt-6-luna drops the one-off "prioritize X"
+decisions. The harness sentence is short on purpose: a paragraph
+spelling out harness behavior took gemma to 14/16 declines, project
+facts included, while gemma still wrote up the Spec Mode refusal under
+every wording tried; gpt-6-luna responds to the sentence and draws a
+different, grounded fact from that turn instead. Stage B's `enforced`
+gate remains the backstop for the local model. No real run holds
+first-wording drafts, so the version is unchanged.
+
+`judge/lesson.py` owns frozen, extra-forbidding pydantic models
+`Claim`, `Lesson`, and `DraftReply`. Sentence validation collapses
+whitespace, caps text at 300 characters, and rejects empty text.
+Citation validation accepts bracketed numbers, drops junk and
+non-positive numbers, and removes duplicates. Validation errors report
+locations and messages without including reply text.
+
+The sampler schema comes from `DraftReply.model_json_schema()`, with
+titles and descriptions removed. It does not duplicate the model in
+a handwritten schema. A regression test pins its grammar-safe keyword
+set. Ollama receives this schema as `format`; llama-server receives
+`response_format: json_schema` with the name `lesson`. OpenRouter
+receives the same schema with `strict: true`. An OpenRouter HTTP 400
+or 422, the codes a provider's rejection of the schema arrives as, gets
+one retry with `json_object`; that draft records
+`schema_enforced: false`, but pydantic still validates the reply.
+Other HTTP failures, including auth, credit, and rate-limit codes, do
+not trigger this fallback. The initial token
+budget is 700; a cut-off reply gets 2,100 tokens, with both completions'
+latency and cost counted.
+
+Draft rows keep the existing fields and add `rule`, `kind`, `claims`,
+`schema_enforced`, and `drafter_version`. The canonical text is:
+
+```text
+Rule: Stop mem serve before running migrations on the same home.
+Kind: project_fact
+Claims:
+1. The migration failed with database is locked. [7]
+2. mem serve was still running on that home. [2, 4]
+```
+
+An uncited claim ends in `[no citation]`. This deterministic rendering
+is the lesson shown to the judge and labeler, and the text hashed by
+the unchanged `draft_hash`. The draft's `cited` field is the union of
+its claims' citations.
+
+Stage B asks `grounded.1`, `faithful.1`, and so on for each claim,
+then `generalizable`, `actionable`, and `enforced` for the whole draft.
+`grounded.i` asks whether the cited lines support claim i;
+`faithful.i` asks whether it reads them correctly. Verdicts keep these
+answers and derive `grounded` and `faithful` by taking the minimum
+per-claim p(yes), tagged `method: min_over_claims` with zero added
+latency and cost. Verdict rows record the claim count. Decision events
+copy the per-claim answers without copying lesson text. The write rule
+and all draft-level metrics, including criterion 5, still use the
+derived draft-level values. Legacy rows without claims use the old
+Stage B template.
+
+Label steps are `A.c1.grounded`, `A.c1.faithful`, and so on, followed
+by `A.generalizable` and `A.enforced_by`. A draft label contains a
+`claims` list of `{grounded, faithful}` entries as well as its derived
+draft-level values: all true means true, any false means false,
+otherwise null. Backfill restores claim answers from this list.
+History uses paths such as `drafts.<drafter>.claims.1.grounded`,
+numbered from 1 like the steps and the judge's per-claim answers.
+
+The screen subject remains `Draft A`. Its card says `Claim 2 of 3`,
+marks that claim with `▶`, and shows only that claim's cited evidence,
+including missing-citation notes. Draft-level and comparison screens
+show the citation union and no focus. Plain mode prints the focus
+line too. Label-UI protocol 2 requires a `focus` string on every
+displayed draft; the protocol bump invalidates the cached Go helper.
+
+A Claims report section appears only for runs with structured draft
+rows. Per drafter it reports mean claims/draft (declines count as zero),
+uncited-claim share, absent-citation share against stored projections,
+labeled-claim grounded and faithful rates, and kind agreement with the
+item's `lesson_kind` label. Per backend it reports claim-level
+accuracy, precision, recall, and F1. Held-out backend metrics remain
+locked until freeze. Unavailable projections are reported as unchecked,
+not counted as absent evidence.
+
+`draft` refuses any run containing another drafter version, including
+adding a v3 arm beside v2 drafts. `draft`, `decide`, and `label` refuse
+older question sets. This makes exp3 (3 of 200 items labeled at the
+change) read-only along with exp1 and exp2. Finishing exp3 labeling
+requires the older code; this change neither redrafts nor relabels it.
+Reports retain the older question definitions, write rule, and labels.
+
+#### exp4 changes, as built
+
+The amendment above is implemented in the shared lesson model, all
+three drafter transports, the judge pipeline, both label frontends,
+and the report. Pydantic is now a direct dependency; no resolved
+package version changed. Regression tests use synthetic turns and
+mocked model HTTP, with real Quack integration for per-claim decision
+events. No hosted model calls or live-run writes are needed to test
+the implementation.
+
+Historical checks on temporary copies reproduced exp2 and exp3's raw
+reports exactly, apart from the generated timestamp. Exp1 still refuses
+to render because it has no labeled verdicts. SHA-256 checks confirmed
+that the original exp1, exp2, and exp3 run files were unchanged.

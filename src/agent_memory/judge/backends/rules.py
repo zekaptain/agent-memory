@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 
+from ..lesson import cited_entries
 from ..questions import Question
 from .base import Answer, JudgeInput, answer_from_probabilities
 
@@ -62,6 +63,17 @@ class RulesBackend:
         if q.id == "recurrence":
             p = 0.8 if facts.get("repeated_tool_error") else 0.3
             return {"yes": p, "no": 1 - p}
+        if q.id.startswith(("grounded.", "faithful.")):
+            claim = inp.claims[int(q.id.rsplit(".", 1)[1]) - 1]
+            evidence = "\n".join(body for _, body in cited_entries(inp.state, claim.cited))
+            supported = self._overlap(claim.text, evidence, facts)
+            if not claim.cited:
+                p = 0.1
+            elif q.id.startswith("grounded."):
+                p = 0.8 if supported else 0.2
+            else:
+                p = 0.65 if supported else 0.35
+            return {"yes": p, "no": 1 - p}
         supported = self._draft_mentions_turn(inp)
         if q.id in ("supported", "grounded"):
             p = 0.8 if supported else 0.2
@@ -90,4 +102,11 @@ class RulesBackend:
         state_tokens = {t.lower() for t in _TOKEN.findall(inp.state)}
         draft_tokens = {t.lower() for t in _TOKEN.findall(inp.draft)}
         names = {str(t).lower() for t in inp.facts.get("tools", [])}
+        return bool((draft_tokens & names) or len(draft_tokens & state_tokens) >= 3)
+
+    @staticmethod
+    def _overlap(text: str, evidence: str, facts: dict) -> bool:
+        state_tokens = {t.lower().rstrip(".") for t in _TOKEN.findall(evidence)}
+        draft_tokens = {t.lower().rstrip(".") for t in _TOKEN.findall(text)}
+        names = {str(t).lower() for t in facts.get("tools", [])} & state_tokens
         return bool((draft_tokens & names) or len(draft_tokens & state_tokens) >= 3)

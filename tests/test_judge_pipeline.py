@@ -8,6 +8,8 @@ import shutil
 import pytest
 
 from agent_memory.cli import main
+from agent_memory.judge.drafter import Draft
+from agent_memory.judge.lesson import Claim, Lesson
 from agent_memory.judge.pipeline import (
     build_candidates,
     decide_items,
@@ -78,7 +80,7 @@ def test_import_candidates_decide_and_ledger_events(live_cfg, live_client, sessi
         judge = json.loads(payload)["judge"]
         assert judge["run_id"] == "t1"
         assert judge["backend"] == "rules"
-        assert judge["questions_version"] == "questions_v2"
+        assert judge["questions_version"] == "questions_v3"
         assert judge["projection_hash"]
         assert judge["action"] in {"write_lesson", "review", "discard"}
         assert set(judge["answers"]["failed"]) == {"value", "probabilities", "confidence", "method"}
@@ -89,14 +91,21 @@ def test_import_candidates_decide_and_ledger_events(live_cfg, live_client, sessi
 
     # A draft arriving later supersedes the Stage-A-only verdict for that item and adds a
     # second decision event; the other items stay as they were.
+    error_line = next(line for line in projection.splitlines() if "TOOL RESULT (error):" in line)
+    error_number = int(error_line.split("]", 1)[0].lstrip("["))
+    lesson = Lesson(
+        rule="Stop mem serve before using Execute to run mem migrate.",
+        kind="tool_quirk",
+        claims=[
+            Claim(text="The mem command reported memory.duckdb is locked.", cited=(error_number,))
+        ],
+    )
+    draft = Draft.from_lesson(
+        t3["item_id"], lesson, drafter="ollama:m", model_snapshot="m", latency_ms=1.0
+    )
     store.write_jsonl(
         store.drafts_path,
-        [
-            {
-                "item_id": t3["item_id"],
-                "lesson": "Stop mem serve before using Execute to run mem migrate.",
-            }
-        ],
+        [draft.to_dict()],
     )
     assert decide_items(live_cfg, "t1", ["rules"]) == {"rules": 1}
     verdicts = store.read_jsonl(store.verdicts_path("rules"))
@@ -104,6 +113,18 @@ def test_import_candidates_decide_and_ledger_events(live_cfg, live_client, sessi
     redone = next(v for v in verdicts if v["item_id"] == t3["item_id"])
     assert redone["has_draft"] is True
     assert redone["answers"]["grounded"]["value"] == "yes"
+    assert redone["claims"] == 1
+    assert redone["answers"]["grounded.1"]["value"] == "yes"
+    assert redone["answers"]["grounded"]["method"] == "min_over_claims"
+    _, payloads = live_client.query(
+        "SELECT CAST(payload AS JSON)::VARCHAR FROM events WHERE kind = 'decision'"
+    )
+    claim_decisions = [
+        json.loads(row[0])["judge"]["answers"] for row in payloads if "grounded.1" in row[0]
+    ]
+    assert len(claim_decisions) == 1
+    assert claim_decisions[0]["faithful.1"]["value"] == "yes"
+    assert all("The mem command reported memory.duckdb" not in row[0] for row in payloads)
     # The rules floor cannot tell whether a lesson is already enforced, so its p(none) sits
     # inside the band and the draft goes to review rather than straight to a write.
     assert redone["action"] == "review"

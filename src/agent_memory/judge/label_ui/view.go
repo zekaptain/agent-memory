@@ -68,8 +68,12 @@ func (m *model) renderQuestion(width int) string {
 
 func (m *model) draftCard(d draft, width int) string {
 	inner := max(1, width-m.styles.panel(width).GetHorizontalFrameSize())
+	focus := d.Focus
+	if focus == "" {
+		focus = "Lesson"
+	}
 	body := nonempty(
-		m.styles.title().Render("Draft "+d.Slot+" · Lesson"),
+		m.styles.title().Render(wrap("Draft "+d.Slot+" · "+focus, inner)),
 		wrap(d.Lesson, inner),
 		"",
 		m.styles.subtle().Render("\nCited evidence"),
@@ -182,6 +186,9 @@ func (m *model) View() (v tea.View) {
 		tag := "Evidence"
 		if len(m.screen.Drafts) > 0 {
 			tag = m.screen.Subject
+			if len(m.screen.Drafts) == 1 && m.screen.Drafts[0].Focus != "" {
+				tag += " · " + m.screen.Drafts[0].Focus
+			}
 		}
 		tag = m.styles.subtle().Render(fmt.Sprintf("%s   ·   %d%%", tag,
 			int(m.evidence.ScrollPercent()*100)))

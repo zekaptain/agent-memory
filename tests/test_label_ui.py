@@ -20,7 +20,7 @@ from agent_memory.judge.label_questions import GUIDE, display_safe
 from agent_memory.judge.labeling import missing_steps, order_drafts
 from agent_memory.judge.report import build_report
 from agent_memory.judge.store import JudgeError
-from tests.test_judge import synthetic_run
+from tests.test_judge import structured_draft, synthetic_run
 
 
 def fresh(tmp_path: Path, n: int = 2, *, two: bool = True):
@@ -278,7 +278,7 @@ def test_skip_quit_invalid_actions_and_note_validation(tmp_path):
 def frame(**overrides):
     return encode_frame(
         {
-            "version": 1,
+            "version": 2,
             "request_id": 3,
             "type": "action",
             "action": "answer",
@@ -294,7 +294,7 @@ def frame(**overrides):
         b"",
         b"{}",
         b"not json\n",
-        frame(version=2),
+        frame(version=1),
         frame(version=True),
         frame(request_id=2),
         frame(request_id=True),
@@ -341,6 +341,51 @@ def test_plain_commands_notes_brackets_and_control_safety(tmp_path):
     assert display_safe("\x1b]52;c;attack\x07\r\u009b2J\u202eevil") == (
         "\\u001b]52;c;attack\\u0007\\u000d\\u009b2J\\u202eevil"
     )
+
+
+def test_protocol_two_and_plain_claim_focus(tmp_path):
+    store = fresh(tmp_path, 1, two=False)
+    item_id = store.read_jsonl(store.items_path)[0]["item_id"]
+    store.write_jsonl(
+        store.drafts_path,
+        [
+            structured_draft(
+                item_id,
+                claims=[
+                    {"text": "First claim.", "cited": [1]},
+                    {"text": "Second claim.", "cited": [2]},
+                ],
+            ).to_dict()
+        ],
+    )
+    controller = LabelController(store)
+    answer(controller, "n")
+    answer(controller, "n")
+    answer(controller, "y")
+    answer(controller, "y")
+    screen = controller.screen()
+    assert controller.step == "A.c2.grounded"
+    wire = json.loads(
+        encode_frame(
+            {
+                "version": label_build.PROTOCOL_VERSION,
+                "request_id": 1,
+                "type": "screen",
+                "screen": screen.payload(),
+            }
+        )
+    )
+    assert wire["version"] == 2
+    assert wire["screen"]["drafts"][0]["focus"] == "Claim 2 of 2"
+    output = io.StringIO()
+    plain = PlainFrontend(io.StringIO("2\n"), output)
+    assert plain.exchange(screen) == Action("answer", "n")
+    text = output.getvalue()
+    assert "Draft A\nClaim 2 of 2\nRule:" in text
+    assert "▶ 2. Second claim. [2]" in text
+    assert "Cited evidence\n[2] TOOL RESULT (error): 3 failed" in text
+    assert "[1] REQUEST" not in text
+    assert "\x1b" not in text
 
 
 @pytest.mark.parametrize("mode", ["--plain", "pipe", "dumb"])
@@ -418,7 +463,7 @@ def test_cold_cache_concurrent_launch_and_source_invalidation(tmp_path, monkeypa
     assert label_build.frontend_binary(source=source, root=root) != paths[0]
     assert counter.read_text() == "build\nbuild\n"
     before = label_build.source_key(source, "go1")
-    monkeypatch.setattr(label_build, "PROTOCOL_VERSION", 2)
+    monkeypatch.setattr(label_build, "PROTOCOL_VERSION", 3)
     assert label_build.source_key(source, "go1") != before
     assert label_build.source_key(source, "go2") != before
 
@@ -463,7 +508,7 @@ def test_transport_crashes_and_out_of_order_actions(tmp_path, response):
         "import json, sys\n"
         "frame=json.loads(sys.stdin.readline())\n"
         "rid=frame['request_id']\n"
-        "action={'version':1,'request_id':rid,'type':'action','action':'answer','value':'n'}\n"
+        "action={'version':2,'request_id':rid,'type':'action','action':'answer','value':'n'}\n"
     )
     if response == "malformed":
         body += "print('PRIVATE_BAD_FRAME', flush=True)\n"

@@ -9,6 +9,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from typing import Any, Protocol
 
+from ..lesson import Claim
 from ..questions import Question
 from ..store import JudgeError
 
@@ -61,11 +62,12 @@ class JudgeInput:
     facts: dict[str, Any]
     draft: str | None = None
     flags: tuple[str, ...] = ()
+    claims: tuple[Claim, ...] = ()
 
     def state_with_draft(self) -> str:
         if not self.draft:
             return self.state
-        return f"{self.state}\n\nDRAFT LESSON: {self.draft}"
+        return f"{self.state}\n\nDRAFT LESSON:\n{self.draft}"
 
 
 class DecisionBackend(Protocol):

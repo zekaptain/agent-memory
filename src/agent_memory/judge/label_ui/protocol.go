@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	protocolVersion = 1
+	protocolVersion = 2
 	maxFrame        = 8 * 1024 * 1024 // Includes the terminating newline.
 	maxNote         = 4096
 )
@@ -34,6 +34,7 @@ type draft struct {
 	Slot          string `json:"slot"`
 	Lesson        string `json:"lesson"`
 	CitedEvidence string `json:"cited_evidence"`
+	Focus         string `json:"focus"`
 }
 
 type screen struct {
@@ -216,7 +217,7 @@ func decodeFrame(data []byte) (frame, error) {
 		}
 		s := obj["screen"].(map[string]any)
 		for _, item := range s["drafts"].([]any) {
-			if !shape(item, "slot lesson cited_evidence", "", "", "") {
+			if !shape(item, "slot lesson cited_evidence focus", "", "", "") {
 				return frame{}, errProtocol
 			}
 		}
@@ -273,6 +274,7 @@ func decodeFrame(data []byte) (frame, error) {
 		}
 		seen[d.Slot] = true
 		d.Lesson, d.CitedEvidence = clean(d.Lesson), clean(d.CitedEvidence)
+		d.Focus = clean(d.Focus)
 	}
 	s.Metadata, s.Evidence, s.Projection = clean(s.Metadata), clean(s.Evidence), clean(s.Projection)
 	s.Guide, s.Question, s.Notice = clean(s.Guide), clean(s.Question), clean(s.Notice)

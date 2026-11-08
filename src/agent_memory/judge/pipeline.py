@@ -25,15 +25,17 @@ from ..config import Config
 from ..db import AgentMemoryError, MemoryClient, sql_literal
 from .backends import Answer, DecisionBackend, JudgeInput, make_backend
 from .drafter import DRAFTER_VERSION, draft_hash, make_drafter
+from .lesson import lesson_from_row
 from .projection import PROJECTION_VERSION, drafter_rendering, project_candidate
 from .provenance import PROVENANCE_VERSION, session_callers
 from .questions import (
     DEFAULT_THRESHOLDS,
     QUESTIONS_VERSION,
     STAGE_A,
-    STAGE_B,
+    aggregate_claims,
     derive_action,
     gate_probabilities,
+    stage_b_for,
     thresholds_from_run,
 )
 from .store import JudgeError, RunStore, ensure_experiment_home, imports_log, utc_now_iso
@@ -328,12 +330,16 @@ def draft_items(
     store = store or RunStore(cfg, run_id)
     run = store.read_run()
     require_current_questions(run)
+    existing = store.read_jsonl(store.drafts_path)
+    versions = {str(row.get("drafter_version") or "drafter_v2") for row in existing}
+    incompatible = sorted(versions - {DRAFTER_VERSION})
+    if incompatible:
+        raise JudgeError(
+            f"run {run_id} holds {', '.join(incompatible)} drafts; {DRAFTER_VERSION} arms "
+            "cannot be mixed in. Start a new run."
+        )
     drafter = make_drafter(drafter_spec)
-    done = {
-        row["item_id"]
-        for row in store.read_jsonl(store.drafts_path)
-        if row.get("drafter") == drafter.name
-    }
+    done = {row["item_id"] for row in existing if row.get("drafter") == drafter.name}
     todo = [row for row in store.read_jsonl(store.items_path) if row["item_id"] not in done]
     if limit is not None:
         todo = todo[:limit]
@@ -351,11 +357,7 @@ def draft_items(
             summary.failed += 1
             warn(f"draft {index}/{len(todo)} failed, skipped (rerun to retry): {exc}")
             continue
-        store.write_jsonl(
-            store.drafts_path,
-            [{**draft.to_dict(), "drafter_version": DRAFTER_VERSION}],
-            append=True,
-        )
+        store.write_jsonl(store.drafts_path, [draft.to_dict()], append=True)
         summary.written += 1
         summary.declined += draft.declined
         snapshot = draft.model_snapshot or snapshot
@@ -409,10 +411,17 @@ def judge_draft(
     """One verdict row: the item's Stage A answers plus Stage B on this draft. A declined draft
     gets no Stage B and is always discarded; an item with no draft yet gets Stage A alone."""
     answers: dict[str, Answer] = dict(stage_a)
-    lesson = draft.get("lesson") if draft else None
-    declined = draft is not None and lesson is None
-    if lesson:
-        answers.update(backend.decide(replace(_judge_input(item, state), draft=lesson), STAGE_B))
+    text = draft.get("lesson") if draft else None
+    lesson = lesson_from_row(draft) if draft else None
+    claims = tuple(lesson.claims) if lesson else ()
+    declined = draft is not None and text is None
+    if text:
+        answers.update(
+            backend.decide(
+                replace(_judge_input(item, state), draft=text, claims=claims), stage_b_for(lesson)
+            )
+        )
+        answers.update(aggregate_claims(answers))
     probabilities = {k: a.probabilities for k, a in answers.items()}
     derived = derive_action(gate_probabilities(probabilities), thresholds, declined=declined)
     snapshots = sorted({a.model_snapshot for a in answers.values() if a.model_snapshot})
@@ -425,9 +434,10 @@ def judge_draft(
         "projection_version": item.get("projection_version", PROJECTION_VERSION),
         "projection_hash": item["projection_hash"],
         "drafter": draft.get("drafter") if draft else None,
-        "has_draft": bool(lesson),
+        "has_draft": bool(text),
+        "claims": len(claims),
         "declined": declined,
-        "draft_hash": draft_hash(lesson),
+        "draft_hash": draft_hash(text),
         "stage_a_reused": stage_a_reused,
         "answers": {k: a.to_dict() for k, a in answers.items()},
         "latency_ms": sum(a.latency_ms for a in answers.values()),

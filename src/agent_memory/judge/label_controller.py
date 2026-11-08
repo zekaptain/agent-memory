@@ -22,6 +22,7 @@ from .labeling import (
     raw_answers,
     steps_for,
 )
+from .questions import QUESTIONS_VERSION
 from .store import JudgeError, RunStore, ensure_experiment_home, utc_now_iso
 from .triggers import closed_by_of
 
@@ -37,6 +38,7 @@ class DisplayDraft:
     slot: str
     lesson: str
     cited_evidence: str
+    focus: str = ""
 
 
 @dataclass
@@ -88,9 +90,10 @@ class LabelController:
     ) -> None:
         ensure_experiment_home(store.cfg)
         self.store, self.seed, self.review = store, seed, review
-        if store.read_run().get("questions_version") == "questions_v1":
+        version = store.read_run().get("questions_version")
+        if version is not None and version != QUESTIONS_VERSION:
             raise JudgeError(
-                "This run uses questions_v1 and is read-only. Label a current-version run instead."
+                f"This run uses {version} and is read-only. Label a current-version run instead."
             )
         self.items = store.read_jsonl(store.items_path)
         self.draft_rows = store.read_drafts()
@@ -183,17 +186,27 @@ class LabelController:
         self.index += 1
         self._start()
 
-    def display_draft(self, draft: DraftView) -> DisplayDraft:
-        entries = cited_entries(self.projection, draft.cited)
+    def display_draft(self, draft: DraftView, claim_index: int | None = None) -> DisplayDraft:
+        numbers = draft.cited if claim_index is None else draft.claims[claim_index].cited
+        entries = cited_entries(self.projection, numbers)
         cited = "\n\n".join(body for _, body in entries)
-        absent = sorted(set(draft.cited) - {number for number, _ in entries})
+        absent = sorted(set(numbers) - {number for number, _ in entries})
         if absent:
             cited += "\nMissing citations: " + ", ".join(f"[{number}]" for number in absent)
             cited += ". Treat these as no evidence."
+        text, focus = draft.lesson or "(no lesson)", ""
+        if claim_index is not None:
+            focus = f"Claim {claim_index + 1} of {len(draft.claims)}"
+            lines = text.splitlines()
+            marked = 3 + claim_index  # after render_lesson's Rule, Kind, and Claims: lines
+            if marked < len(lines):
+                lines[marked] = "▶ " + lines[marked]
+            text = "\n".join(lines)
         return DisplayDraft(
             draft.slot,
-            display_safe(draft.lesson or "(no lesson)"),
+            display_safe(text),
             display_safe(cited or "No cited evidence."),
+            focus,
         )
 
     def summary_text(self) -> str:
@@ -203,7 +216,7 @@ class LabelController:
             if step == "note":
                 continue
             _, options = question(step, [draft.slot for draft in self.drafts])
-            key = step.partition(".")[2] if "." in step else step
+            key = step.rsplit(".", 1)[-1]
             title = {
                 "failed": "Failed",
                 "category": "Cause",
@@ -219,7 +232,11 @@ class LabelController:
             selected = next(
                 (option.label for option in options if option.id == self.answers.get(step)), "—"
             )
-            subject = f"Draft {step.partition('.')[0]}: " if "." in step else ""
+            subject = ""
+            if "." in step:
+                prefix = step.rsplit(".", 1)[0]
+                slot, _, claim = prefix.partition(".c")
+                subject = f"Draft {slot}" + (f" claim {claim}" if claim else "") + ": "
             lines.append(f"{subject}{title}: {selected}")
         for draft in self.drafts:
             if draft.declined:
@@ -234,8 +251,12 @@ class LabelController:
         step = self.step
         title, options = question(step, [draft.slot for draft in self.drafts])
         subject, evidence, drafts = "Turn", self.projection, []
+        claim_index = None
         if "." in step:
-            slot = step.partition(".")[0]
+            prefix = step.rsplit(".", 1)[0]
+            slot, _, claim = prefix.partition(".c")
+            if claim:
+                claim_index = int(claim) - 1
             subject, evidence = f"Draft {slot}", ""
             drafts = [draft for draft in self.drafts if draft.slot == slot]
         elif step == "preferred":
@@ -272,7 +293,7 @@ class LabelController:
             can_back=self.mode != "review" and self.position > 0,
             can_redo=step in ("review", "summary"),
             notice=self.notice,
-            drafts=[self.display_draft(draft) for draft in drafts],
+            drafts=[self.display_draft(draft, claim_index) for draft in drafts],
         )
 
     def apply(self, action: Action) -> None:

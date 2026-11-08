@@ -1,5 +1,12 @@
-"""Lesson drafters (`drafter_v2`): a model writes a short lesson from one past turn, cites the
+"""Lesson drafters (`drafter_v3`): a model writes a structured lesson from one past turn, cites the
 numbered evidence lines it relied on, or declines when the turn holds nothing worth keeping.
+
+The prompt leads with the decline. Given the lesson template first and the null reply as an
+afterthought, local and hosted models alike filled the template for every turn, routine ones
+included; told first that most turns hold nothing and what the exceptions are, they decline
+the routine ones. A refusal the harness itself issued, such as a tool call cancelled while a
+plan awaits approval, is named as not a lesson: the harness enforces it every time, so there
+is nothing for a future session to remember.
 
 The drafter sees the projection without its NEXT MESSAGE entry, so a lesson comes from this
 turn's own evidence and cannot fuse the request with an unrelated follow-up. The header's
@@ -16,9 +23,8 @@ from __future__ import annotations
 
 import hashlib
 import os
-import re
 from collections.abc import Callable, Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from .backends import http
@@ -26,31 +32,44 @@ from .backends.base import require_remote
 from .backends.jev import KEY_ENV
 from .backends.llamacpp import LLAMACPP_HOST, disable_thinking
 from .backends.llm import out_of_tokens, parse_judge_json
+from .lesson import LESSON_KINDS, LESSON_SCHEMA, Lesson, parse_lesson, render_lesson
 from .store import JudgeError
 
-DRAFTER_VERSION = "drafter_v2"
+DRAFTER_VERSION = "drafter_v3"
 DRAFTER_KINDS = ("ollama", "llamacpp", "openrouter")
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-MAX_LESSON_CHARS = 400
-MAX_DRAFT_TOKENS = 400
-# A model that writes past two sentences, or reasons before it answers, can spend the whole
+MAX_DRAFT_TOKENS = 700
+# A model that writes long claims, or reasons before it answers, can spend the whole
 # budget before the JSON closes. On OpenAI-compatible endpoints reasoning tokens share
 # max_tokens with the visible answer.
 RETRY_DRAFT_TOKENS = 3 * MAX_DRAFT_TOKENS
 TEMPERATURE = 0.2
 SEED = 7
+# OpenRouter passes a provider's rejection of the schema through as a 400; some providers
+# say 422. Auth, credit, timeout, and rate-limit codes are not schema problems, so they get
+# no second send without the schema.
+SCHEMA_REJECTED = frozenset({400, 422})
 
+# One short harness sentence, on purpose. A paragraph spelling out harness behavior made a 26B
+# local model decline nearly every turn, project facts included, while still writing up the
+# Spec Mode refusal it described; Stage B's `enforced` gate is the backstop for that model.
 SYSTEM = (
     "You write one lesson for a future AI coding-agent session on the same project, from a "
     "numbered projection of one past turn: the request, the tool calls and their results, the "
-    "agent's final message, and how the turn ended. The lesson is at most two sentences and says "
-    "what to do differently next time, or what fact to remember. Use only this turn's own "
-    "evidence and cite the line numbers you relied on. The header's closed_by says how the turn "
-    "ended: outcome means the agent finished and the result was recorded; next_message or "
-    "session_end means the turn was cut off before the agent finished, so the request may not "
-    "have been carried out and any lesson is about the attempt, not the result. If the turn "
-    'holds nothing worth keeping for a future session, return {"lesson": null}. Return only JSON.'
+    "agent's final message, and how the turn ended. Most turns hold nothing worth keeping: a "
+    "routine request that went fine, a result with no project-specific fact, or advice any "
+    "competent agent already follows. Write a lesson only when this turn shows a "
+    "project-specific fact, a tool quirk, or a correction that a future session would otherwise "
+    "repeat. A refusal the harness itself issued, such as a tool call cancelled until a plan is "
+    'approved, is not a lesson about a tool. Otherwise return {"lesson": null}. A lesson has one '
+    "rule sentence saying what to do differently next time or what fact to remember, a kind, and "
+    "1 to 4 claims. Each claim is one sentence about what happened in this turn, with its own "
+    "cited line numbers that show it. Each sentence is at most 300 characters. Use only this "
+    "turn's own evidence. The header's closed_by says how the turn ended: outcome means the "
+    "agent finished and the result was recorded; next_message or session_end means the turn was "
+    "cut off before the agent finished, so the request may not have been carried out and any "
+    "lesson is about the attempt, not the result. Return only JSON."
 )
 
 
@@ -62,8 +81,11 @@ def draft_hash(lesson: str | None) -> str | None:
 def drafter_prompt(state: str) -> str:
     return (
         f"EVIDENCE\n{state}\n\n"
-        'Return exactly: {"lesson": "<at most two sentences>" or null, '
-        '"cited": [<line numbers>]}'
+        'Return {"lesson": null} unless this turn holds something worth keeping. Otherwise return '
+        '{"lesson": {"rule": "<one sentence>", "kind": "<kind>", '
+        '"claims": [{"text": "<one sentence about this turn>", "cited": [<line numbers>]}]}}. '
+        "Kinds: "
+        + "; ".join(f"{kind}: {description}" for kind, description in LESSON_KINDS.items())
     )
 
 
@@ -76,37 +98,29 @@ class Draft:
     model_snapshot: str
     latency_ms: float
     cost_usd: float = 0.0
+    rule: str | None = None
+    kind: str | None = None
+    claims: list[dict[str, Any]] = field(default_factory=list)
+    schema_enforced: bool = True
 
     @property
     def declined(self) -> bool:
         return self.lesson is None
 
     def to_dict(self) -> dict[str, Any]:
-        return {**asdict(self), "declined": self.declined}
+        return {**asdict(self), "declined": self.declined, "drafter_version": DRAFTER_VERSION}
 
-
-def parse_draft(data: Mapping[str, Any]) -> tuple[str | None, list[int]]:
-    """The lesson text (None when the drafter declined) and the cited line numbers."""
-    if "lesson" not in data:
-        raise JudgeError("drafter returned no lesson field")
-    raw = data["lesson"]
-    cited: list[int] = []
-    values = data.get("cited") or []
-    if not isinstance(values, list):
-        values = [values]
-    for value in values:
-        try:
-            n = int(str(value).strip().strip("[]"))
-        except ValueError:
-            continue
-        if n > 0 and n not in cited:
-            cited.append(n)
-    if raw is None:
-        return None, cited
-    lesson = str(raw).strip()
-    if not lesson:
-        raise JudgeError("drafter returned an empty lesson")
-    return re.sub(r"\s+", " ", lesson)[:MAX_LESSON_CHARS], cited
+    @classmethod
+    def from_lesson(cls, item_id: str, lesson: Lesson | None, **metrics: Any) -> Draft:
+        return cls(
+            item_id=item_id,
+            lesson=render_lesson(lesson) if lesson is not None else None,
+            cited=sorted({n for claim in lesson.claims for n in claim.cited}) if lesson else [],
+            rule=lesson.rule if lesson else None,
+            kind=lesson.kind if lesson else None,
+            claims=[claim.model_dump(mode="json") for claim in lesson.claims] if lesson else [],
+            **metrics,
+        )
 
 
 @dataclass(frozen=True)
@@ -145,8 +159,7 @@ class OllamaDrafter:
             "model": self.model,
             "stream": False,
             "think": False,
-            "format": "json",
-            # Two sentences and a list of numbers; the cap stops a model that keeps going.
+            "format": LESSON_SCHEMA,
             "options": {"temperature": TEMPERATURE, "seed": SEED, "num_predict": MAX_DRAFT_TOKENS},
             "messages": [
                 {"role": "system", "content": SYSTEM},
@@ -167,11 +180,10 @@ class OllamaDrafter:
             )
 
         attempts = draft_with_room(once)
-        lesson, cited = parse_draft(parse_judge_json(attempts[-1].content))
-        return Draft(
-            item_id=item_id,
+        lesson = parse_lesson(parse_judge_json(attempts[-1].content))
+        return Draft.from_lesson(
+            item_id,
             lesson=lesson,
-            cited=cited,
             drafter=self.name,
             model_snapshot=str(attempts[-1].response.get("model") or self.model),
             latency_ms=sum(a.latency_ms for a in attempts),
@@ -211,13 +223,17 @@ class OpenAIChatDrafter:
 
     def draft(self, item_id: str, state: str) -> Draft:
         headers = self._headers()
+        schema_enforced = True
+        schema: dict[str, Any] = {"name": "lesson", "schema": LESSON_SCHEMA}
+        if self.kind == "openrouter":
+            schema["strict"] = True
         body: dict[str, Any] = {
             "model": self.model,
             "stream": False,
             "temperature": TEMPERATURE,
             "seed": SEED,
             "max_tokens": MAX_DRAFT_TOKENS,
-            "response_format": {"type": "json_object"},
+            "response_format": {"type": "json_schema", "json_schema": schema},
             "messages": [
                 {"role": "system", "content": SYSTEM},
                 {"role": "user", "content": drafter_prompt(state)},
@@ -226,8 +242,21 @@ class OpenAIChatDrafter:
         }
 
         def once(budget: int) -> Attempt:
+            nonlocal schema_enforced
             body["max_tokens"] = budget
-            response, latency = http.post_json(self.url, body, headers=headers, timeout=180)
+            try:
+                response, latency = http.post_json(self.url, body, headers=headers, timeout=180)
+            except http.HttpStatusError as exc:
+                if (
+                    self.kind != "openrouter"
+                    or not schema_enforced
+                    or exc.code not in SCHEMA_REJECTED
+                ):
+                    raise
+                body["response_format"] = {"type": "json_object"}
+                schema_enforced = False
+                response, latency = http.post_json(self.url, body, headers=headers, timeout=180)
+                latency += exc.latency_ms
             choices = response.get("choices") or []
             first = choices[0] if choices and isinstance(choices[0], dict) else {}
             message = first.get("message") or {}
@@ -240,11 +269,11 @@ class OpenAIChatDrafter:
             )
 
         attempts = draft_with_room(once)
-        lesson, cited = parse_draft(parse_judge_json(attempts[-1].content))
-        return Draft(
-            item_id=item_id,
+        lesson = parse_lesson(parse_judge_json(attempts[-1].content))
+        return Draft.from_lesson(
+            item_id,
             lesson=lesson,
-            cited=cited,
+            schema_enforced=schema_enforced,
             drafter=self.name,
             model_snapshot=str(attempts[-1].response.get("model") or self.model),
             latency_ms=sum(a.latency_ms for a in attempts),

@@ -13,7 +13,9 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from .drafter import draft_hash
 from .labeling import ENFORCED_ORDER, LESSON_ORDER
+from .lesson import entry_numbers, lesson_from_row
 from .metrics import (
     BinaryMetrics,
     CascadeResult,
@@ -61,6 +63,7 @@ def draft_label(label: Mapping[str, Any], verdict: Mapping[str, Any]) -> dict[st
             "generalizable": entry.get("generalizable"),
             "enforced_by": entry.get("enforced_by"),
             "declined": entry.get("declined"),
+            "claims": entry.get("claims"),
         }
     return {
         "grounded": label.get("supported"),
@@ -772,6 +775,152 @@ def drafter_notes(
     return lines
 
 
+def claim_notes(
+    store: RunStore,
+    labels: Mapping[str, dict[str, Any]],
+    drafts: Mapping[str, Sequence[Mapping[str, Any]]],
+    scored: Mapping[str, Mapping[Key, Scored]],
+    *,
+    held_out: bool,
+) -> list[str]:
+    """Claim diagnostics leave draft-level gates and historical reports untouched."""
+    by_drafter: dict[str, list[Mapping[str, Any]]] = {}
+    for rows in drafts.values():
+        for row in rows:
+            if "claims" in row:
+                by_drafter.setdefault(str(row.get("drafter") or ""), []).append(row)
+    if not by_drafter:
+        return []
+    lines = [
+        "## Claims",
+        "",
+        "Mean claims/draft includes declines (zero claims). Uncited is over claims; absent "
+        "citations is over citation references checked against stored projection entries. "
+        "Grounded and faithful rates use labeled claims; kind agreement uses items with a "
+        "lesson-kind label and a matching labeled draft.",
+        "",
+    ]
+    table = []
+    unchecked = 0
+    for name, rows in sorted(by_drafter.items()):
+        claims_n = uncited = absent = citations_n = kind_n = kind_right = 0
+        truth: dict[str, list[bool]] = {"grounded": [], "faithful": []}
+        for row in rows:
+            lesson = lesson_from_row(row)
+            if lesson is None:
+                continue
+            claims_n += len(lesson.claims)
+            uncited += sum(not claim.cited for claim in lesson.claims)
+            citations = [n for claim in lesson.claims for n in claim.cited]
+            try:
+                numbers = entry_numbers(store.read_projection(row["item_id"]))
+            except JudgeError:
+                unchecked += len(citations)
+            else:
+                citations_n += len(citations)
+                absent += sum(n not in numbers for n in citations)
+            label = labels.get(row["item_id"]) or {}
+            entry = (label.get("drafts") or {}).get(name) or {}
+            if entry.get("draft_hash") != draft_hash(row.get("lesson")):
+                continue
+            for claim_label in (entry.get("claims") or [])[: len(lesson.claims)]:
+                for key in truth:
+                    if claim_label.get(key) is not None:
+                        truth[key].append(bool(claim_label[key]))
+            if label.get("lesson_kind") is not None:
+                kind_n += 1
+                kind_right += lesson.kind == label["lesson_kind"]
+        table.append(
+            [
+                name,
+                str(len(rows)),
+                f"{claims_n / len(rows):.2f}",
+                str(claims_n),
+                fmt(uncited / claims_n if claims_n else None),
+                fmt(absent / citations_n if citations_n else None),
+                str(len(truth["grounded"])),
+                fmt(sum(truth["grounded"]) / len(truth["grounded"]) if truth["grounded"] else None),
+                str(len(truth["faithful"])),
+                fmt(sum(truth["faithful"]) / len(truth["faithful"]) if truth["faithful"] else None),
+                str(kind_n),
+                fmt(kind_right / kind_n if kind_n else None),
+            ]
+        )
+    lines.extend(
+        _table(
+            [
+                "drafter",
+                "drafts",
+                "mean claims/draft",
+                "claims",
+                "uncited share",
+                "absent citation share",
+                "grounded n",
+                "grounded rate",
+                "faithful n",
+                "faithful rate",
+                "kind n",
+                "kind agreement",
+            ],
+            table,
+        )
+    )
+    if unchecked:
+        lines.extend(
+            [
+                "",
+                f"{unchecked} citation reference(s) could not be checked: "
+                "their stored projections are unavailable.",
+            ]
+        )
+    lines.extend(
+        [
+            "",
+            "### Claim decisions",
+            "",
+            "Accuracy, precision, recall and F1 use per-claim yes/no values, not the "
+            "derived draft gates. Held-out decisions stay locked until freeze.",
+            "",
+        ]
+    )
+    table = []
+    for split in ("calibration", "held_out") if held_out else ("calibration",):
+        for backend, rows in sorted(scored.items()):
+            for key in ("grounded", "faithful"):
+                pairs = []
+                for row in rows.values():
+                    if row.item.get("split") != split:
+                        continue
+                    for i, claim_label in enumerate(row.draft.get("claims") or [], 1):
+                        value = row.value(f"{key}.{i}")
+                        label = claim_label.get(key)
+                        if value in ("yes", "no") and label is not None:
+                            pairs.append((value == "yes", bool(label)))
+                if not pairs:
+                    continue
+                tp = sum(predicted and label for predicted, label in pairs)
+                fp = sum(predicted and not label for predicted, label in pairs)
+                fn = sum(not predicted and label for predicted, label in pairs)
+                table.append(
+                    [
+                        backend,
+                        split,
+                        key,
+                        str(len(pairs)),
+                        fmt(sum(p == y for p, y in pairs) / len(pairs)),
+                        fmt(tp / (tp + fp) if tp + fp else None),
+                        fmt(tp / (tp + fn) if tp + fn else None),
+                        fmt(2 * tp / (2 * tp + fp + fn) if 2 * tp + fp + fn else None),
+                    ]
+                )
+    lines.extend(
+        _table(
+            ["backend", "split", "question", "n", "accuracy", "precision", "recall", "F1"], table
+        )
+    )
+    return [*lines, ""]
+
+
 def _slices(
     scored: Mapping[str, Mapping[Key, Scored]],
     ids: set[str],
@@ -1044,9 +1193,11 @@ def build_report(store: RunStore, *, freeze: bool = False) -> str:
         lines.append("")
 
     labels = {row["item_id"]: row for row in store.read_jsonl(store.labels_path)}
-    notes = label_notes(items, labels, store.read_drafts())
+    drafts = store.read_drafts()
+    notes = label_notes(items, labels, drafts)
     if notes:
         lines.extend(["## Labels on their own (all labeled items)", "", *notes])
+    lines.extend(claim_notes(store, labels, drafts, scored, held_out=bool(frozen)))
     section("Calibration split", calibration, use_frozen=bool(frozen))
     by_caller: dict[str, set[str]] = {}
     for i in items:

@@ -16,7 +16,7 @@ from pathlib import Path
 
 from .store import JudgeError
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 MAX_FRAME = 8 * 1024 * 1024
 SOURCE = Path(__file__).with_name("label_ui")
 
