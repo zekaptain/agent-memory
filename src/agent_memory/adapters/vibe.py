@@ -33,7 +33,17 @@ class VibeAdapter:
             project=project_of(payload.get("cwd")),
             metadata=metadata or None,
         )
-        base = {"agent_id": AGENT_ID, "harness_session_id": str(hsid), "ts": ts, "session": session}
+        base = {
+            "agent_id": AGENT_ID,
+            "harness_session_id": str(hsid),
+            "ts": ts,
+            "session": session,
+            "attribution": {
+                key: payload[key]
+                for key in ("message_id", "turn_id", "channel", "final_message_id")
+                if payload.get(key) is not None
+            },
+        }
         if event == "post_tool":
             key = str(payload.get("tool_call_id") or f"{event}:{ts.isoformat()}")
             call = Record(

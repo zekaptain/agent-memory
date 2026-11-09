@@ -66,7 +66,7 @@ def test_harness_session_is_shared_with_hooks(droid_tools, live_client):
         "SELECT capture_completeness FROM sessions "
         f"WHERE session_id = {sql_literal(droid_tools.session_id)}",
     )
-    assert got == [("full",)]
+    assert got == [("partial",)]
 
 
 # remember / recall / cite / review

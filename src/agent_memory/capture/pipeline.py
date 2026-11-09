@@ -4,20 +4,24 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import json
 import os
 import threading
 from collections.abc import Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
+from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
 
 import duckdb
 
 from ..config import Config, ConfigError
 from ..db import AgentMemoryError, MemoryClient
+from ..lifecycle import is_validation_error, validate_interval
+from . import ids
 from .record import Record, RecordError, now
 from .redact import Redactor, redactor_for
 from .spool import Spool, SpoolFile
-from .writer import Writer, WriteResult
+from .writer import Writer, WriterError, WriteResult
 
 DEFAULT_DEADLINE = 2.0
 
@@ -65,6 +69,12 @@ def deliver(
         return Delivery(written=WriteResult())
     spool = Spool(cfg.spool_dir)
     redactor = make_redactor(cfg)
+    try:
+        for rec in records:
+            if rec.memory:
+                validate_interval(rec.memory)
+    except ValueError as exc:
+        return Delivery(error=redactor.text(str(exc))[0])
     if not spool_only:
         outcome: dict[str, object] = {}
 
@@ -73,7 +83,8 @@ def deliver(
                 with MemoryClient.from_config(cfg) as client:
                     writer = Writer(client, cfg.blob_dir, redactor, keep_raw=keep_raw)
                     outcome["written"] = writer.write(records)
-            except Exception as exc:  # anything here means "spool it", never a crash
+            except Exception as exc:
+                outcome["terminal"] = is_validation_error(exc) or isinstance(exc, WriterError)
                 outcome["error"] = f"{type(exc).__name__}: {exc}"
 
         worker = threading.Thread(target=attempt, daemon=True)
@@ -84,24 +95,13 @@ def deliver(
         written = outcome.get("written")
         if isinstance(written, WriteResult):
             return Delivery(written=written)
-        error = str(outcome.get("error") or "server unavailable")
+        error = redactor.text(str(outcome.get("error") or "server unavailable"))[0]
+        if outcome.get("terminal"):
+            return Delivery(error=error)
     else:
         error = None
-    paths = spool.append(_pre_redact(records, redactor))
+    paths = spool.append(redactor.record(rec, keep_raw=keep_raw) for rec in records)
     return Delivery(spooled=paths, error=error)
-
-
-def _pre_redact(records: Sequence[Record], redactor: Redactor) -> list[Record]:
-    out = []
-    for rec in records:
-        content = rec.content
-        if content is not None:
-            content, _ = redactor.text(content)
-        payload = rec.payload
-        if payload is not None:
-            payload, _ = redactor.value(payload)
-        out.append(replace(rec, content=content, payload=payload))
-    return out
 
 
 @dataclass
@@ -119,58 +119,139 @@ def replay_spool(cfg: Config, *, keep_raw: bool = False) -> ReplayResult:
     is kept under spool/failed/; the rest of the file still lands."""
     spool = Spool(cfg.spool_dir)
     result = ReplayResult()
-    pending = spool.pending()
-    if not pending:
-        return result
-    redactor = make_redactor(cfg)
-    with MemoryClient.from_config(cfg) as client:
-        writer = Writer(client, cfg.blob_dir, redactor, keep_raw=keep_raw)
-        for file in pending:
-            _replay_file(spool, writer, file, result)
+    with spool.replay_lock() as acquired:
+        if not acquired:
+            return result
+        pending = spool.pending()
+        if not pending:
+            return result
+        redactor = make_redactor(cfg)
+        with MemoryClient.from_config(cfg) as client:
+            writer = Writer(client, cfg.blob_dir, redactor, keep_raw=keep_raw)
+            _replay_files(spool, writer, [spool.claim(file) for file in pending], result)
     return result
 
 
-def _replay_file(spool: Spool, writer: Writer, file: SpoolFile, result: ReplayResult) -> None:
+def _replay_files(
+    spool: Spool, writer: Writer, files: list[SpoolFile], result: ReplayResult
+) -> None:
+    """Resolve record dependencies across the claimed snapshot, not file mtimes."""
     records: list[Record] = []
-    bad: list[str] = []
     errors: list[Record] = []
-    for number, line in spool.lines(file.path):
-        try:
-            records.append(Record.from_json(line))
-        except RecordError as exc:
-            bad.append(line)
-            errors.append(_capture_error(file, number, line, str(exc)))
+    bad_by_file: dict[Path, list[str]] = {file.path: [] for file in files}
+    record_files: dict[int, tuple[SpoolFile, int]] = {}
+    for file in files:
+        sanitized: list[str] = []
+        for number, line in spool.lines(file.path):
+            try:
+                record = writer.redactor.record(Record.from_json(line), keep_raw=writer.keep_raw)
+                records.append(record)
+                record_files[id(record)] = (file, number)
+                sanitized.append(record.to_json())
+            except RecordError as exc:
+                try:
+                    rejected = json.loads(line)
+                except json.JSONDecodeError:
+                    rejected = {
+                        "unparseable_line_sha256": hashlib.sha256(line.encode()).hexdigest()
+                    }
+                line = json.dumps(writer.redactor.value(rejected)[0], ensure_ascii=False)
+                sanitized.append(line)
+                bad_by_file[file.path].append(line)
+                errors.append(_capture_error(file, number, line, str(exc)))
+        spool.rewrite(file, sanitized)
     try:
         written = writer.write(records + errors)
     except (AgentMemoryError, duckdb.Error) as exc:
+        if not (is_validation_error(exc) or isinstance(exc, WriterError)):
+            raise
         # Insert as a whole failed: try record by record so one bad row cannot hold the rest.
-        written, bad_records = _write_individually(writer, records, file, errors)
-        bad.extend(r.to_json() for r in bad_records)
+        written, bad_records = _write_individually(
+            writer, records, files[0], errors, record_files=record_files
+        )
+        for rec in bad_records:
+            file, _ = record_files[id(rec)]
+            bad_by_file[file.path].append(rec.to_json())
         if bad_records:
-            result.errors.append(f"{file.path.name}: {type(exc).__name__}: {exc}")
-    result.files += 1
+            result.errors.append(f"claimed replay: {type(exc).__name__}: {exc}")
+    result.files += len(files)
     result.inserted += written.inserted
     result.skipped += written.skipped
-    result.failed_lines += len(bad)
-    failed = spool.write_failed(file, bad)
-    if failed:
-        result.failed_paths.append(failed)
-    spool.mark_done(file)
+    for file in files:
+        bad = bad_by_file[file.path]
+        result.failed_lines += len(bad)
+        failed = spool.write_failed(file, bad)
+        if failed:
+            result.failed_paths.append(failed)
+        spool.mark_done(file)
 
 
 def _write_individually(
-    writer: Writer, records: list[Record], file: SpoolFile, errors: list[Record]
+    writer: Writer,
+    records: list[Record],
+    file: SpoolFile,
+    errors: list[Record],
+    *,
+    record_files: dict[int, tuple[SpoolFile, int]] | None = None,
 ) -> tuple[WriteResult, list[Record]]:
     total = WriteResult()
     bad: list[Record] = []
+    by_key = {
+        (r.agent_id, r.harness_session_id, r.kind, r.source_key): i for i, r in enumerate(records)
+    }
+    memories = {
+        ids.memory_id(r.agent_id, r.harness_session_id, r.source_key): i
+        for i, r in enumerate(records)
+        if r.memory
+    }
+    events = {
+        ids.event_id(r.agent_id, r.harness_session_id, r.kind, r.source_key): i
+        for i, r in enumerate(records)
+    }
+    dependencies: dict[int, set[int]] = {}
     for index, rec in enumerate(records):
-        try:
-            part = writer.write([rec])
-        except (AgentMemoryError, duckdb.Error) as exc:
-            bad.append(rec)
-            errors.append(_capture_error(file, index + 1, rec.to_json(), str(exc)))
-            continue
-        _accumulate(total, part)
+        parent = None
+        if rec.parent_key and (kind := rec.effective_parent_kind):
+            parent = by_key.get((rec.agent_id, rec.harness_session_id, kind, rec.parent_key))
+        dependencies[index] = {parent} if parent is not None else set()
+        references = []
+        if rec.action:
+            references.extend([rec.action.get("memory_id"), rec.action.get("related_memory_id")])
+        if rec.memory:
+            references.append(rec.memory.get("supersedes"))
+            for source in rec.memory.get("source_event_ids") or []:
+                if (source_index := events.get(source)) is not None and source_index != index:
+                    dependencies[index].add(source_index)
+        for memory_id in references:
+            if isinstance(memory_id, str) and (memory := memories.get(memory_id)) is not None:
+                dependencies[index].add(memory)
+    graph = TopologicalSorter(dependencies)
+    with contextlib.suppress(CycleError):
+        graph.prepare()
+    failed: set[int] = set()
+    visited: set[int] = set()
+
+    def reject(index: int, reason: str) -> None:
+        failed.add(index)
+        bad.append(records[index])
+        source, number = (record_files or {}).get(id(records[index]), (file, index + 1))
+        errors.append(_capture_error(source, number, records[index].to_json(), reason))
+
+    while ready := graph.get_ready():
+        for index in ready:
+            visited.add(index)
+            if dependencies[index] & failed:
+                reject(index, "a referenced record could not be replayed")
+                continue
+            try:
+                _accumulate(total, writer.write([records[index]]))
+            except (AgentMemoryError, duckdb.Error) as exc:
+                if not (is_validation_error(exc) or isinstance(exc, WriterError)):
+                    raise
+                reject(index, str(exc))
+        graph.done(*ready)
+    for index in sorted(set(dependencies) - visited):
+        reject(index, "cyclic record references")
     if errors:
         with contextlib.suppress(AgentMemoryError, duckdb.Error):
             _accumulate(total, writer.write(errors))

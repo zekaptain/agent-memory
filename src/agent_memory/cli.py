@@ -13,7 +13,7 @@ from typing import Annotated, Any
 import duckdb
 import typer
 
-from . import __version__
+from . import __version__, audit
 from .adapters import HARNESS_NAMES, UnsupportedTranscript, get_adapter
 from .capture.pipeline import Delivery, deliver, replay_spool
 from .capture.spool import Spool
@@ -391,6 +391,63 @@ def ingest(
         return
     delivery = deliver(cfg, records, spool_only=spool_only, keep_raw=keep_raw)
     _report_delivery(delivery, transcript.name)
+
+
+audit_app = typer.Typer(help="Read-only ledger diagnostics.", no_args_is_help=True)
+app.add_typer(audit_app, name="audit")
+
+
+@audit_app.command("check")
+def audit_check(
+    ctx: typer.Context,
+    direct: Annotated[
+        bool,
+        typer.Option(
+            "--direct",
+            help="Read the stopped database file, including old schemas, without migrating.",
+        ),
+    ] = False,
+    as_json: Annotated[
+        bool, typer.Option("--json", help="Print a deterministic report with IDs and reason codes.")
+    ] = False,
+) -> None:
+    """Check ledger integrity and provenance without writes.
+
+    Exit 0: clean; 1: findings (including coverage warnings); 2: audit could not complete.
+    Coverage gaps can describe an unfinished session, not necessarily a capture failure.
+    """
+    try:
+        cfg = _config(ctx)
+        if direct:
+            con = open_direct(cfg.db_path, read_only=True)
+            try:
+                report = audit.check(con)
+            finally:
+                con.close()
+        else:
+            with MemoryClient.from_config(cfg) as client:
+                report = audit.check(client)
+    except (AgentMemoryError, ConfigError, duckdb.Error, OSError, ValueError, TypeError):
+        # Connection errors can embed credentials, paths, or rejected SQL values.
+        report = audit.read_failure()
+    if as_json:
+        print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2, sort_keys=True))
+    else:
+        counts = report.to_dict()["summary"]
+        print(f"audit: {report.status} ({counts['errors']} errors, {counts['warnings']} warnings)")
+        for finding in report.findings:
+            related = f" related={','.join(finding.related_ids)}" if finding.related_ids else ""
+            print(
+                f"{finding.severity}: {finding.code} "
+                f"{finding.entity_type}={finding.entity_id}{related}"
+            )
+        if report.exit_code == 2:
+            print(
+                "Check configuration, connectivity, and schema. For a stopped old database, "
+                "use --direct; this command never initializes or migrates it."
+            )
+    if report.exit_code:
+        raise typer.Exit(report.exit_code)
 
 
 spool_app = typer.Typer(help="Inspect the spool of records waiting for the server.")

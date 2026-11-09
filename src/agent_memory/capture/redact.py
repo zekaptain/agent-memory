@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import Any
+
+from .record import Record, SessionInfo
 
 
 @dataclass(frozen=True)
@@ -18,7 +20,15 @@ class Rule:
     def apply(self, text: str) -> tuple[str, int]:
         marker = f"[REDACTED:{self.name}]"
         repl = marker if self.template is None else self.template.replace("{R}", marker)
-        return self.pattern.subn(repl, text)
+        count = 0
+
+        def replace_match(match: re.Match[str]) -> str:
+            nonlocal count
+            replacement = match.expand(repl)
+            count += replacement != match.group()
+            return replacement
+
+        return self.pattern.sub(replace_match, text), count
 
 
 def _rule(name: str, pattern: str, template: str | None = None, flags: int = 0) -> Rule:
@@ -83,12 +93,46 @@ class Redactor:
                 count += n
                 return out
             if isinstance(node, dict):
-                return {k: walk(v) for k, v in node.items()}
+                out = {}
+                for key, value in node.items():
+                    clean_key = walk(key)
+                    clean_value = walk(value)
+                    # Use the same assignment rules for structured credentials,
+                    # retaining their order, names, and minimum value lengths.
+                    if isinstance(key, str) and isinstance(value, str) and clean_value == value:
+                        for rule in self.rules:
+                            if rule.name in ("aws_secret", "generic_assignment") and (
+                                rule.pattern.match(f"{key}={value}")
+                            ):
+                                marker = f"[REDACTED:{rule.name}]"
+                                count += value != marker
+                                clean_value = marker
+                                break
+                    out[clean_key] = clean_value
+                return out
             if isinstance(node, list):
                 return [walk(v) for v in node]
             return node
 
         return walk(obj), count
+
+    def record(self, rec: Record, *, keep_raw: bool = False) -> Record:
+        """Sanitize every content copy without changing capture identities or references."""
+        fields, count = self.value(
+            {
+                "content": rec.content,
+                "payload": rec.payload,
+                "session": asdict(rec.session) if rec.session else None,
+                "memory": rec.memory,
+                "action": rec.action,
+                "raw": rec.raw if keep_raw else None,
+                "observation": rec.observation,
+                "attribution": rec.attribution,
+            }
+        )
+        if fields["session"] is not None:
+            fields["session"] = SessionInfo(**fields["session"])
+        return replace(rec, **fields, redactions=rec.redactions + count)
 
 
 def redactor_for(token: str | None, extra: Iterable[str] = ()) -> Redactor:

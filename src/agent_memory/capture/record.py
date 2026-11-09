@@ -67,6 +67,9 @@ class Record:
     memory: dict[str, Any] | None = None
     action: dict[str, Any] | None = None
     raw: dict[str, Any] | None = field(default=None, compare=False)
+    redactions: int = 0
+    observation: dict[str, Any] | None = None
+    attribution: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if self.kind not in EVENT_KINDS:
@@ -138,6 +141,9 @@ class Record:
                 memory=data.get("memory"),
                 action=data.get("action"),
                 raw=data.get("raw"),
+                redactions=int(data.get("redactions") or 0),
+                observation=data.get("observation"),
+                attribution=data.get("attribution"),
             )
         except (KeyError, TypeError, ValueError) as exc:
             if isinstance(exc, RecordError):

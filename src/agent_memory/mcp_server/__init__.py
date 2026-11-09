@@ -54,6 +54,7 @@ def build_server(tools: MemoryTools) -> MCPServer:
         source_event_ids: list[str] | None = None,
         valid_from: str | None = None,
         expires_at: str | None = None,
+        valid_to: str | None = None,
     ) -> dict[str, Any]:
         """Store one durable memory: a fact, preference, decision, procedure, observation,
         or profile attribute. Not for transient task state. trust_level: user (the user said
@@ -72,6 +73,7 @@ def build_server(tools: MemoryTools) -> MCPServer:
             source_event_ids,
             valid_from,
             expires_at,
+            valid_to,
         )
 
     @server.tool()
@@ -113,6 +115,7 @@ def build_server(tools: MemoryTools) -> MCPServer:
         source_event_ids: list[str] | None = None,
         valid_from: str | None = None,
         expires_at: str | None = None,
+        valid_to: str | None = None,
     ) -> dict[str, Any]:
         """Record one relation between two named entities as a fact memory:
         subject --[predicate]--> object, for example ("payments-api", "owned by", "Dana").
@@ -134,6 +137,7 @@ def build_server(tools: MemoryTools) -> MCPServer:
             source_event_ids,
             valid_from,
             expires_at,
+            valid_to,
         )
 
     @server.tool()

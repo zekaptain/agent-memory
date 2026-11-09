@@ -17,6 +17,8 @@ import duckdb
 from mcp.server.mcpserver.exceptions import ToolError as McpToolError
 
 from ..capture import blobs, ids
+from ..capture.attribution import reconcile_answers
+from ..capture.observations import fingerprint, pending_observations
 from ..capture.pipeline import deliver, make_redactor
 from ..capture.record import Record, parse_ts
 from ..capture.redact import Redactor
@@ -25,7 +27,16 @@ from ..config import Config, ConfigError
 from ..db import AgentMemoryError, MemoryClient, sql_literal
 from ..graph import GRAPH_STRATEGY, MAX_HOPS, Relation, hop_sql, normalize_entity, relations_sql
 from ..graph.sql import ROW as GRAPH_ROW
-from ..graph.sql import active_keys_sql, sources_sql
+from ..graph.sql import sources_sql
+from ..lifecycle import (
+    REVIEW_ACTIONS,
+    LifecycleError,
+    LifecyclePlan,
+    is_validation_error,
+    maintain_corrections,
+    stable_id,
+    validate_interval,
+)
 from . import ranking
 
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
@@ -77,7 +88,10 @@ class MemoryTools:
             self._vocab = {}
         if not self._session_ready:
             self._ensure_session(self._client)
+            self._observe_mcp(self._client)
             self._session_ready = True
+            # Also covers CLI graph readers, which obtain a client directly.
+            maintain_corrections(self._client)
         return self._client
 
     def _reset(self) -> None:
@@ -98,7 +112,6 @@ class MemoryTools:
         )
         if not tier:
             raise ToolError(f"unknown agent {self.agent_id!r}; set AGENT_MEMORY_AGENT")
-        completeness = "partial" if self.own_session or tier[0][0] != "A" else "full"
         client.insert(
             {
                 "sessions": [
@@ -107,15 +120,37 @@ class MemoryTools:
                         "agent_id": self.agent_id,
                         "harness_session_id": self.harness_session_id,
                         "scope": "global",
-                        "project": self.project,
-                        "cwd": os.getcwd(),
-                        "capture_completeness": completeness,
+                        "project": self.redactor().value(self.project)[0],
+                        "cwd": self.redactor().text(os.getcwd())[0],
+                        "capture_completeness": "partial",
                         "started_at": datetime.now(UTC),
                         "metadata": {"via": "mem-mcp", "own_session": self.own_session},
                     }
                 ]
             }
         )
+
+    def _observe_mcp(self, client: MemoryClient) -> None:
+        record = Record(
+            agent_id=self.agent_id,
+            harness_session_id=self.harness_session_id,
+            kind="note",
+            source_key="mcp-connection",
+            ts=datetime.now(UTC),
+            observation={
+                "source_mode": "mcp",
+                "adapter_version": "mem_mcp_v1",
+                "source_fingerprint": fingerprint(["mcp", self.session_id]),
+                "exclusions": ["non_mcp_activity_unobserved"],
+            },
+        )
+        rows = pending_observations(client, [self.redactor().record(record)])
+        if rows:
+            try:
+                client.insert({"capture_observations": rows})
+            except duckdb.ConstraintException as exc:
+                if "Duplicate key" not in str(exc):
+                    raise
 
     def _vocabulary(self, client: MemoryClient, table: str, column: str) -> set[str]:
         if table not in self._vocab:
@@ -129,6 +164,8 @@ class MemoryTools:
         return self._redactor
 
     def _event(self, client: MemoryClient, kind: str, content: str | None, payload: Any) -> dict:
+        content, content_count = self.redactor().value(content)
+        payload, payload_count = self.redactor().value(payload)
         return {
             "event_id": client.new_ids()[0],
             "session_id": self.session_id,
@@ -138,13 +175,17 @@ class MemoryTools:
             "content": content,
             "content_hash": blobs.content_hash(content) if content else None,
             "payload": payload,
+            "redactions": content_count + payload_count,
             "ts": datetime.now(UTC),
         }
 
     def _scopes(self, scopes: Sequence[str] | None) -> list[str]:
-        if scopes:
-            return [s for s in scopes if s]
-        return ["global", self.project] if self.project else ["global"]
+        values = (
+            [s for s in scopes if s]
+            if scopes
+            else (["global", self.project] if self.project else ["global"])
+        )
+        return [self.redactor().text(value)[0] for value in values]
 
     # Tools
 
@@ -157,10 +198,14 @@ class MemoryTools:
     ) -> dict[str, Any]:
         limit = max(1, min(limit, MAX_LIMIT))
         scopes = self._scopes(scopes)
+        original_query = query
+        query = self.redactor().text(query or "")[0]
+        types = self.redactor().value(list(types) if types is not None else None)[0]
         normalized = ranking.normalize_query(query or "")
         strategy = ranking.FTS_STRATEGY if normalized else ranking.RECENT_STRATEGY
         try:
             client = self._client_or_raise()
+            maintain_corrections(client)
             started = time.perf_counter()
             sql = (
                 ranking.fts_sql(normalized, scopes, types)
@@ -173,7 +218,7 @@ class MemoryTools:
             event = self._event(
                 client,
                 "memory_recall",
-                query,
+                original_query,
                 {"scopes": scopes, "types": list(types) if types else None, "limit": limit},
             )
             retrieval_id = client.new_ids()[0]
@@ -241,6 +286,7 @@ class MemoryTools:
         source_event_ids: Sequence[str] | None = None,
         valid_from: str | None = None,
         expires_at: str | None = None,
+        valid_to: str | None = None,
     ) -> dict[str, Any]:
         content = (content or "").strip()
         if not content:
@@ -252,7 +298,8 @@ class MemoryTools:
         if supersedes is not None:
             supersedes = _uuid(supersedes, "supersedes")
         sources = [_uuid(e, "source_event_ids") for e in (source_event_ids or [])]
-        scope = scope or self.project or "global"
+        scope = self.redactor().text(scope or self.project or "global")[0]
+        key = self.redactor().value(key)[0]
         redacted, _ = self.redactor().text(content)
         spec = {
             "content": redacted,
@@ -265,30 +312,22 @@ class MemoryTools:
             "supersedes": supersedes,
             "valid_from": valid_from,
             "expires_at": expires_at,
+            "valid_to": valid_to,
             "metadata": None,
         }
-        return self._write_memory(
-            spec,
-            sources,
-            dedupe_sql=(
-                "SELECT memory_id::VARCHAR FROM active_memories "
-                f"WHERE scope = {sql_literal(scope)} "
-                f"AND content_hash = {sql_literal(blobs.content_hash(redacted))} "
-                "ORDER BY created_at DESC LIMIT 1"
-            ),
-            confirm_reason="remember() with identical content",
-        )
+        return self._write_memory(spec, sources)
 
     def _write_memory(
         self,
         spec: dict[str, Any],
         sources: Sequence[str],
-        *,
-        dedupe_sql: str,
-        confirm_reason: str,
     ) -> dict[str, Any]:
-        """Store one memory from a spec the spool can replay, or confirm the active memory
-        dedupe_sql finds. When the server is down the spec is queued instead."""
+        """Use the same lifecycle plan as queued replay and entity merges."""
+        spec = {**spec, "source_event_ids": list(sources)}
+        try:
+            validate_interval(spec)
+        except LifecycleError as exc:
+            raise ToolError(str(exc)) from None
         content = spec["content"]
         try:
             client = self._client_or_raise()
@@ -297,79 +336,70 @@ class MemoryTools:
                     "type must be one of "
                     + ", ".join(sorted(self._vocabulary(client, "memory_types", "type")))
                 )
-            _, dup = client.query(dedupe_sql)
-            if dup:
-                existing = str(dup[0][0])
-                event = self._event(
-                    client, "memory_write", content, {"deduplicated": existing, **spec}
-                )
-                client.insert(
-                    {
-                        "events": [event],
-                        "memory_actions": [
-                            {
-                                "action_id": client.new_ids()[0],
-                                "memory_id": existing,
-                                "action": "confirm",
-                                "actor": self.agent_id,
-                                "session_id": self.session_id,
-                                "reason": confirm_reason,
-                            }
-                        ],
-                    }
-                )
-                return {
-                    "memory_id": existing,
-                    "deduplicated": True,
-                    "queued": False,
-                    "status": self._status_of(client, existing),
-                }
             known_sources = self._existing_events(client, sources)
             event = self._event(client, "memory_write", content, spec)
-            memory_id = client.new_ids()[0]
-            relation = "user_stated" if spec["trust_level"] == "user" else "derived_from"
-            client.insert(
-                {
-                    "events": [event],
-                    "memories": [
-                        {
-                            "memory_id": memory_id,
-                            "scope": spec["scope"],
-                            "type": spec["type"],
-                            "key": spec["key"],
-                            "content": content,
-                            "content_hash": blobs.content_hash(content),
-                            "confidence": spec["confidence"],
-                            "importance": spec["importance"],
-                            "trust_level": spec["trust_level"],
-                            "supersedes": spec["supersedes"],
-                            "valid_from": _ts(spec["valid_from"]),
-                            "expires_at": _ts(spec["expires_at"]),
-                            "created_by_session": self.session_id,
-                            "metadata": spec["metadata"],
-                        }
-                    ],
-                    "memory_sources": [
-                        {
-                            "memory_id": memory_id,
-                            "event_id": event["event_id"],
-                            "relation": relation,
-                        },
-                        *(
-                            {"memory_id": memory_id, "event_id": e, "relation": "derived_from"}
-                            for e in known_sources
-                        ),
-                    ],
-                }
+            row = {
+                "memory_id": client.new_ids()[0],
+                **{
+                    k: spec[k]
+                    for k in (
+                        "scope",
+                        "type",
+                        "key",
+                        "content",
+                        "confidence",
+                        "importance",
+                        "trust_level",
+                        "supersedes",
+                        "metadata",
+                    )
+                },
+                "content_hash": blobs.content_hash(content),
+                "valid_from": _ts(spec.get("valid_from")),
+                "valid_to": _ts(spec.get("valid_to")),
+                "expires_at": _ts(spec.get("expires_at")),
+                "created_by_session": self.session_id,
+            }
+            plan = LifecyclePlan(client)
+            mid, duplicate = plan.remember(
+                row,
+                event_id=event["event_id"],
+                actor=self.agent_id,
+                sources=[
+                    {
+                        "event_id": event["event_id"],
+                        "relation": "user_stated"
+                        if spec["trust_level"] == "user"
+                        else "derived_from",
+                    },
+                    *({"event_id": eid, "relation": "derived_from"} for eid in known_sources),
+                ],
             )
+            client.insert([("events", [event]), *plan.rows])
+            correction = {}
+            if spec.get("supersedes"):
+                _, proposals = client.query(
+                    "SELECT correction_status, pending_reason FROM memory_proposal_status "
+                    f"WHERE successor_id = {sql_literal(mid)} "
+                    f"AND predecessor_id = {sql_literal(plan.resolve(spec['supersedes']))}"
+                )
+                if proposals:
+                    correction = {
+                        "correction_status": proposals[0][0],
+                        "correction_pending_reason": proposals[0][1],
+                    }
             return {
-                "memory_id": memory_id,
-                "deduplicated": False,
+                "memory_id": mid,
+                "deduplicated": duplicate,
                 "queued": False,
-                "status": self._status_of(client, memory_id),
+                "status": self._status_of(client, mid),
+                "pending_reason": self._pending_reason(client, mid),
                 "ignored_source_event_ids": sorted(set(sources) - set(known_sources)),
+                **correction,
             }
         except (AgentMemoryError, ConfigError, duckdb.Error) as exc:
+            if is_validation_error(exc):
+                raise ToolError(f"memory write conflict or validation failure: {exc}") from None
             self._reset()
             return self._queue(
                 "memory_write",
@@ -401,18 +431,26 @@ class MemoryTools:
         try:
             client = self._client_or_raise()
             rows: dict[str, list[dict[str, Any]]] = {}
-            if answer_event_id is None:
+            explicit = _uuid(answer_event_id, "answer_event_id") if answer_event_id else None
+            missing_explicit = explicit is not None and not self._existing_events(
+                client, [explicit]
+            )
+            if explicit is None or missing_explicit:
                 placeholder = self._event(
                     client,
                     "assistant_msg",
                     None,
-                    {"placeholder": True, "retrieval_id": retrieval_id},
+                    {
+                        "placeholder": True,
+                        "retrieval_id": retrieval_id,
+                        **({"explicit_answer_event_id": explicit} if explicit else {}),
+                    },
                 )
                 placeholder["role"] = "assistant"
                 answer_event_id = placeholder["event_id"]
                 rows["events"] = [placeholder]
             else:
-                answer_event_id = _uuid(answer_event_id, "answer_event_id")
+                answer_event_id = explicit
             rows["context_links"] = [
                 {
                     "answer_event_id": answer_event_id,
@@ -424,10 +462,16 @@ class MemoryTools:
                 for link in links
             ]
             client.insert(rows)
+            reconcile_answers(client, [self.session_id])
         except (AgentMemoryError, ConfigError, duckdb.Error) as exc:
             self._reset()
             return {"degraded": True, "reason": f"{type(exc).__name__}: {exc}", "links": 0}
-        return {"degraded": False, "answer_event_id": answer_event_id, "links": len(links)}
+        return {
+            "degraded": False,
+            "answer_event_id": explicit or answer_event_id,
+            "links": len(links),
+            **({"placeholder_event_id": answer_event_id} if missing_explicit else {}),
+        }
 
     def review(
         self,
@@ -436,11 +480,15 @@ class MemoryTools:
         reason: str,
         related_memory_id: str | None = None,
     ) -> dict[str, Any]:
+        if action not in REVIEW_ACTIONS:
+            raise ToolError("action must be one of " + ", ".join(sorted(REVIEW_ACTIONS)))
         memory_id = _uuid(memory_id, "memory_id")
         if related_memory_id is not None:
             related_memory_id = _uuid(related_memory_id, "related_memory_id")
         if not (reason or "").strip():
             raise ToolError("reason is required")
+        original_reason = reason
+        reason = self.redactor().text(reason)[0]
         spec = {
             "memory_id": memory_id,
             "action": action,
@@ -450,25 +498,28 @@ class MemoryTools:
         }
         try:
             client = self._client_or_raise()
-            allowed = self._vocabulary(client, "memory_action_types", "action")
-            if action not in allowed:
-                raise ToolError("action must be one of " + ", ".join(sorted(allowed)))
-            event = self._event(client, "memory_write", reason, {"review": spec})
-            client.insert(
+            event = self._event(client, "memory_write", original_reason, {"review": spec})
+            plan = LifecyclePlan(client)
+            resolved = plan.review(
                 {
-                    "events": [event],
-                    "memory_actions": [
-                        {"action_id": client.new_ids()[0], "session_id": self.session_id, **spec}
-                    ],
+                    "action_id": client.new_ids()[0],
+                    "session_id": self.session_id,
+                    "event_id": event["event_id"],
+                    **spec,
                 }
             )
+            client.insert([("events", [event]), *plan.rows])
             return {
                 "memory_id": memory_id,
                 "action": action,
                 "queued": False,
-                "status": self._status_of(client, memory_id),
+                "resolved_memory_id": resolved,
+                "status": self._status_of(client, resolved),
+                "pending_reason": self._pending_reason(client, resolved),
             }
         except (AgentMemoryError, ConfigError, duckdb.Error) as exc:
+            if is_validation_error(exc):
+                raise ToolError(f"review conflict or validation failure: {exc}") from None
             self._reset()
             return self._queue(
                 "memory_write", reason, action=spec, reason=f"{type(exc).__name__}: {exc}"
@@ -515,6 +566,7 @@ class MemoryTools:
         source_event_ids: Sequence[str] | None = None,
         valid_from: str | None = None,
         expires_at: str | None = None,
+        valid_to: str | None = None,
     ) -> dict[str, Any]:
         redact = self.redactor()
         try:
@@ -522,8 +574,8 @@ class MemoryTools:
                 redact.text(subject or "")[0],
                 redact.text(predicate or "")[0],
                 redact.text(object or "")[0],
-                subject_type,
-                object_type,
+                redact.value(subject_type)[0],
+                redact.value(object_type)[0],
             )
         except ValueError as exc:
             raise ToolError(str(exc)) from None
@@ -532,7 +584,7 @@ class MemoryTools:
         if not 0 <= confidence <= 1 or not 0 <= importance <= 1:
             raise ToolError("confidence and importance must be between 0 and 1")
         sources = [_uuid(e, "source_event_ids") for e in (source_event_ids or [])]
-        scope = scope or self.project or "global"
+        scope = redact.text(scope or self.project or "global")[0]
         redacted, _ = redact.text((content or "").strip() or relation.sentence)
         spec = {
             "content": redacted,
@@ -545,18 +597,10 @@ class MemoryTools:
             "supersedes": None,
             "valid_from": valid_from,
             "expires_at": expires_at,
+            "valid_to": valid_to,
             "metadata": relation.metadata(),
         }
-        result = self._write_memory(
-            spec,
-            sources,
-            dedupe_sql=(
-                "SELECT memory_id::VARCHAR FROM active_memories "
-                f"WHERE scope = {sql_literal(scope)} AND key = {sql_literal(relation.key)} "
-                "ORDER BY created_at DESC LIMIT 1"
-            ),
-            confirm_reason="relate() with the same subject, predicate, and object",
-        )
+        result = self._write_memory(spec, sources)
         result["key"] = relation.key
         result["triple"] = relation.triple
         return result
@@ -569,6 +613,9 @@ class MemoryTools:
         limit: int = DEFAULT_GRAPH_LIMIT,
         types: Sequence[str] | None = None,
     ) -> dict[str, Any]:
+        original_entity = entity
+        entity = self.redactor().text(entity or "")[0]
+        types = self.redactor().value(list(types) if types is not None else None)[0]
         entity_norm = normalize_entity(entity or "")
         if not entity_norm:
             raise ToolError("entity is required")
@@ -577,6 +624,7 @@ class MemoryTools:
         scopes = self._scopes(scopes)
         try:
             client = self._client_or_raise()
+            maintain_corrections(client)
             started = time.perf_counter()
             sql = hop_sql(entity_norm, hops, scopes, types)
             _, rows = client.query(sql)
@@ -585,7 +633,7 @@ class MemoryTools:
             event = self._event(
                 client,
                 "memory_recall",
-                entity,
+                original_entity,
                 {
                     "graph": {"entity_norm": entity_norm, "hops": hops},
                     "scopes": scopes,
@@ -674,6 +722,11 @@ class MemoryTools:
         `alias` is superseded by the same relation with `canonical` in its place, or retired
         when that relation already exists. Nothing is rewritten; the alias stays in the
         new rows' metadata and the old rows stay readable."""
+        redact = self.redactor()
+        alias = redact.text(alias or "")[0]
+        canonical = redact.text(canonical or "")[0]
+        canonical_type = redact.value(canonical_type)[0]
+        reason = redact.text(reason or "")[0]
         alias_norm = normalize_entity(alias or "")
         canonical_norm = normalize_entity(canonical or "")
         if not alias_norm or not canonical_norm:
@@ -683,9 +736,10 @@ class MemoryTools:
         if not (reason or "").strip():
             raise ToolError("reason is required")
         scopes = self._scopes(scopes)
-        actor = actor or self.agent_id
+        actor = redact.text(actor or self.agent_id)[0]
         try:
             client = self._client_or_raise()
+            maintain_corrections(client)
             _, rows = client.query(relations_sql(scopes, [alias_norm]))
             old: list[tuple[dict[str, Any], Relation, Relation]] = []
             for row in rows:
@@ -704,10 +758,6 @@ class MemoryTools:
             }
             if not old:
                 return summary
-            _, existing_rows = client.query(
-                active_keys_sql(scopes, sorted({new.key for _, _, new in old}))
-            )
-            existing = {(str(k), str(s)): str(mid) for k, s, mid in existing_rows}
             _, source_rows = client.query(sources_sql([rec["memory_id"] for rec, _, _ in old]))
             sources: dict[str, list[tuple[str, str]]] = defaultdict(list)
             for mid, eid, rel in source_rows:
@@ -728,36 +778,14 @@ class MemoryTools:
                     }
                 },
             )
-            memories: list[dict[str, Any]] = []
-            memory_sources: list[dict[str, Any]] = []
-            actions: list[dict[str, Any]] = []
-            created_here: dict[tuple[str, str], str] = {}
+            plan = LifecyclePlan(client)
             for record, relation, renamed in old:
                 mid = record["memory_id"]
-                slot = (renamed.key, record["scope"])
-                target = existing.get(slot) or created_here.get(slot)
-                if target and target != mid:
-                    actions.append(
-                        {
-                            "action_id": client.new_ids()[0],
-                            "memory_id": mid,
-                            "action": "retire",
-                            "actor": actor,
-                            "session_id": self.session_id,
-                            "related_memory_id": target,
-                            "reason": f"merged {alias} into {canonical}; same relation as "
-                            f"{target}: {reason}",
-                        }
-                    )
-                    summary["retired"].append({"memory_id": mid, "into": target})
-                    continue
-                new_id = client.new_ids()[0]
-                created_here[slot] = new_id
-                content = _rename_in_text(record["content"], relation, renamed)
-                memories.append(
+                content = redact.text(_rename_in_text(record["content"], relation, renamed))[0]
+                target, duplicate = plan.remember(
                     {
-                        "memory_id": new_id,
-                        "scope": record["scope"],
+                        "memory_id": client.new_ids()[0],
+                        "scope": redact.text(record["scope"])[0],
                         "type": record["type"],
                         "key": renamed.key,
                         "content": content,
@@ -767,45 +795,47 @@ class MemoryTools:
                         "trust_level": record["trust_level"],
                         "supersedes": mid,
                         "valid_from": _ts(record["valid_from"]),
+                        "valid_to": _ts(record["valid_to"]),
                         "expires_at": _ts(record["expires_at"]),
                         "created_by_session": self.session_id,
-                        "metadata": renamed.metadata(),
-                    }
+                        "metadata": redact.value(renamed.metadata())[0],
+                    },
+                    event_id=event["event_id"],
+                    actor=actor,
+                    carry_approval_from=mid,
+                    sources=[
+                        {"event_id": event["event_id"], "relation": "derived_from"},
+                        *({"event_id": eid, "relation": rel} for eid, rel in sources[mid]),
+                    ],
                 )
-                memory_sources.append(
-                    {"memory_id": new_id, "event_id": event["event_id"], "relation": "derived_from"}
-                )
-                memory_sources.extend(
-                    {"memory_id": new_id, "event_id": eid, "relation": rel}
-                    for eid, rel in sources[mid]
-                    if eid != event["event_id"]
-                )
-                # A superseding row has no review history. Without this, an approved
-                # tool-derived relation would fall back to quarantine after the merge.
-                if record["status"] == "active" and record["trust_level"] == "tool":
-                    actions.append(
+                if duplicate:
+                    plan.review(
                         {
-                            "action_id": client.new_ids()[0],
-                            "memory_id": new_id,
-                            "action": "approve",
+                            "action_id": stable_id(event["event_id"], f"merge-retire:{mid}"),
+                            "memory_id": mid,
+                            "action": "retire",
                             "actor": actor,
                             "session_id": self.session_id,
-                            "related_memory_id": mid,
-                            "reason": f"approval carried over from {mid} at merge",
+                            "event_id": event["event_id"],
+                            "related_memory_id": target,
+                            "reason": reason,
                         }
                     )
-                summary["superseded"].append({"memory_id": mid, "by": new_id, "key": renamed.key})
-            client.insert(
-                [
-                    ("events", [event]),
-                    ("memories", memories),
-                    ("memory_sources", memory_sources),
-                    ("memory_actions", actions),
-                ]
-            )
+                    summary["retired"].append({"memory_id": mid, "into": target})
+                else:
+                    summary["superseded"].append(
+                        {
+                            "memory_id": mid,
+                            "by": target,
+                            "key": renamed.key,
+                        }
+                    )
+            client.insert([("events", [event]), *plan.rows])
             summary["event_id"] = event["event_id"]
             return summary
         except (AgentMemoryError, ConfigError, duckdb.Error) as exc:
+            if is_validation_error(exc):
+                raise ToolError(f"merge conflict or validation failure: {exc}") from None
             self._reset()
             return {
                 "degraded": True,
@@ -823,6 +853,12 @@ class MemoryTools:
             f"SELECT status FROM memory_status WHERE memory_id = {sql_literal(memory_id)}"
         )
         return str(rows[0][0]) if rows else None
+
+    def _pending_reason(self, client: MemoryClient, memory_id: str) -> str | None:
+        _, rows = client.query(
+            f"SELECT pending_reason FROM memory_status WHERE memory_id = {sql_literal(memory_id)}"
+        )
+        return rows[0][0] if rows else None
 
     def _existing_events(self, client: MemoryClient, event_ids: Sequence[str]) -> list[str]:
         if not event_ids:

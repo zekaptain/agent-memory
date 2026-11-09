@@ -20,6 +20,12 @@ ALLOWED = [
     "INSERT INTO events (event_id) SELECT event_id FROM stage_events_1",
     "INSERT INTO main.memories SELECT * FROM stage",
     "insert into context_links select * from s",
+    "INSERT INTO memory_replacements SELECT * FROM stage",
+    "INSERT INTO memory_deduplications SELECT * FROM stage",
+    "INSERT INTO memory_correction_work SELECT * FROM stage",
+    "INSERT INTO memory_correction_closures SELECT * FROM stage",
+    "INSERT INTO capture_observations SELECT * FROM stage",
+    "INSERT INTO answer_bindings SELECT * FROM stage",
     # Keywords and separators inside literals and quoted identifiers are data.
     "SELECT 'DROP TABLE events; -- gone' AS note",
     "SELECT 'it''s; DELETE FROM events' AS note",

@@ -34,9 +34,15 @@ ALL_TABLES = (
     "memories",
     "memory_sources",
     "memory_actions",
+    "memory_deduplications",
+    "memory_replacements",
+    "memory_correction_work",
+    "memory_correction_closures",
     "retrievals",
     "retrieval_items",
     "context_links",
+    "capture_observations",
+    "answer_bindings",
 )
 
 # Tables Quack clients may insert into. Must match the list in mem_authorize.
@@ -47,9 +53,15 @@ WRITABLE_TABLES = frozenset(
         "memories",
         "memory_sources",
         "memory_actions",
+        "memory_deduplications",
+        "memory_replacements",
+        "memory_correction_work",
+        "memory_correction_closures",
         "retrievals",
         "retrieval_items",
         "context_links",
+        "capture_observations",
+        "answer_bindings",
     }
 )
 
@@ -204,7 +216,10 @@ def migrate(con: duckdb.DuckDBPyConnection) -> list[Migration]:
     for migration in pending_migrations(con):
         con.execute("BEGIN TRANSACTION")
         try:
-            con.execute(migration.sql)
+            if migration.label == "0002_memory_lifecycle":
+                _migrate_lifecycle(con, migration.sql)
+            else:
+                con.execute(migration.sql)
             con.execute(
                 "INSERT INTO schema_migrations (version, name, checksum) VALUES (?, ?, ?)",
                 [migration.version, migration.name, migration.checksum],
@@ -215,6 +230,59 @@ def migrate(con: duckdb.DuckDBPyConnection) -> list[Migration]:
             raise
         applied.append(migration)
     return applied
+
+
+def _migrate_lifecycle(con: duckdb.DuckDBPyConnection, sql: str) -> None:
+    """Preflight old rows before installing any new semantics, in the migration transaction."""
+    from .audit import legacy_preflight
+    from .lifecycle import stable_id
+
+    preflight = legacy_preflight(con)
+    if not preflight.ok:
+        blockers = "; ".join(f"{f.code}:{f.entity_id}" for f in preflight.blockers)
+        raise AgentMemoryError(
+            "Lifecycle migration blocked by ambiguous legacy history. "
+            f"Run `mem audit check --direct` and resolve explicit review evidence: {blockers}"
+        )
+    marker = "CREATE TRIGGER memories_valid_interval"
+    schema, guards = sql.split(marker, 1)
+    con.execute(schema)
+    # Only reconstruction runs before the runtime guards. There is deliberately
+    # no client-accessible method string that bypasses acceptance validation.
+    for acceptance in preflight.acceptances:
+        proposal = stable_id(acceptance.replacement_id, "legacy-proposal")
+        evidence = {
+            "memory_id": acceptance.replacement_id,
+            "approval_action_id": acceptance.evidence_action_id,
+            "method": acceptance.method,
+            "preflight": "legacy_preflight_v1",
+        }
+        con.execute(
+            "INSERT INTO memory_actions "
+            "(action_id, memory_id, action, actor, related_memory_id, created_at, metadata) "
+            "VALUES (?, ?, 'propose_correction', 'migration:0002', ?, ?, ?::JSON::VARIANT)",
+            [
+                proposal,
+                acceptance.replacement_id,
+                acceptance.predecessor_id,
+                acceptance.accepted_at,
+                json.dumps({"legacy_evidence": evidence}),
+            ],
+        )
+        con.execute(
+            "INSERT INTO memory_replacements "
+            "(predecessor_id, successor_id, proposal_id, evidence_action_id, accepted_at, method) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            [
+                acceptance.predecessor_id,
+                acceptance.replacement_id,
+                proposal,
+                acceptance.evidence_action_id or proposal,
+                acceptance.accepted_at,
+                "legacy_" + acceptance.method,
+            ],
+        )
+    con.execute(marker + guards)
 
 
 def _rollback_quietly(con: duckdb.DuckDBPyConnection) -> None:
@@ -240,13 +308,19 @@ def export_snapshot(
     staging = export_dir / f".tmp-{stamp}"
     final = export_dir / stamp
     staging.mkdir(parents=True)
-    for table in ALL_TABLES:
-        target = sql_literal(str(staging / f"{table}.parquet"))
-        con.execute(f"COPY (SELECT * FROM {prefix}{table}) TO {target} (FORMAT parquet)")
-    staging.rename(final)
     link = export_dir / f".latest-{stamp}"
-    link.symlink_to(final.name)
-    os.replace(link, export_dir / "latest")
+    try:
+        for table in ALL_TABLES:
+            target = sql_literal(str(staging / f"{table}.parquet"))
+            con.execute(f"COPY (SELECT * FROM {prefix}{table}) TO {target} (FORMAT parquet)")
+        staging.rename(final)
+        link.symlink_to(final.name)
+        os.replace(link, export_dir / "latest")
+    finally:
+        with contextlib.suppress(OSError):
+            shutil.rmtree(staging)
+        with contextlib.suppress(OSError):
+            link.unlink(missing_ok=True)
     if keep > 0:
         prune_snapshots(export_dir, keep)
     return final
@@ -288,6 +362,9 @@ class MemoryServer:
             if pending:
                 names = ", ".join(m.label for m in pending)
                 raise AgentMemoryError(f"Pending migrations: {names}. Run `mem migrate` first.")
+            from .lifecycle import maintain_corrections
+
+            maintain_corrections(con)
             con.execute("SET GLOBAL quack_authorization_function = 'mem_authorize'")
             con.execute("CALL quack_serve(?, token = ?)", [self.cfg.uri, token])
             # Lock down after the listener is up. The server process itself may
@@ -322,7 +399,15 @@ class MemoryServer:
         """
         interval = self.export_interval_hours * 3600
         next_export = time.monotonic() + interval if interval > 0 else None
+        from .lifecycle import maintain_corrections
+
         while not stop.wait(poll_seconds):
+            if self.con is not None:
+                try:
+                    maintain_corrections(self.con)
+                except Exception as exc:
+                    if on_error:
+                        on_error(exc)
             if next_export is not None and time.monotonic() >= next_export:
                 next_export = time.monotonic() + interval
                 try:
@@ -456,9 +541,16 @@ class MemoryClient:
         stage = f"stage_{table}_{self._stage_counter}"
         col_defs = ", ".join(f'"{c}" {types[c]}' for c in cols)
         self.con.execute(f"CREATE TEMP TABLE {stage} ({col_defs})")
-        placeholders = ", ".join("?::JSON::VARIANT" if types[c] == "VARIANT" else "?" for c in cols)
-        values = [[_encode(row[c], types[c]) for c in cols] for row in rows]
-        self.con.executemany(f"INSERT INTO {stage} VALUES ({placeholders})", values)
+        try:
+            placeholders = ", ".join(
+                "?::JSON::VARIANT" if types[c] == "VARIANT" else "?" for c in cols
+            )
+            values = [[_encode(row[c], types[c]) for c in cols] for row in rows]
+            self.con.executemany(f"INSERT INTO {stage} VALUES ({placeholders})", values)
+        except BaseException:
+            with contextlib.suppress(duckdb.Error):
+                self.con.execute(f"DROP TABLE IF EXISTS {stage}")
+            raise
         return table, stage, cols
 
     def query(self, sql: str) -> tuple[list[str], list[tuple]]:

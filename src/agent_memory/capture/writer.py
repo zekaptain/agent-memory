@@ -6,13 +6,17 @@ import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
+from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
 from typing import Any
 
 import duckdb
 
 from ..db import AgentMemoryError, MemoryClient, sql_literal
+from ..lifecycle import LifecycleError, LifecyclePlan
 from . import blobs, ids
+from .attribution import reconcile_answers
+from .observations import pending_observations
 from .record import Record, SessionInfo, parse_ts
 from .redact import Redactor
 
@@ -94,21 +98,12 @@ class Writer:
             found.update(str(r[0]) for r in rows)
         return found
 
-    def _existing_events_for_sessions(self, session_ids: Iterable[str]) -> set[str]:
-        wanted = sorted(set(session_ids))
-        if not wanted:
-            return set()
-        chunk = ", ".join(sql_literal(v) for v in wanted)
-        _, rows = self.client.query(
-            f"SELECT event_id::VARCHAR FROM events WHERE session_id IN ({chunk})"
-        )
-        return {str(r[0]) for r in rows}
-
     # Writing
 
     def write(self, records: Sequence[Record]) -> WriteResult:
         if not records:
             return WriteResult()
+        records = [self.redactor.record(rec, keep_raw=self.keep_raw) for rec in records]
         tiers = self.agent_tiers()
         for rec in records:
             if rec.agent_id not in tiers:
@@ -146,9 +141,20 @@ class Writer:
             id(rec): ids.event_id(rec.agent_id, rec.harness_session_id, rec.kind, rec.source_key)
             for rec in records
         }
-        have_events = self._existing_events_for_sessions(session_of.values())
+        parent_ids = {
+            id(rec): ids.event_id(
+                rec.agent_id,
+                rec.harness_session_id,
+                rec.effective_parent_kind or "",
+                rec.parent_key,
+            )
+            for rec in records
+            if rec.parent_key
+        }
+        have_events = self._existing(
+            "events", "event_id", [*event_ids.values(), *parent_ids.values()]
+        )
         batch_ids = {eid for eid in event_ids.values() if eid not in have_events}
-        depth_of: dict[str, int] = {}
         event_rows: dict[str, dict[str, Any]] = {}
         for rec in records:
             eid = event_ids[id(rec)]
@@ -158,27 +164,36 @@ class Writer:
             parent_id = None
             unresolved = None
             if rec.parent_key:
-                candidate = ids.event_id(
-                    rec.agent_id,
-                    rec.harness_session_id,
-                    rec.effective_parent_kind or "",
-                    rec.parent_key,
-                )
+                candidate = parent_ids[id(rec)]
                 if candidate in have_events or candidate in batch_ids:
                     parent_id = candidate
                 else:
                     unresolved = rec.parent_key
                     result.unresolved_parents.append(rec.parent_key)
-            depth = 0
-            if parent_id in batch_ids:
-                depth = depth_of.get(parent_id, 0) + 1
-            depth_of[eid] = depth
             row = self._event_row(eid, session_of[(rec.agent_id, rec.harness_session_id)], rec)
             row["parent_event_id"] = parent_id
             if unresolved:
-                row["payload"] = {**(row["payload"] or {}), "unresolved_parent": unresolved}
+                row["payload"] = {
+                    **(row["payload"] or {}),
+                    "unresolved_parent": self.redactor.text(unresolved)[0],
+                }
             event_rows[eid] = row
         if event_rows:
+            depth_of: dict[str, int] = {}
+            for eid in event_rows:
+                chain: list[str] = []
+                seen: set[str] = set()
+                current = eid
+                while current in event_rows and current not in depth_of:
+                    if current in seen:
+                        raise WriterError("cyclic event parent references")
+                    seen.add(current)
+                    chain.append(current)
+                    current = event_rows[current]["parent_event_id"]
+                depth = depth_of.get(current, -1)
+                for ancestor in reversed(chain):
+                    depth += 1
+                    depth_of[ancestor] = depth
             # One statement per depth, parents first (see MemoryClient.insert).
             layers: dict[int, list[dict[str, Any]]] = {}
             for row in sorted(event_rows.values(), key=lambda r: (r["seq"], r["ts"])):
@@ -187,60 +202,79 @@ class Writer:
                 rows.append(("events", layers[depth]))
             result.events = len(event_rows)
 
-        # Memories and review actions queued by mem-mcp during an outage
-        memory_recs = [r for r in records if r.memory]
-        action_recs = [r for r in records if r.action]
-        if memory_recs:
-            mids = {
-                id(r): ids.memory_id(r.agent_id, r.harness_session_id, r.source_key)
-                for r in memory_recs
-            }
-            have = self._existing("memories", "memory_id", mids.values())
-            mem_rows, src_rows = [], []
-            for rec in memory_recs:
-                mid = mids[id(rec)]
-                if mid in have:
-                    continue
-                sid = session_of[(rec.agent_id, rec.harness_session_id)]
-                mem_rows.append(self._memory_row(mid, sid, rec))
-                trust = (rec.memory or {}).get("trust_level")
-                relation = "user_stated" if trust == "user" else "derived_from"
-                src_rows.append(
-                    {"memory_id": mid, "event_id": event_ids[id(rec)], "relation": relation}
-                )
-            if mem_rows:
-                rows.append(("memories", mem_rows))
-                rows.append(("memory_sources", src_rows))
-                result.memories = len(mem_rows)
-        if action_recs:
-            aids = {
-                id(r): ids.action_id(r.agent_id, r.harness_session_id, r.source_key)
-                for r in action_recs
-            }
-            have = self._existing("memory_actions", "action_id", aids.values())
-            act_rows = []
-            for rec in action_recs:
-                aid = aids[id(rec)]
-                if aid in have or not rec.action:
-                    continue
-                sid = session_of[(rec.agent_id, rec.harness_session_id)]
-                act_rows.append(
+        # Online writes and queued replay share exactly the same dedupe,
+        # proposal, sources and review semantics. Returned queued IDs persist.
+        plan = LifecyclePlan(self.client)
+        memory_recs = {
+            ids.memory_id(r.agent_id, r.harness_session_id, r.source_key): r
+            for r in records
+            if r.memory
+        }
+        dependencies = {
+            mid: {str(rec.memory["supersedes"])} & memory_recs.keys()
+            if rec.memory and rec.memory.get("supersedes")
+            else set()
+            for mid, rec in memory_recs.items()
+        }
+        try:
+            ordered = list(TopologicalSorter(dependencies).static_order())
+        except CycleError as exc:
+            raise LifecycleError("cyclic queued correction references") from exc
+        for mid in ordered:
+            rec = memory_recs[mid]
+            sid = session_of[(rec.agent_id, rec.harness_session_id)]
+            spec = rec.memory or {}
+            wanted = spec.get("source_event_ids") or []
+            known = self._existing("events", "event_id", wanted) | (set(wanted) & batch_ids)
+            plan.remember(
+                self._memory_row(mid, sid, rec),
+                event_id=event_ids[id(rec)],
+                actor=rec.agent_id,
+                preserve_identity=True,
+                sources=[
                     {
-                        "action_id": aid,
-                        "memory_id": rec.action["memory_id"],
-                        "action": rec.action["action"],
-                        "actor": rec.action.get("actor") or rec.agent_id,
-                        "session_id": sid,
-                        "related_memory_id": rec.action.get("related_memory_id"),
-                        "reason": rec.action.get("reason"),
-                    }
-                )
-            if act_rows:
-                rows.append(("memory_actions", act_rows))
-                result.actions = len(act_rows)
+                        "event_id": event_ids[id(rec)],
+                        "relation": "user_stated"
+                        if spec.get("trust_level") == "user"
+                        else "derived_from",
+                    },
+                    *({"event_id": eid, "relation": "derived_from"} for eid in sorted(known)),
+                ],
+            )
+        for rec in records:
+            if not rec.action:
+                continue
+            sid = session_of[(rec.agent_id, rec.harness_session_id)]
+            plan.review(
+                {
+                    "action_id": ids.action_id(
+                        rec.agent_id, rec.harness_session_id, rec.source_key
+                    ),
+                    "memory_id": rec.action["memory_id"],
+                    "action": rec.action["action"],
+                    "actor": rec.action.get("actor") or rec.agent_id,
+                    "session_id": sid,
+                    "event_id": event_ids[id(rec)],
+                    "related_memory_id": rec.action.get("related_memory_id"),
+                    "reason": rec.action.get("reason"),
+                }
+            )
+        rows.extend(plan.rows)
+        result.memories = sum(len(rs) for table, rs in plan.rows if table == "memories")
+        result.actions = sum(len(rs) for table, rs in plan.rows if table == "memory_actions")
+        # Default observation cursors are derived from stable capture identities,
+        # which the record redactor intentionally does not rewrite.
+        observations = [
+            self.redactor.value(row)[0] for row in pending_observations(self.client, records)
+        ]
+        if observations:
+            rows.append(("capture_observations", observations))
 
         if rows:
             self.client.insert(rows)
+        # Evidence is already durable. A retry can finish this derived binding
+        # step even if the original capture committed before its connection failed.
+        reconcile_answers(self.client, list(session_of.values()))
         return result
 
     # Row builders
@@ -255,7 +289,6 @@ class Writer:
         started = info.started_at or min(r.ts for r in recs)
         cwd = info.cwd
         project = info.project or (Path(cwd).name if cwd else None)
-        metadata, _ = self.redactor.value(info.metadata) if info.metadata else (None, 0)
         return {
             "session_id": sid,
             "agent_id": agent_id,
@@ -265,25 +298,18 @@ class Writer:
             "scope": info.scope or "global",
             "project": project,
             "cwd": cwd,
-            "capture_completeness": "full" if tier == "A" else "partial",
+            "capture_completeness": "partial",
             "started_at": started,
-            "metadata": metadata,
+            "metadata": info.metadata,
         }
 
     def _event_row(self, eid: str, sid: str, rec: Record) -> dict[str, Any]:
-        redactions = 0
         content = rec.content
-        if content is not None:
-            content, n = self.redactor.text(content)
-            redactions += n
-        payload: dict[str, Any] | None = None
-        if rec.payload is not None:
-            payload, n = self.redactor.value(rec.payload)
-            redactions += n
+        payload = rec.payload
+        if rec.attribution:
+            payload = {**(payload or {}), "capture_attribution": rec.attribution}
         if self.keep_raw and rec.raw is not None:
-            raw, n = self.redactor.value(rec.raw)
-            redactions += n
-            payload = {**(payload or {}), "raw": raw}
+            payload = {**(payload or {}), "raw": rec.raw}
         stored = blobs.store(self.blob_dir, content)
         return {
             "event_id": eid,
@@ -299,13 +325,13 @@ class Writer:
             "payload": payload,
             "parent_event_id": None,
             "token_estimate": (stored.content_bytes or 0) // 4 if stored.content_bytes else None,
-            "redactions": redactions,
+            "redactions": rec.redactions,
             "ts": rec.ts,
         }
 
     def _memory_row(self, mid: str, sid: str, rec: Record) -> dict[str, Any]:
         spec = rec.memory or {}
-        content, _ = self.redactor.text(str(spec.get("content", "")))
+        content = str(spec.get("content", ""))
         if not content:
             raise WriterError(f"memory in record {rec.source_key} has no content")
         return {
@@ -320,6 +346,7 @@ class Writer:
             "trust_level": spec.get("trust_level") or "agent",
             "supersedes": spec.get("supersedes"),
             "valid_from": _ts(spec.get("valid_from")),
+            "valid_to": _ts(spec.get("valid_to")),
             "expires_at": _ts(spec.get("expires_at")),
             "created_by_session": sid,
             "metadata": spec.get("metadata"),

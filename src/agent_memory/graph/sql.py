@@ -28,14 +28,19 @@ ROW = (
     "status",
     "metadata",
     "valid_from",
+    "valid_to",
     "depth",
 )
 
 _PROJECTION = (
     "m.memory_id::VARCHAR AS memory_id, m.type, m.key, m.content, m.scope, m.confidence, "
     "m.importance, m.trust_level, m.created_at::VARCHAR AS created_at, "
-    "m.expires_at::VARCHAR AS expires_at, ms.status, m.metadata::JSON::VARCHAR AS metadata, "
-    "m.valid_from::VARCHAR AS valid_from, "
+    "m.expires_at::VARCHAR AS expires_at, ms.status, "
+    "json_merge_patch(m.metadata::JSON, json_object('graph', "
+    "json_merge_patch(json_extract(m.metadata::JSON, '$.graph'), "
+    "json_object('aliases', coalesce((SELECT list(DISTINCT a.alias ORDER BY a.alias) "
+    "FROM memory_aliases a WHERE a.memory_id = m.memory_id), [])))))::VARCHAR AS metadata, "
+    "m.valid_from::VARCHAR AS valid_from, m.valid_to::VARCHAR AS valid_to, "
     "json_extract_string(m.metadata::JSON, '$.graph.subject_norm') AS s_norm, "
     "json_extract_string(m.metadata::JSON, '$.graph.object_norm') AS o_norm"
 )

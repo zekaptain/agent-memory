@@ -69,7 +69,85 @@ def test_event_kinds_include_compaction_and_capture_error(con):
 
 @pytest.fixture
 def every_table_has_rows(con, chain):
-    insert_rows(con, {"memory_actions": [action_row(chain.memory_id, "confirm")]})
+    correction = memory_row(chain, supersedes=chain.memory_id)
+    alias = memory_row(chain)
+    insert_rows(con, {"memories": [correction, alias]})
+    insert_rows(
+        con,
+        {
+            "memory_actions": [
+                action_row(
+                    correction["memory_id"],
+                    "propose_correction",
+                    related_memory_id=chain.memory_id,
+                    event_id=chain.user_event,
+                )
+            ]
+        },
+    )
+    insert_rows(
+        con,
+        {
+            "memory_deduplications": [
+                {
+                    "memory_id": alias["memory_id"],
+                    "canonical_id": correction["memory_id"],
+                    "event_id": chain.user_event,
+                }
+            ]
+        },
+    )
+    work_id = scalar(con, "SELECT work_id FROM memory_correction_work LIMIT 1")
+    insert_rows(
+        con,
+        {
+            "memory_correction_closures": [
+                {
+                    "work_id": work_id,
+                    "reason": "acceptance recorded",
+                }
+            ]
+        },
+    )
+    placeholder = new_id()
+    insert_rows(
+        con,
+        {
+            "events": [
+                {
+                    "event_id": placeholder,
+                    "session_id": chain.session_id,
+                    "seq": 10,
+                    "kind": "assistant_msg",
+                    "payload": {"placeholder": True},
+                    "ts": chain.now,
+                }
+            ],
+            "capture_observations": [
+                {
+                    "observation_id": new_id(),
+                    "session_id": chain.session_id,
+                    "source_mode": "record",
+                    "adapter_version": "synthetic",
+                    "policy_version": "synthetic",
+                    "source_fingerprint": "synthetic",
+                    "parse_errors": [],
+                    "exclusions": ["incomplete"],
+                }
+            ],
+            "answer_bindings": [
+                {
+                    "binding_id": new_id(),
+                    "placeholder_event_id": placeholder,
+                    "answer_event_id": chain.answer_event,
+                    "root_placeholder_id": placeholder,
+                    "evidence": {"synthetic": True},
+                    "resolution_method": "synthetic",
+                    "reason_code": "synthetic",
+                }
+            ],
+        },
+    )
     for table in ALL_TABLES:
         assert con.execute(f"SELECT count(*) FROM {table}").fetchone()[0] > 0, table
 
@@ -278,6 +356,21 @@ def test_retire_beats_a_later_approval(con, chain):
 def test_superseding_memory_replaces_the_old_one(con, chain):
     new = memory_row(chain, supersedes=chain.memory_id, content="Ducks prefer lakes")
     insert_rows(con, {"memories": [new]})
+    assert status(con, chain.memory_id) == "active"
+    assert status(con, new["memory_id"]) == "pending"
+    insert_rows(
+        con,
+        {
+            "memory_actions": [
+                action_row(
+                    new["memory_id"],
+                    "propose_correction",
+                    related_memory_id=chain.memory_id,
+                    event_id=chain.user_event,
+                )
+            ]
+        },
+    )
     assert status(con, chain.memory_id) == "superseded"
     assert status(con, new["memory_id"]) == "active"
     active = {

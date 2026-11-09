@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
+import hashlib
+from dataclasses import asdict, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from ..capture.attribution import evidence_from_records
 from ..capture.record import Record, SessionInfo, now, parse_ts
 from .base import UnsupportedTranscript, iter_jsonl, project_of, render_tool_call, text_of
 
@@ -50,7 +52,17 @@ class DroidAdapter:
             if payload.get("transcript_path")
             else None,
         )
-        base = {"agent_id": AGENT_ID, "harness_session_id": str(hsid), "ts": ts, "session": session}
+        base = {
+            "agent_id": AGENT_ID,
+            "harness_session_id": str(hsid),
+            "ts": ts,
+            "session": session,
+            "attribution": {
+                key: payload[key]
+                for key in ("message_id", "turn_id", "channel", "final_message_id")
+                if payload.get(key) is not None
+            },
+        }
         key_tail = payload.get("message_id") or payload.get("tool_use_id") or ts.isoformat()
         kind = _HOOK_KINDS.get(event, "note")
 
@@ -139,10 +151,21 @@ class DroidAdapter:
         session = SessionInfo()
         model: str | None = None
         skipping = since_key is not None
+        emit_start = 0
+        segment_start = 0
+        parse_errors: list[dict[str, Any]] = []
+        unsupported: set[str] = set()
+        range_start = 1
+        range_end = 0
+        cursor_end = None
+        source_hash = hashlib.sha256()
         last_ts: datetime | None = None
         last_seq = 0
         for number, entry, raw in iter_jsonl(path):
+            source_hash.update(raw.encode("utf-8"))
+            range_end = number
             if entry is None:
+                parse_errors.append({"line": number, "reason_code": "invalid_json_object"})
                 records.append(_bad_line(hsid, path, number, raw))
                 continue
             entry_type = entry.get("type")
@@ -154,10 +177,6 @@ class DroidAdapter:
                     started_at=parse_ts(entry["timestamp"]) if entry.get("timestamp") else None,
                     metadata=_session_metadata(entry),
                 )
-            if skipping:
-                if entry.get("id") == since_key:
-                    skipping = False
-                continue
             # agent_turn_outcome carries neither timestamp nor seq. It takes the previous
             # entry's time plus one millisecond, so file order survives a sort by (ts, seq).
             if entry.get("timestamp"):
@@ -196,9 +215,15 @@ class DroidAdapter:
                     msg = entry.get("message") or {}
                     if not model and msg.get("modelId"):
                         model = str(msg["modelId"])
-                    records.extend(
-                        _message_records(base, entry, msg, include_thinking=include_thinking)
+                    message_records = _message_records(
+                        base, entry, msg, include_thinking=include_thinking
                     )
+                    if any(r.kind == "user_msg" for r in message_records):
+                        # A new prompt or harness message can interrupt a turn
+                        # without an outcome. Do not attach an earlier cite to
+                        # a later reply across that boundary.
+                        segment_start = len(records)
+                    records.extend(message_records)
                 case "compaction_state":
                     records.append(
                         Record(
@@ -215,6 +240,27 @@ class DroidAdapter:
                         )
                     )
                 case "agent_turn_outcome":
+                    turn_id = entry.get("turnId")
+                    if turn_id:
+                        segment = records[segment_start:]
+                        named = {
+                            (r.attribution or {}).get("turn_id")
+                            for r in segment
+                            if (r.attribution or {}).get("turn_id")
+                        }
+                        # Conflicting explicit turns make an implicit segment ambiguous.
+                        if not named or named == {str(turn_id)}:
+                            for index in range(segment_start, len(records)):
+                                rec = records[index]
+                                records[index] = replace(
+                                    rec,
+                                    attribution={
+                                        **(rec.attribution or {}),
+                                        "turn_id": str(turn_id),
+                                        "turn_complete": entry.get("resultKind") == "text",
+                                        "turn_boundary": "agent_turn_outcome",
+                                    },
+                                )
                     records.append(
                         Record(
                             **base,
@@ -224,13 +270,52 @@ class DroidAdapter:
                             payload={"resultKind": entry.get("resultKind")},
                         )
                     )
+                    segment_start = len(records)
                 case _:
-                    continue
+                    unsupported.add(str(entry_type))
+            cursor_end = entry.get("id") or entry.get("turnId") or cursor_end
+            if skipping:
+                emit_start = len(records)
+                if entry.get("id") == since_key:
+                    skipping = False
+                    range_start = number + 1
+        if skipping:
+            raise ValueError("since_key was not found; no coverage boundary can be verified")
         if model:
             # The transcript names the model on assistant messages, not up front.
             records = [_with_model(r, model) if r.kind == "session_start" else r for r in records]
         if records and not any(r.kind == "session_start" for r in records) and since_key is None:
             records[0] = _with_session(records[0], session)
+        all_records = records
+        records = records[emit_start:]
+        if not records:
+            return []
+        exclusions = ["attachment_content_unavailable", "unsupported_hook_categories"]
+        if not include_thinking:
+            exclusions.append("thinking_omitted")
+        exclusions.extend(f"unsupported_entry_type:{kind}" for kind in sorted(unsupported))
+        # Fingerprint exactly the non-empty lines parsed, not a second read of
+        # a transcript the harness may still be appending.
+        source_fingerprint = "nonempty_jsonl_sha256:" + source_hash.hexdigest()
+        observed = [r.ts for r in records if r.kind != "capture_error"]
+        metadata = asdict(session)
+        metadata["model"] = model
+        observation = {
+            "source_mode": "transcript_import",
+            "adapter_version": "droid_transcript_v2",
+            "source_fingerprint": source_fingerprint,
+            "covered_from": min(observed) if observed else None,
+            "covered_through": max(observed) if observed else None,
+            "cursor_start": since_key,
+            "cursor_end": cursor_end,
+            "range_start": range_start,
+            "range_end": range_end,
+            "parse_errors": parse_errors,
+            "exclusions": exclusions,
+            "session_metadata": metadata,
+            "attribution_evidence": evidence_from_records(all_records),
+        }
+        records[0] = replace(records[0], observation=observation)
         return records
 
 
@@ -241,6 +326,17 @@ def _message_records(
     entry_id = str(entry.get("id") or f"message:{base['seq']}")
     content = msg.get("content")
     parts = content if isinstance(content, list) else [{"type": "text", "text": content}]
+    turn_id = entry.get("turnId") or msg.get("turnId") or entry.get("turn_id") or msg.get("turn_id")
+    channel = msg.get("channel") or entry.get("channel")
+    attribution = {
+        "message_id": entry_id,
+        "turn_id": str(turn_id) if turn_id is not None else None,
+        "channel": channel,
+        "turn_complete": bool(turn_id and channel == "final"),
+        "has_tool_calls": any(
+            isinstance(part, dict) and part.get("type") == "tool_use" for part in parts
+        ),
+    }
     out: list[Record] = []
     texts: list[str] = []
     documents: list[dict[str, Any]] = []
@@ -267,7 +363,11 @@ def _message_records(
                     kind="tool_call",
                     source_key=key,
                     content=render_tool_call(part.get("name"), part.get("input")),
-                    payload={"tool_name": part.get("name"), "tool_input": part.get("input")},
+                    payload={
+                        "tool_name": part.get("name"),
+                        "tool_input": part.get("input"),
+                        **({"mcp_server": part["server_name"]} if part.get("server_name") else {}),
+                    },
                 )
             )
         elif ptype == "tool_result":
@@ -314,7 +414,7 @@ def _message_records(
                 payload=payload or None,
             ),
         )
-    return out
+    return [replace(rec, attribution=attribution) for rec in out]
 
 
 def _session_metadata(entry: dict[str, Any]) -> dict[str, Any] | None:

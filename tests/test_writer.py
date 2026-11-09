@@ -63,7 +63,7 @@ def test_replay_is_a_no_op(writer, live_client):
         "SELECT agent_id, harness_session_id, model, project, cwd, capture_completeness, "
         f"started_at::VARCHAR FROM sessions WHERE session_id = {sql_literal(sid)}",
     )
-    assert session[0][:6] == ("factory-droid", hsid, "m1", "demo", "/x/demo", "full")
+    assert session[0][:6] == ("factory-droid", hsid, "m1", "demo", "/x/demo", "partial")
     assert session[0][6].startswith("2026-10-25")
 
 
@@ -207,14 +207,16 @@ def test_losing_a_race_retries_and_skips(writer, live_client, monkeypatch):
     batch = [rec(hsid, "user_msg", "u1"), rec(hsid, "user_msg", "u2")]
     writer.write(batch)
     # Pretend the pre-read missed the rows another capturer just wrote.
-    real = writer._existing_events_for_sessions
+    real = writer._existing
     calls = {"n": 0}
 
-    def flaky(session_ids):
+    def flaky(table, column, values):
+        if table != "events":
+            return real(table, column, values)
         calls["n"] += 1
-        return set() if calls["n"] == 1 else real(session_ids)
+        return set() if calls["n"] == 1 else real(table, column, values)
 
-    monkeypatch.setattr(writer, "_existing_events_for_sessions", flaky)
+    monkeypatch.setattr(writer, "_existing", flaky)
     result = writer.write(batch)
     assert (result.events, result.skipped) == (0, 2)
     assert calls["n"] == 2

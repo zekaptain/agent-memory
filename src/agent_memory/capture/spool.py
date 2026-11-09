@@ -2,21 +2,39 @@
 
 from __future__ import annotations
 
+import fcntl
 import os
 import re
 import shutil
+import tempfile
 import time
-from collections.abc import Iterable, Iterator
+import uuid
+from collections.abc import Generator, Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
 from .record import Record
 
 _SAFE = re.compile(r"[^A-Za-z0-9._-]+")
+_CLAIM_SUFFIX = re.compile(r"\.claim-[0-9a-f]{32}$")
 
 
 def _safe(name: str) -> str:
     return _SAFE.sub("_", name)[:200] or "_"
+
+
+@contextmanager
+def _lock(path: Path, *, blocking: bool = True) -> Generator[bool]:
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT, 0o600)
+    with os.fdopen(fd, "w") as stream:
+        try:
+            fcntl.flock(stream, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+        except BlockingIOError:
+            yield False
+            return
+        yield True
 
 
 @dataclass(frozen=True)
@@ -50,29 +68,68 @@ class Spool:
         return self.root / _safe(agent_id) / f"{_safe(harness_session_id)}.jsonl"
 
     def append(self, records: Iterable[Record]) -> list[Path]:
-        """Append records grouped by session. O_APPEND keeps concurrent hooks line-atomic."""
+        """Append under a stable session lock shared with replay's claim operation."""
         by_file: dict[Path, list[str]] = {}
         for rec in records:
             by_file.setdefault(self.path_for(rec.agent_id, rec.harness_session_id), []).append(
                 rec.to_json()
             )
         for path, lines in by_file.items():
-            path.parent.mkdir(parents=True, exist_ok=True)
-            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                fh.write("".join(line + "\n" for line in lines))
+            with _lock(path.with_suffix(".lock")):
+                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    fh.write("".join(line + "\n" for line in lines))
         return list(by_file)
 
     def pending(self) -> list[SpoolFile]:
         if not self.root.exists():
             return []
         found = []
-        for agent_dir in sorted(p for p in self.root.iterdir() if p.is_dir()):
-            if agent_dir.name in ("done", "failed"):
+        recovering = self.root / "replaying"
+        directories = sorted(recovering.iterdir()) if recovering.exists() else []
+        directories.extend(sorted(p for p in self.root.iterdir() if p.is_dir()))
+        for agent_dir in directories:
+            if agent_dir.name in ("done", "failed", "replaying"):
                 continue
             for path in sorted(agent_dir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime):
-                found.append(SpoolFile(path, agent_dir.name, path.stem))
+                hsid = (
+                    _CLAIM_SUFFIX.sub("", path.stem)
+                    if agent_dir.parent == recovering
+                    else path.stem
+                )
+                found.append(SpoolFile(path, agent_dir.name, hsid))
         return found
+
+    @contextmanager
+    def replay_lock(self) -> Generator[bool]:
+        """Only one replay owns claimed files; hooks never acquire this long-lived lock."""
+        with _lock(self.root / ".replay.lock", blocking=False) as acquired:
+            yield acquired
+
+    def claim(self, file: SpoolFile) -> SpoolFile:
+        if file.path.parent.parent == self.root / "replaying":
+            return file
+        target = self.root / "replaying" / file.agent_id / file.path.name
+        target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with _lock(file.path.with_suffix(".lock")):
+            if target.exists():
+                target = target.with_name(f"{file.path.stem}.claim-{uuid.uuid4().hex}.jsonl")
+            file.path.rename(target)
+        return SpoolFile(target, file.agent_id, file.harness_session_id)
+
+    @staticmethod
+    def rewrite(file: SpoolFile, lines: Iterable[str]) -> None:
+        """Publish a redacted snapshot of a claimed file before archiving it."""
+        fd, name = tempfile.mkstemp(prefix=".redacted-", dir=file.path.parent)
+        temporary = Path(name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                stream.writelines(line + "\n" for line in lines)
+                stream.flush()
+                os.fsync(stream.fileno())
+            temporary.replace(file.path)
+        finally:
+            temporary.unlink(missing_ok=True)
 
     @staticmethod
     def lines(path: Path) -> Iterator[tuple[int, str]]:
@@ -83,10 +140,8 @@ class Spool:
 
     def mark_done(self, file: SpoolFile) -> Path:
         stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
-        target = self.done_dir / file.agent_id / f"{file.path.stem}.{stamp}.jsonl"
+        target = self.done_dir / file.agent_id / f"{file.path.stem}.{stamp}.{time.time_ns()}.jsonl"
         target.parent.mkdir(parents=True, exist_ok=True)
-        if target.exists():
-            target = target.with_name(f"{file.path.stem}.{stamp}.{os.getpid()}.jsonl")
         shutil.move(file.path, target)
         return target
 
