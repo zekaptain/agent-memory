@@ -21,8 +21,11 @@ profile facts / retrieval log split in `example-memory-db-schema.sql`.
 
 Out of scope: Letta Code. Deferred: Delta (Zed).
 
-The tier is stored on `agents` and surfaced in `session_summary`, so every
-audit query can tell a complete transcript from a partial one.
+The tier is stored on `agents` and describes capability, not observed
+coverage. Only Droid transcript import and Droid/Vibe hook payload adapters
+are shipped; the wider table describes planned integrations.
+`capture_observations` supplies bounded coverage evidence.
+`session_summary` keeps recorded completeness separate from observed coverage.
 
 ## Runtime
 
@@ -106,13 +109,15 @@ order; hooks can run concurrently, so audits order by `(ts, recorded_at)`.
 Derived views:
 
 - `memory_status`: current status of each memory. Precedence is
-  retired > superseded > expired > latest quarantine/approve > default by
-  trust. Memories with `trust_level = 'tool'` start quarantined, because tool
-  output is the main prompt-injection channel.
+  derived from terminal retirement, accepted replacements, validity bounds,
+  pending corrections, and review/default trust. A proposed correction does
+  not hide its predecessor. Memories with `trust_level = 'tool'` require
+  approval; confirmation does not approve.
 - `active_memories`: what recall may return.
 - `memory_history`: one feed of creations, supersessions, and review actions.
 - `session_summary`: per-session counts of answers, recalls, compactions, and
-  capture errors, plus the capture tier.
+  capture errors, plus capability tier and separately observed coverage.
+  Placeholders are not counted as captured replies.
 - `why_answer`: for an answer event, every retrieval item, cited memory, and
   context event behind it, each memory's source events and agent, its status
   at recall, and its status now.
@@ -161,8 +166,8 @@ is append-only, and resolution never rewrites a row. Dedicated `entities` and
   rewrite history without dropping triggers in a migration.
 - The CLI disables local variables in tracebacks, so a crash cannot print the
   token.
-- Planned for Phase 2: redaction at the spool, before anything reaches the
-  database (API keys, tokens, `.env` values), counted in `events.redactions`.
+- Redaction runs before spool, blobs, and database writes, including observed
+  coverage and attribution metadata, and again at replay.
 
 ## Verified DuckDB 2.0.0 behavior
 
@@ -175,7 +180,7 @@ schema was written. The tests pin the ones the design depends on.
 | `BEFORE` triggers cannot use transition tables. | Guards are `AFTER ... REFERENCING OLD TABLE ... FOR EACH STATEMENT`. Zero-row updates and deletes pass. |
 | A trigger cannot modify its own table ("recursive trigger chain"). | Status cannot be kept in a column updated by triggers. Status is derived in views instead. |
 | `INSERT OR IGNORE` and `ON CONFLICT` run as `MERGE`, which fails on tables with triggers. | Idempotent writes pre-read existing ids and insert only the missing rows (below). |
-| An `INSERT ... SELECT ... WHERE NOT EXISTS (SELECT ... FROM mem.main.t)` through the attached Quack catalog fails: "multiple streaming scans + insert in the same query are not currently supported". | The writer reads a session's existing `event_id`s first (one `CONNECT` query, about 3 ms), filters client-side, and inserts. Deterministic ids make a lost race a duplicate-key error, which triggers one re-read and retry. |
+| An `INSERT ... SELECT ... WHERE NOT EXISTS (SELECT ... FROM mem.main.t)` through the attached Quack catalog fails: "multiple streaming scans + insert in the same query are not currently supported". | The writer looks up incoming event IDs and their parent IDs in batches of 500, filters client-side, and inserts. Deterministic ids make a lost race a duplicate-key error, which triggers one re-read and retry. |
 | Within one `INSERT` statement, a self-referencing foreign key (`events.parent_event_id`) is checked before the statement's own rows are indexed, so a child in the same statement as its parent fails. | `MemoryClient.insert` accepts ordered `(table, rows)` pairs; the writer sends one statement per parent depth, parents first, all in one transaction. |
 | A column alias on `match_bm25(...)` cannot be referenced ("expression has side effects"). | Recall wraps the FTS call in a CTE and joins on it. The FTS tokenizer keeps curly quotes attached to words, so queries are lowercased and stripped of punctuation first. |
 | Bound parameters are not forwarded through the attached catalog either (`WHERE x = ?` fails). | Lookups by id use `sql_literal` over validated UUIDs; content never enters SQL text except the recall query, which is literal-quoted and tested against injection. |
@@ -317,6 +322,29 @@ read-only view.
   before the spool and before the ledger, and again at replay so a rule added
   later still covers queued records. The server token is always a rule.
 
+## Contract hardening
+
+See `docs/logic-hardening-spec.md` for the approved transition rules and
+`docs/memory-utility-evaluation-spec.md` for the design-only usefulness study.
+
+- Migration 0002 separates correction proposal from durable acceptance,
+  preserves queued identities through deduplication links, and records due
+  work without reviving withdrawn predecessors.
+- Migration 0003 adds append-only capture observations and bounded coverage.
+- Migration 0004 adds correctable answer bindings and keeps retrieval misses
+  in the answer audit. Historical retrieval status snapshots remain intact.
+- `mem audit check` provides read-only, ID-based preflight diagnostics,
+  including an old-schema direct mode. Live rollout requires separate
+  approval and a verified backup including blobs.
+- Judge v4 adds exact-rule support and draft-specific admission ground truth.
+  Its release is separate from schema migration; finish existing labeling
+  with the prior application version first.
+
+The next approved work should verify Droid capture end to end, then build
+and run the local usefulness experiment. Retrieval tuning and wider graph
+use follow measured failures. Parametric consolidation remains research
+until usefulness and withdrawal/backflow can be measured.
+
 ## Risks and open questions
 
 - Quack shipped in 2.0.0. Its protocol and authorization hook may change;
@@ -336,10 +364,9 @@ read-only view.
   scheduled with the audit tooling in Phase 3.
 - The server caches results for clients (`quack_result_ttl` 3600 s,
   `quack_cache_max_rows` 100 000). Watch memory if many clients poll.
-- The writer pre-reads every `event_id` of a session before each write. Long
-  sessions make this grow linearly; `--since-key` keeps transcript re-ingest
-  cheap, and a time-windowed pre-read is the fallback if it shows up in hook
-  latency.
+- The writer's event lookup is bounded by the incoming batch and its parent
+  references, not session history. Full transcript reimports still parse
+  their input; `--since-key` avoids rebuilding records for earlier entries.
 - The `generic_assignment` redaction rule is deliberately broad (`token =
   ...`, `password: ...`) and does hit code and config text in tool calls. The
   count lands in `events.redactions`; loosen the rule only with new fixture

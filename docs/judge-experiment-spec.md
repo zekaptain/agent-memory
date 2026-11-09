@@ -1166,3 +1166,120 @@ Historical checks on temporary copies reproduced exp2 and exp3's raw
 reports exactly, apart from the generated timestamp. Exp1 still refuses
 to render because it has no labeled verdicts. SHA-256 checks confirmed
 that the original exp1, exp2, and exp3 run files were unchanged.
+
+### Audit corrections (2026-11-08)
+
+Both labeling frontends now support the controller's four blinded slots,
+A through D. Go previously rejected C/D despite Python producing them.
+Comparison choices say "All equally" for three or four drafts and retain
+the existing stored value. More than four drafts produces an error before
+the frontend opens; no drafts are silently omitted. This is a labeling
+limit, not a limit on drafting or reporting.
+
+Protocol 2 remains strict about valid, unique slots and matching draft
+subjects. Source changes invalidate the cached helper without another
+protocol bump. Tests cover plain-mode persistence, navigation, claim focus,
+narrow and wide layouts, and synthetic Python-to-Go exchanges over a PTY.
+
+Judge accounting and reporting corrections:
+
+- Stage A latency and cost belong only to the first successfully saved
+  verdict for an item. Later drafts in the same decide call use the same
+  zero-cost copies as resumed calls. Existing verdict files are not rewritten.
+- A missing or null frozen cascade gate means no cascade result is
+  available. Reporting no longer fits that gate on held-out labels or
+  includes its unsupported criterion 3 conclusion.
+- New threshold fitting includes all-positive and all-negative choices,
+  including probability endpoints. Tie-breaking is unchanged; existing
+  frozen thresholds and gates are read as stored.
+- Drafter ratings and preferences require matching current draft hashes.
+  Changing a draft invalidates its old draft-level ratings, not the item's
+  still-valid turn labels or recorded production costs.
+- Next-user linking uses a reverse pass within each session. Resume
+  selection builds the pending item-ID set once. Paired-discrimination
+  reporting streams comparisons instead of retaining every pair; comparison
+  time remains quadratic.
+
+Regression tests reproduce the original failures with synthetic inputs.
+Synthetic frozen reports for questions v1, v2, and v3 match the original
+implementation byte for byte. This audit did not reopen private historical
+runs or modify their files.
+
+### Exact-rule admission, as built (questions v4 / labels v4)
+
+New runs use `questions_v4` and `labels_v4`. The structured lesson schema,
+`drafter_v3`, per-claim grounded/faithful questions, seeded splits and
+projection format are unchanged. No database migration is needed for this
+judge release. Deploy it separately from ledger changes: **finish any
+ongoing v3 labeling on the old application before upgrading**. This version
+refuses draft, decide and label (including review/backfill) on v1–v3 runs;
+it does not upgrade their drafts, labels or frozen thresholds. Reports
+retain those versions' original write ground truth and output definitions.
+Synthetic frozen v1–v3 report hashes match the pre-v4 implementation.
+
+Stage B now asks a whole-draft `rule_supported` question after the
+per-claim checks:
+
+> Do the supported claims and cited evidence justify this exact rule,
+> including its scope and conditions, without an unsupported causal leap
+> or overgeneralization?
+
+Grounded, faithful, reusable (`generalizable` levels 1 or 2), unenforced
+(`enforced = none`) and rule supported must all clear their thresholds.
+Stage A failure remains descriptive, not a write prerequisite. The new
+gate defaults to 0.5 with the existing 0.15 uncertainty band. Missing or
+unparseable rule answers cannot authorize a write, even after threshold
+fitting: a parser's uniform fallback is not evidence. An explicit 0.5
+rule-support distribution goes to review even if a fitted cut is lower.
+The rules baseline returns that uncertainty rather than treating token
+overlap as proof of a causal rule.
+
+Both labeling interfaces add `A.rule_supported` and `A.store_exact`
+(likewise for B–D), with Yes, No and Unclear. The latter asks **“Would you
+store this exact draft?”**, without repairing it. Each screen is about
+the identified draft, shows its complete lesson and citation union, and
+has no claim focus or model verdict. The exact-rule question follows
+claim checks; the storage question follows reuse and enforcement.
+Back, review, redo, skip, resume and hash invalidation use the shared
+controller. A draft changed while labeling is open is rejected at save.
+No Go wire-schema change is needed; questions/options are display data
+in protocol 2.
+
+The new fields live under `drafts.<drafter>` and are boolean or null.
+An explicit Unclear is null plus the field name in that draft's `unknown`
+list, so it stays unscored but is not repeatedly asked on resume.
+Absent answers are backfilled. Corrections retain the existing history
+paths, including `drafts.<drafter>.rule_supported` and `.store_exact`.
+Changed draft hashes invalidate both new labels and claim ratings.
+Changing, adding or removing an arm also reasks the comparison rather
+than silently carrying an old preference onto the new drafts.
+
+For v4 only, write precision and miss rate use the blinded `store_exact`
+label, not the turn's `worth_remembering`. The latter remains an
+opportunity/discovery measure, including decline diagnostics. A valuable
+turn with a bad draft is not a correct write. Missing, unclear, declined
+and stale-hash admission labels are unscored: precision includes only
+scored writes and miss rate only explicitly approved exact drafts.
+Reports expose scored admission rows, scored writes and unscored rows
+alongside action counts, and score `rule_supported` separately. Drafter
+ratings use independent nonmissing denominators rather than treating a
+missing rating as false.
+
+Calibration alone fits the new gate, using the human rule-support label;
+held-out verdict metrics stay locked until freeze. Frozen cuts and cascade
+gates are reused as stored, never fitted on held-out labels. Cost accounting
+includes the new question, preserves zero-cost claim aggregates and reused
+Stage A answers, and does not drop costs for unscored admission rows.
+V4's per-item table sums paid USD across all draft verdicts; its Stage B
+table shows only the draft-question subset, not another total to add.
+Decision events include version, hashes, claim count, Stage A reuse, the
+new answer, action, thresholds and costs, never the rule, claims or state
+text.
+
+Regressions use synthetic runs, mocked HTTP, both plain and Go interfaces,
+rendered narrow/wide screens and real Python-to-Go PTY exchanges. They cover
+true claims under an unsupported rule, valuable turns with rejected drafts,
+missing/unparseable gate answers, unclear label persistence, edit history,
+hash invalidation, calibration/held-out separation, costs and historical
+report reproduction. No private runs or model experiments are part of this
+change.

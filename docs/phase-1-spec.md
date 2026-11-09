@@ -1,8 +1,8 @@
 # Phase 1 spec: capture path (1a) and in-session tools (1b)
 
-Status: approved and implemented, 2026-10-25 (see "As built" at the end). Builds on Phase 0 (`PLAN.md`) and
-migration 0001, which has not been applied to a real database yet and may
-still change.
+Status: approved and implemented, 2026-10-25 (see "As built" at the end).
+Earlier design examples below are historical. Migration 0001 is immutable;
+later contract changes use new migrations and the hardening spec.
 
 ## Goal
 
@@ -454,3 +454,85 @@ Implemented as specified except for these points, each forced by a probe:
 Verified: ruff, pyrefly, 293 tests (110 new), `mem smoke` 16/16, and an import
 of this project's own 1000-event Droid transcript (0.8 s, 0 orphan results,
 replay 50 ms).
+
+### Audit corrections (2026-11-08)
+
+- Record redaction now covers content, payload, retained raw input, session
+  fields, queued memories, and queued actions, including nested dictionary
+  keys. Identity fields used to derive capture IDs stay unchanged. Raw input
+  is dropped unless `keep_raw` is enabled. An optional `redactions` field
+  carries the removal count through the v1 spool format; older records
+  default to zero. Reapplying a rule to its own marker does not count as
+  another removal.
+- Structured credential fields such as `{"password": "..."}` use the
+  existing assignment rules as well as ordinary value redaction. Specific
+  secret rules still take precedence. Schema-invalid JSON is decoded and
+  structurally redacted, including escaped strings. Undecodable lines are
+  retained as SHA-256 digests with diagnostics, not raw text that may hide
+  escaped credentials.
+- MCP recall and graph queries are redacted before normalization and SQL
+  generation. Review reasons, memory keys/scopes, and merge inputs use the
+  same redactor before constructing their persisted copies.
+- Appenders and replay share a short per-session file lock. Replay moves
+  each pending file into `spool/replaying/<agent>/` under that lock, then
+  releases it before contacting the ledger. New appends go into a new
+  pending file. One replay process owns claimed files at a time; an
+  interrupted claim remains discoverable on the next replay. Claimed
+  records and malformed lines are redacted before entering `done/` or
+  `failed/`. Existing archives are not rewritten.
+- The writer looks up incoming event IDs and referenced parent IDs in
+  batches of at most 500, rather than reading the whole session. It resolves
+  all parent depths before inserting and rejects cycles. Queued memories
+  and actions deduplicate within a batch as events already did. The
+  duplicate-key retry and separate parent-before-child statements remain.
+- Record-by-record recovery also orders parent and queued-memory
+  dependencies. A failed parent or cycle keeps its dependent records in
+  `failed/` rather than permanently inserting them without their links.
+  Unrelated valid records still replay.
+- Failed local staging removes its temporary table. Failed exports remove
+  their own partial directory and unpublished link, leaving the previous
+  `latest` snapshot intact.
+
+### Contract hardening
+
+`docs/logic-hardening-spec.md` defines the acceptance policy and rollout
+boundaries. New migrations, not edits to 0001, separate proposed corrections
+from accepted replacements, preserve queued IDs through deduplication links,
+record capture observations, and bind placeholders to actual replies.
+
+Observed coverage does not inherit the harness tier. New MCP sessions and
+isolated hooks are partial. A transcript import records the source
+fingerprint, adapter/policy version, cursor and line boundaries, parse
+errors, exclusions, and session metadata. The immutable session row remains
+available alongside effective metadata. Omitted thinking and attachment
+content are explicitly excluded. A previous import does not cover later
+activity. A transcript's `user` role still does not establish human authorship.
+
+The Droid adapter retains message/turn/channel identifiers and uses a
+completed captured turn to reconcile a cite result's placeholder with a
+unique reply. Explicit final-channel evidence can disambiguate a reply;
+timestamps and "the next assistant message" cannot. Incremental imports keep
+the full source boundary evidence needed for reconciliation. Repeated
+imports do not duplicate observations or bindings. New ambiguity appends a
+binding correction rather than rewriting the original link.
+
+Captured tool identity must identify the configured `agent-memory` MCP
+server, not an unrelated tool with a `cite` suffix. Override the default
+name with `AGENT_MEMORY_MCP_SERVER_NAME` in the capture environment when
+needed. Missing server identity leaves attribution unresolved. An explicit
+answer ID supplied before import is retained on a placeholder and bound
+when that exact reply arrives.
+
+Replay resolves dependencies across the claimed spool snapshot rather than
+relying on file modification times. This preserves cross-session queued
+corrections and reviews, including interleaved files whose records form an
+acyclic dependency graph. Interrupted and newly appended files for the same
+session get distinct claim paths. As before, failed validation is terminal,
+while a transport interruption leaves claimed files available for retry.
+
+`why_answer` preserves raw link and placeholder identities, exposes resolved
+attribution, and retains zero-result FTS and graph searches. A miss has
+`returned = 0`; an unavailable recall remains degraded. Original retrieval
+status snapshots are never recalculated. Returned, captured in context when
+observed, and declared used are distinct evidence, not causal attribution
+to a model's reasoning.

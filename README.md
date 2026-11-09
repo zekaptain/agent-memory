@@ -7,7 +7,7 @@ The ledger keeps a history instead of overwriting records. Use it to find:
 
 - What an agent was shown.
 - Where that information came from.
-- Which memories the agent used in its answer.
+- Which memories the agent declared it used in its answer.
 
 Storage, capture commands, MCP tools, the relation graph, and judge
 experiments are implemented. Automatic hook installation is still planned.
@@ -39,6 +39,9 @@ uv run mem init
 This creates `~/.agent-memory`, a private token, and the database.
 `init` is safe to rerun with the server stopped. It applies pending
 migrations; it does not reset your data.
+
+For an existing home, run the read-only preflight and follow the
+[migration safety steps](#migration-safety) before applying new migrations.
 
 ### 2. Start the server
 
@@ -187,7 +190,8 @@ Set the environment for your harness:
 |---|---|
 | `AGENT_MEMORY_AGENT` | Required. One of `factory-droid`, `mistral-vibe`, `oh-my-pi`, `amp`, or `jetbrains-junie`. |
 | `AGENT_MEMORY_PROJECT` | Default recall scope. Defaults to the working directory's name. |
-| `AGENT_MEMORY_SESSION` | Harness session ID, when available. Joins MCP activity to the captured session. Without it, MCP creates a separate session marked `partial`. |
+| `AGENT_MEMORY_SESSION` | Harness session ID, when available. Joins MCP activity to the captured session. MCP-only coverage remains partial even when this ID is present. |
+| `AGENT_MEMORY_MCP_SERVER_NAME` | Optional capture setting when the MCP server is named something other than `agent-memory`. Attribution requires that exact server identity; a bare `cite` without recorded server identity stays unresolved. |
 
 If you changed the database home or port, include `AGENT_MEMORY_HOME` and
 `AGENT_MEMORY_PORT` in the MCP environment too.
@@ -204,6 +208,17 @@ If you changed the database home or port, include `AGENT_MEMORY_HOME` and
 
 Memories derived from tools start quarantined. If the server is down,
 `recall` returns `degraded: true` and writes are queued to the spool.
+
+A correction proposes a replacement. The previous fact stays available
+until the replacement is approved when required, valid, and accepted.
+Acceptance permanently supersedes the previous fact. Retiring, expiring,
+or quarantining the replacement does not restore it. A future-dated fact is
+not eligible before `valid_from`; `valid_to` and `expires_at` are exclusive
+upper bounds. Confirmation is evidence, not approval.
+
+Queued write IDs remain traceable if replay finds a duplicate. Inspect
+`memory_deduplications` for their canonical identity; ordinary supersession
+does not redirect later reviews.
 
 ## Relations and the graph
 
@@ -244,8 +259,8 @@ Nothing is rewritten in place:
 
 - Relations are ordinary `fact` memories, not separate graph tables.
   Repeating the same triple in the same scope confirms it.
-- A merge supersedes relations under the canonical name, preserving aliases
-  and sources. If the canonical relation exists, it retires the duplicate.
+- A merge accepts relations under the canonical name, preserving aliases
+  and sources even when the canonical relation already exists.
 - Unmatched names stay unchanged. Correct a bad merge by superseding again.
 
 See [PLAN.md](PLAN.md#data-model-migration-0001) for storage details.
@@ -270,6 +285,20 @@ uv run mem sql "SELECT * FROM memory_history ORDER BY ts DESC LIMIT 20"
 
 Add `--json` to `mem sql` for JSON output. Use `-` as the query to read SQL
 from stdin.
+
+Harness tier describes capability. `session_summary.capture_completeness`
+comes from observations, while `recorded_capture_completeness` preserves the
+original session assertion. Transcript imports report their coverage
+boundary and exclusions; they do not prove coverage of later activity.
+Old full-capture assertions without evidence are labeled unverified.
+
+`cite` can return a placeholder before the reply has been imported.
+`answer_bindings` records a reply only when captured turn evidence uniquely
+identifies it. `why_answer` exposes the effective answer, original
+placeholder, and raw link IDs. Ambiguous or MCP-only attribution remains
+unresolved. Cited zero-result searches remain visible with `returned = 0`.
+Returned, captured in context, and declared used are separate observations,
+not proof of the model's reasoning.
 
 If you have the DuckDB CLI installed, you can query an export without the
 server or token. First create the export while the server is running:
@@ -318,6 +347,27 @@ The server must also be stopped for direct file access:
   Add `--write` only when you intend to write.
 - `mem export --direct` exports without the server.
 
+### Migration safety
+
+Run preflight before upgrading an existing home:
+
+```sh
+# Against the running server, read-only.
+uv run mem audit check --json
+# Or against an old database with its server stopped, read-only.
+uv run mem audit check --direct --json
+```
+
+Diagnostics contain IDs and reason codes, not transcript text. Ambiguous
+legacy correction histories need review; an old `supersedes` edge is not
+proof of approval or acceptance.
+
+A live rollout is a separate operation: review preflight, verify a
+consistent backup of the database **and blobs**, stop the server, migrate,
+restart, and verify read-only. Parquet exports alone do not back up blobs.
+Restore the backup with its matching application version for rollback.
+Do not delete a home or run reverse migrations to resolve a failed upgrade.
+
 ## Run the server at login (macOS)
 
 Stop any manually started server first. Run these steps from the repository root.
@@ -358,6 +408,7 @@ For a migration, stop the service, run `mem migrate`, then repeat step 3.
 
 - The server listens only on loopback and requires a private token.
   Traffic is plain HTTP; the token is not printed in settings or errors.
+- The shared token authenticates access, not each agent's claimed identity.
 - Clients can read and insert ledger records, not update or delete them.
   The policy also blocks schema changes, settings changes, file access,
   comments, and multiple SQL statements in one text.
@@ -381,6 +432,14 @@ home and port; drafted lessons never enter the memory ledger.
   controls. Pipes and `TERM=dumb` select this mode automatically.
 - Both interfaces use the same labeling, resume, and edit-history rules.
   Never label against the production home.
+
+New runs use v4 questions and labels, including whole-rule support and a
+separate human judgment of whether to store the exact draft. Turn-level
+worth is not draft admission ground truth. Historical v1–v3 reports keep
+their original definitions; their draft/decide/label operations are
+read-only in the new version. Finish ongoing v3 labeling with the previous
+application version before upgrading the judge. Ledger migrations do not
+rewrite run files.
 
 ## Development
 
@@ -432,3 +491,7 @@ Applied migrations are checksummed and must not be edited.
 - [Capture spec](docs/phase-1-spec.md): payloads, adapters, spool, and MCP tools.
 - [Judge how-to](docs/judge-how-to.md): step-by-step experiment commands.
 - [Judge experiment spec](docs/judge-experiment-spec.md): design and historical runs.
+- [Contract hardening](docs/logic-hardening-spec.md): lifecycle, coverage,
+  attribution, preflight, and rollout policy.
+- [Memory usefulness evaluation](docs/memory-utility-evaluation-spec.md):
+  design only, with no harness or experiment run in this change.
