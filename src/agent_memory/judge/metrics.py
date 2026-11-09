@@ -1,10 +1,10 @@
-"""Scoring primitives, standard library only. Every function takes plain sequences."""
+"""Scoring primitives, standard library only, over plain sequences and iterables."""
 
 from __future__ import annotations
 
 import itertools
 import math
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
 
@@ -58,6 +58,9 @@ def best_threshold(probs: Sequence[float], labels: Sequence[bool]) -> tuple[floa
         return 0.5, 0.0
     points = sorted(set(probs))
     cuts = [0.5, *[(a + b) / 2 for a, b in itertools.pairwise(points)]]
+    # Include constant predictions. Like the cascade's escalate-all gate, 1.01 also
+    # excludes p=1 and survives the four-decimal rounding used when freezing cuts.
+    cuts.extend((0.0, 1.0, 1.01))
     best = (0.5, -1.0)
     for cut in cuts:
         acc = sum((p >= cut) == y for p, y in zip(probs, labels, strict=True)) / len(probs)
@@ -67,12 +70,14 @@ def best_threshold(probs: Sequence[float], labels: Sequence[bool]) -> tuple[floa
     return best
 
 
-def paired_discrimination(pairs: Sequence[tuple[float, float]]) -> float | None:
+def paired_discrimination(pairs: Iterable[tuple[float, float]]) -> float | None:
     """Share of (failed, clean) pairs where the failed turn scored higher; ties count half."""
-    if not pairs:
-        return None
-    wins = sum(1.0 if f > c else 0.5 if f == c else 0.0 for f, c in pairs)
-    return wins / len(pairs)
+    wins = 0.0
+    count = 0
+    for f, c in pairs:
+        wins += 1.0 if f > c else 0.5 if f == c else 0.0
+        count += 1
+    return wins / count if count else None
 
 
 @dataclass(frozen=True)

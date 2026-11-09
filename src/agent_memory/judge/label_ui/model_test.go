@@ -102,6 +102,55 @@ func TestSelectionUsesOnlyArrowsAndEnter(t *testing.T) {
 	}
 }
 
+func TestWholeDraftAdmissionQuestionsKeepLessonSubjectAndUnknownNavigation(t *testing.T) {
+	for _, slot := range strings.Split(draftSlots, "") {
+		for _, question := range []string{
+			"Do the supported claims and cited evidence justify this exact rule, including its scope and conditions, without a causal leap or overgeneralization?",
+			"Would you store this exact draft?",
+		} {
+			s := syntheticScreen()
+			s.Subject, s.Key = "Draft "+slot, "1:"+slot+".admission"
+			s.Question, s.Notice, s.Evidence = question, "", ""
+			s.Options = []option{{"y", "Yes"}, {"n", "No"}, {"u", "Unclear"}}
+			s.Selected, s.CanBack = "u", true
+			s.Drafts = []draft{{Slot: slot, Lesson: "Rule: Keep this exact rule.\nKind: process\nClaims:\n1. True claim. [1]",
+				CitedEvidence: "[1] Synthetic evidence.", Focus: ""}}
+			m, out := testModel(t, s)
+			for _, size := range [][2]int{{60, 24}, {100, 32}, {140, 40}, {40, 35}} {
+				m.Update(tea.WindowSizeMsg{Width: size[0], Height: size[1]})
+				assertFits(t, m, size[0], size[1])
+				if m.tooSmall {
+					t.Fatalf("admission question should fit at %v", size)
+				}
+				view := ansi.Strip(m.View().Content)
+				for _, text := range []string{"Draft " + slot, "Rule:", "Unclear"} {
+					if !strings.Contains(view, text) {
+						t.Fatalf("lost %q at %v:\n%s", text, size, view)
+					}
+				}
+				content := ansi.Strip(m.evidenceContent(m.evidence.Width()))
+				if !strings.Contains(content, "Synthetic evidence") || strings.Contains(content, "▶") {
+					t.Fatal("whole-draft question should show all evidence without claim focus")
+				}
+				if m.selected != "u" || out.Len() != 0 {
+					t.Fatal("layout submitted or lost unknown answer")
+				}
+			}
+			if a := sentAction(t, m, out, press(m, "b")); a.Action != "back" {
+				t.Fatal("back did not reach controller")
+			}
+			deliverScreen(t, m, s, 2)
+			out.Reset()
+			if m.selected != "u" {
+				t.Fatal("back did not restore Unclear")
+			}
+			if a := sentAction(t, m, out, press(m, "enter")); a.Value != "u" {
+				t.Fatal("unknown answer changed at protocol boundary")
+			}
+		}
+	}
+}
+
 func TestEvidencePagingNeverSubmitsAndKeepsQuestionFixed(t *testing.T) {
 	m, out := testModel(t, syntheticScreen())
 	before := m.View().Content
@@ -502,22 +551,87 @@ func TestComparisonColumnsStackAtNarrowWidths(t *testing.T) {
 	}
 }
 
-func TestClaimFocusTitleAndEvidenceTag(t *testing.T) {
-	s := syntheticScreen()
-	s.Subject, s.Key = "Draft A", "1:A.c2.grounded"
-	s.Question = "Does this claim have evidence in the lines it cites?"
-	s.Evidence = ""
-	s.Drafts = []draft{{"A", "Rule: Check first.\nClaims:\n▶ 2. Claim text.", "[2] evidence", "Claim 2 of 3"}}
-	m, _ := testModel(t, s)
-	for _, width := range []int{40, 80, 140} {
-		m.Update(tea.WindowSizeMsg{Width: width, Height: 40})
-		assertFits(t, m, width, 40)
-		view := ansi.Strip(m.View().Content)
-		if strings.Count(view, "Draft A · Claim 2 of 3") != 2 {
-			t.Fatalf("claim title and evidence tag missing at %d:\n%s", width, view)
+func TestThreeFourDraftLayoutPagingAndNavigation(t *testing.T) {
+	for _, count := range []int{3, 4} {
+		s := multiDraftScreen(count)
+		m, out := testModel(t, s)
+		for _, size := range [][2]int{{140, 45}, {80, 30}, {40, 35}} {
+			m.Update(tea.WindowSizeMsg{Width: size[0], Height: size[1]})
+			assertFits(t, m, size[0], size[1])
+			if m.tooSmall {
+				t.Fatalf("%d drafts should fit at %v", count, size)
+			}
+			content := ansi.Strip(m.evidenceContent(m.evidence.Width()))
+			previous := -1
+			for _, d := range s.Drafts {
+				pos := strings.Index(content, "Draft "+d.Slot+" · Lesson")
+				if pos < 0 || pos <= previous || !strings.Contains(content, "Cited evidence for "+d.Slot) {
+					t.Fatal("stacked comparison lost a draft or its citations")
+				}
+				if previous >= 0 && strings.Count(content[:previous], "\n") >= strings.Count(content[:pos], "\n") {
+					t.Fatal("three/four draft cards must stack")
+				}
+				previous = pos
+			}
+			for !m.evidence.AtBottom() {
+				before := m.evidence.YOffset()
+				press(m, "pgdown")
+				if before == m.evidence.YOffset() {
+					t.Fatal("evidence paging stalled")
+				}
+			}
+			view := ansi.Strip(m.View().Content)
+			if !strings.Contains(view, "Cited evidence for "+s.Drafts[count-1].Slot) ||
+				!strings.Contains(view, s.Question) || m.selected != s.Selected || out.Len() != 0 {
+				t.Fatal("paging lost the last draft, fixed question, or selected option")
+			}
+		}
+		// At the bottom, a waiting-state height change may legitimately clamp
+		// the offset. Exercise restoration away from that boundary.
+		press(m, "pgup")
+		offset := m.evidence.YOffset()
+		if a := sentAction(t, m, out, press(m, "b")); a.Action != "back" {
+			t.Fatal("back was mistaken for a draft choice")
+		}
+		deliverScreen(t, m, s, 2)
+		if m.selected != s.Selected || m.evidence.YOffset() != offset {
+			t.Fatalf("comparison navigation: selected %q want %q; offset %d want %d",
+				m.selected, s.Selected, m.evidence.YOffset(), offset)
+		}
+		out.Reset()
+		if a := sentAction(t, m, out, press(m, "enter")); a.Value != s.Selected {
+			t.Fatal("C/D selection did not reach controller")
+		}
+		for i, subject := range []string{"Notes", "Summary", "Review"} {
+			s.Subject, s.Key = subject, subject
+			m.waiting = true
+			deliverScreen(t, m, s, int64(i+3))
+			assertFits(t, m, 40, 35)
+			if !strings.Contains(ansi.Strip(m.View().Content), subject) {
+				t.Fatal("subject heading was lost")
+			}
 		}
 	}
-	m, _ = testModel(t, compareScreen())
+}
+
+func TestClaimFocusTitleAndEvidenceTag(t *testing.T) {
+	for _, slot := range []string{"A", "B", "C", "D"} {
+		s := syntheticScreen()
+		s.Subject, s.Key = "Draft "+slot, "1:"+slot+".c2.grounded"
+		s.Question = "Does this claim have evidence in the lines it cites?"
+		s.Evidence = ""
+		s.Drafts = []draft{{slot, "Rule: Check first.\nClaims:\n▶ 2. Claim text.", "[2] evidence", "Claim 2 of 3"}}
+		m, _ := testModel(t, s)
+		for _, width := range []int{40, 80, 140} {
+			m.Update(tea.WindowSizeMsg{Width: width, Height: 40})
+			assertFits(t, m, width, 40)
+			view := ansi.Strip(m.View().Content)
+			if strings.Count(view, "Draft "+slot+" · Claim 2 of 3") != 2 {
+				t.Fatalf("claim title and evidence tag missing at %d:\n%s", width, view)
+			}
+		}
+	}
+	m, _ := testModel(t, compareScreen())
 	view := ansi.Strip(m.evidenceContent(140))
 	if !strings.Contains(view, "Draft A · Lesson") ||
 		!strings.Contains(view, "Draft B · Lesson") || strings.Contains(view, "Claim 2") {

@@ -83,6 +83,9 @@ class RulesBackend:
             # reused at lower confidence so the floor stays a floor.
             p = 0.65 if supported else 0.35
             return {"yes": p, "no": 1 - p}
+        if q.id == "rule_supported":
+            # Token overlap cannot establish an inference from true claims to an exact rule.
+            return {"yes": 0.5, "no": 0.5}
         if q.id == "generalizable":
             return {"0": 0.3, "1": 0.6, "2": 0.1} if supported else {"0": 0.7, "1": 0.2, "2": 0.1}
         if q.id == "actionable":

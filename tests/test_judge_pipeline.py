@@ -44,6 +44,8 @@ def test_import_candidates_decide_and_ledger_events(live_cfg, live_client, sessi
     assert summary.pool_callers == {"human": 4, "agent": 0}
     assert summary.harness_turns == 0
     store = RunStore(live_cfg, "t1")
+    assert store.read_run()["questions_version"] == "questions_v4"
+    assert store.read_run()["labels_version"] == "labels_v4"
     items = store.read_jsonl(store.items_path)
     assert len(items) == 4
     assert {i["split"] for i in items} <= {"calibration", "held_out"}
@@ -80,7 +82,7 @@ def test_import_candidates_decide_and_ledger_events(live_cfg, live_client, sessi
         judge = json.loads(payload)["judge"]
         assert judge["run_id"] == "t1"
         assert judge["backend"] == "rules"
-        assert judge["questions_version"] == "questions_v3"
+        assert judge["questions_version"] == "questions_v4"
         assert judge["projection_hash"]
         assert judge["action"] in {"write_lesson", "review", "discard"}
         assert set(judge["answers"]["failed"]) == {"value", "probabilities", "confidence", "method"}
@@ -124,6 +126,7 @@ def test_import_candidates_decide_and_ledger_events(live_cfg, live_client, sessi
     ]
     assert len(claim_decisions) == 1
     assert claim_decisions[0]["faithful.1"]["value"] == "yes"
+    assert claim_decisions[0]["rule_supported"]["probabilities"] == {"yes": 0.5, "no": 0.5}
     assert all("The mem command reported memory.duckdb" not in row[0] for row in payloads)
     # The rules floor cannot tell whether a lesson is already enforced, so its p(none) sits
     # inside the band and the draft goes to review rather than straight to a write.
@@ -167,7 +170,7 @@ def test_cli_refuses_default_home(capsys, monkeypatch):
 def test_cli_decide_without_remote_opt_in(live_cfg, capsys, monkeypatch):
     monkeypatch.delenv("AGENT_MEMORY_JUDGE_ALLOW_REMOTE", raising=False)
     store = RunStore(live_cfg, "t2")
-    store.create({})
+    store.create({"questions_version": "questions_v4"})
     store.write_projection("00000000-0000-0000-0000-000000000001", "state")
     store.write_jsonl(
         store.items_path,

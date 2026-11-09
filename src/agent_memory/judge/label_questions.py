@@ -60,6 +60,15 @@ def question(step: str, slots: list[str]) -> tuple[str, list[Option]]:
         if per_claim:
             return "Does this claim read those lines correctly?", YN
         return "Does the lesson read the evidence correctly?", YN
+    if key == "rule_supported":
+        return (
+            "Do the supported claims and cited evidence justify\n"
+            "this exact rule, including its scope and conditions,\n"
+            "without a causal leap or overgeneralization?",
+            [*YN, Option("u", "Unclear")],
+        )
+    if key == "store_exact":
+        return "Would you store this exact draft?", [*YN, Option("u", "Unclear")]
     if key == "generalizable":
         return "Where would this lesson help?", [
             Option("0", "Only this request"),
@@ -79,8 +88,8 @@ def question(step: str, slots: list[str]) -> tuple[str, list[Option]]:
     if key == "preferred":
         return "Which draft would you keep?", [
             *(Option(slot.lower(), f"Draft {slot}") for slot in slots),
-            Option("same", "Both equally"),
-            Option("neither", "Neither"),
+            Option("same", "Both equally" if len(slots) == 2 else "All equally"),
+            Option("neither", "Neither" if len(slots) == 2 else "None"),
         ]
     if key == "note":
         return "Add a note?", [Option("edit", "Add/edit note"), Option("continue", "Continue")]
@@ -111,6 +120,7 @@ When failed, choose the main cause.
 Worth remembering
 Would a lesson help future sessions on this project or any project? One-off slips,
 outages and user redirects usually do not. Choose the lesson's kind if worth remembering.
+This describes an opportunity in the turn, not whether any particular draft should be stored.
 
 Expected errors
 A failed tool call may be intentional: a probe, a negative test, or a search with no match.
@@ -131,14 +141,24 @@ For structured lessons, answer Grounded and Faithful for each highlighted claim 
 Only that claim's citations appear below it. An uncited claim still needs both answers.
 The draft is grounded or faithful only when every claim is.
 
+Rule support
+Do those supported claims and cited evidence justify this exact rule, including its scope
+and conditions? True claims alone do not justify a causal leap or an overgeneralization.
+Answer Unclear when the evidence does not settle support; it is not a Yes.
+
 Reuse and existing enforcement
 Choose Only this request, This project, or Any project.
 Judge the lesson, not the turn: is it already enforced by the harness (including parent-agent
 instructions), project documentation (AGENTS.md and conventions), or tools (lint, CI, hooks)?
 Nothing else means memory would be the only place.
 
+Exact draft admission
+Would you store this exact draft, as written, without repairing it? Consider grounding,
+faithfulness, rule support, reuse and existing enforcement. A valuable turn can have a bad
+draft. Answer Unclear rather than guessing; unclear or missing answers are not scored.
+
 Comparison, notes and saving
-Choose a draft, Both equally, or Neither. A note is optional and literal text.
+Choose a draft, rate the drafts equally, or keep none. A note is optional and literal text.
 Back restores the previous answer. Changing it removes answers that no longer apply.
 Review the summary before saving. Redo restarts this item. Skip leaves it for another session.
 Quit keeps previously saved items; this item's unsaved answers are not written.

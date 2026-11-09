@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
+import errno
+import fcntl
 import io
 import json
 import os
+import pty
+import select
 import stat
+import struct
 import subprocess
 import sys
+import termios
+import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -17,7 +25,7 @@ from agent_memory.judge import label_build, label_controller, label_frontend
 from agent_memory.judge.label_controller import Action, LabelController
 from agent_memory.judge.label_frontend import PlainFrontend, encode_frame, read_action
 from agent_memory.judge.label_questions import GUIDE, display_safe
-from agent_memory.judge.labeling import missing_steps, order_drafts
+from agent_memory.judge.labeling import SLOTS, missing_steps, order_drafts
 from agent_memory.judge.report import build_report
 from agent_memory.judge.store import JudgeError
 from tests.test_judge import structured_draft, synthetic_run
@@ -133,9 +141,13 @@ def test_back_comparison_highlights_and_branch_cleanup(tmp_path):
     while controller.step != "preferred":
         answer(controller, controller.screen().options[-1].id)
     controller.apply(Action("back"))
+    assert controller.step == "B.store_exact"
+    assert controller.screen().selected == "u"
+    controller.apply(Action("back"))
     assert controller.step == "B.enforced_by"
     assert controller.screen().selected == "4"
     answer(controller, "1")
+    answer(controller, "n")
     answer(controller, "b")  # Option B is distinct from the Back action.
     controller.apply(Action("back"))
     assert controller.step == "preferred"
@@ -228,7 +240,7 @@ def test_backfill_declines_review_history_and_reports(tmp_path):
         answer(controller, value)
     assert asked.count("preferred") == 2
     assert "failed" not in asked
-    assert len(asked) == 10  # 4 new draft + 2 compare + 1 error + 3 saves.
+    assert len(asked) == 12  # 6 new draft + 2 compare + 1 error + 3 saves.
     assert (controller.summary().labeled, controller.summary().changed) == (3, 0)
     rows = {row["item_id"]: row for row in store.read_jsonl(store.labels_path)}
     assert rows[ids[1]]["drafts"]["second"]["declined"]
@@ -388,6 +400,173 @@ def test_protocol_two_and_plain_claim_focus(tmp_path):
     assert "\x1b" not in text
 
 
+def many_drafts(tmp_path: Path, count: int):
+    store = fresh(tmp_path, 1, two=False)
+    item_id = store.read_jsonl(store.items_path)[0]["item_id"]
+    store.write_jsonl(
+        store.drafts_path,
+        [
+            structured_draft(
+                item_id,
+                drafter=f"PRIVATE_DRAFTER_{i}",
+                claims=[
+                    {"text": "First claim.", "cited": [1]},
+                    {"text": "Second claim.", "cited": [2]},
+                ],
+            ).to_dict()
+            for i in range(count)
+        ],
+    )
+    return store
+
+
+def selected_answer(controller: LabelController) -> str:
+    return {
+        "failed": "n",
+        "worth_remembering": "n",
+        "preferred": controller.drafts[-1].slot.lower(),
+        "note": "continue",
+        "summary": "save",
+    }.get(controller.step, controller.screen().options[0].id)
+
+
+@pytest.mark.parametrize("count", [3, 4])
+def test_three_four_drafts_plain_navigation_and_blinded_frames(tmp_path, count):
+    store = many_drafts(tmp_path, count)
+    controller = LabelController(store)
+    frames, rendered = [], []
+    while controller.step != "summary":
+        screen = controller.screen()
+        frames.append(screen.payload())
+        selected = selected_answer(controller)
+        index = next(i for i, option in enumerate(screen.options, 1) if option.id == selected)
+        output = io.StringIO()
+        action = PlainFrontend(io.StringIO(f"{index}\n"), output).exchange(screen)
+        assert action == Action("answer", selected)
+        rendered.append(output.getvalue())
+        if ".c2." in controller.step:
+            assert screen.drafts[0].focus == "Claim 2 of 2"
+            assert "[2] TOOL RESULT" in screen.drafts[0].cited_evidence
+            assert "[1] REQUEST" not in screen.drafts[0].cited_evidence
+        controller.apply(action)
+    controller.apply(Action("back"))
+    controller.apply(Action("back"))
+    assert controller.step == "preferred"
+    assert controller.screen().selected == SLOTS[count - 1].lower()
+    options = {option.id: option.label for option in controller.screen().options}
+    assert options["same"] == "All equally"
+    assert options["neither"] == "None"
+    answer(controller, selected_answer(controller))
+    answer(controller, "continue")
+    frames.append(controller.screen().payload())
+    assert {frame["subject"] for frame in frames} >= {
+        *(f"Draft {slot}" for slot in SLOTS[:count]),
+        "Compare drafts",
+        "Summary",
+    }
+    for frame in frames:
+        if frame["subject"] in ("Compare drafts", "Notes", "Summary"):
+            assert [draft["slot"] for draft in frame["drafts"]] == list(SLOTS[:count])
+    boundary = json.dumps(frames) + "".join(rendered)
+    for hidden in ("PRIVATE_DRAFTER", "draft_hash", "model_snapshot", "probabilities"):
+        assert hidden not in boundary
+    for slot in SLOTS[:count]:
+        assert f"Draft {slot}\nClaim 2 of 2" in "".join(rendered)
+    expected = controller.drafts[-1].drafter
+    answer(controller, "save")
+    row = store.read_jsonl(store.labels_path)[0]
+    assert len(row["drafts"]) == count
+    assert row["preferred"] == expected
+    assert LabelController(store).done
+
+
+def test_order_drafts_refuses_overflow_instead_of_truncating():
+    rows = [{"drafter": f"PRIVATE_DRAFTER_{i}", "lesson": None} for i in range(5)]
+    with pytest.raises(JudgeError, match="at most 4 drafts") as error:
+        order_drafts("private item", rows, 1)
+    assert "PRIVATE" not in str(error.value)
+    assert "private item" not in str(error.value)
+
+
+@pytest.mark.parametrize("plain", [False, True])
+def test_draft_overflow_fails_before_opening_either_frontend(tmp_path, monkeypatch, plain):
+    store = fresh(tmp_path, 2, two=False)
+    items = store.read_jsonl(store.items_path)
+    ids = [item["item_id"] for item in items]
+    store.write_jsonl(
+        store.drafts_path,
+        [{"item_id": ids[1], "drafter": f"extra{i}", "lesson": None} for i in range(4)],
+        append=True,
+    )
+    before = store.drafts_path.read_bytes()
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("all selected items must be checked before opening a frontend")
+
+    monkeypatch.setattr(label_frontend, "automatic_plain", lambda: False)
+    monkeypatch.setattr(label_frontend, "frontend_binary", unexpected)
+    monkeypatch.setattr(label_frontend, "PlainFrontend", unexpected)
+    with pytest.raises(JudgeError, match="at most 4 drafts"):
+        label_frontend.label_session(store, plain=plain, item_ids=tuple(ids))
+    assert store.drafts_path.read_bytes() == before
+    assert not store.labels_path.exists()
+
+
+@pytest.mark.parametrize("slots", [[""], ["AB"], ["E"], ["a"], ["A", "A"], list("ABCDE")])
+def test_screen_producer_rejects_invalid_draft_slots(tmp_path, slots):
+    screen = LabelController(fresh(tmp_path, 1, two=False)).screen()
+    drafts = [label_controller.DisplayDraft(slot, "lesson", "evidence") for slot in slots]
+    with pytest.raises(JudgeError):
+        replace(screen, drafts=drafts)
+
+
+def test_screen_producer_rejects_unknown_draft_subject(tmp_path):
+    screen = LabelController(fresh(tmp_path, 1, two=False)).screen()
+    with pytest.raises(JudgeError):
+        replace(screen, subject="Draft E")
+
+
+@pytest.mark.parametrize("count", [3, 4])
+@pytest.mark.parametrize("plain", [False, True])
+def test_real_plain_entrypoint_three_four_drafts(tmp_path, count, plain):
+    store = many_drafts(tmp_path, count)
+    controller = LabelController(store)
+    inputs = []
+    while not controller.done:
+        screen = controller.screen()
+        selected = selected_answer(controller)
+        inputs.append(str(next(i for i, o in enumerate(screen.options, 1) if o.id == selected)))
+        answer(controller, selected)
+    expected = store.read_jsonl(store.labels_path)[0]
+    store.labels_path.unlink()
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; from agent_memory.cli import main; sys.exit(main(sys.argv[1:]))",
+            "--home",
+            str(store.cfg.home),
+            "judge",
+            "label",
+            "--run",
+            "syn",
+            *(["--plain"] if plain else []),
+        ],
+        input="\n".join(inputs) + "\n",
+        text=True,
+        capture_output=True,
+        timeout=20,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Labeled 1" in result.stdout
+    assert "\x1b" not in result.stdout
+    for slot in SLOTS[:count]:
+        assert f"Draft {slot}\nClaim 2 of 2" in result.stdout
+    actual = store.read_jsonl(store.labels_path)[0]
+    assert actual["drafts"] == expected["drafts"]
+    assert actual["preferred"] == expected["preferred"]
+
+
 @pytest.mark.parametrize("mode", ["--plain", "pipe", "dumb"])
 def test_real_plain_entrypoint(tmp_path, mode):
     store = fresh(tmp_path, 1, two=False)
@@ -406,7 +585,7 @@ def test_real_plain_entrypoint(tmp_path, mode):
             "syn",
             *(["--plain"] if mode == "--plain" else []),
         ],
-        input="2\n2\n1\n1\n2\n1\n2\n1\n",
+        input="2\n2\n1\n1\n1\n2\n1\n2\n2\n1\n",
         text=True,
         capture_output=True,
         env=env,
@@ -416,6 +595,97 @@ def test_real_plain_entrypoint(tmp_path, mode):
     assert "Labeled 1" in result.stdout
     assert "\x1b" not in result.stdout + result.stderr
     assert store.read_jsonl(store.labels_path)[0]["drafts"]["ollama:m"]["generalizable"] == 1
+
+
+@pytest.fixture(scope="module")
+def real_go_binary(tmp_path_factory):
+    if label_build.shutil.which("go") is None:
+        pytest.skip("real label UI round trip needs Go")
+    return label_build.frontend_binary(root=tmp_path_factory.mktemp("label-ui") / "cache")
+
+
+@pytest.mark.parametrize("count", [3, 4])
+@pytest.mark.parametrize("stage", ["claim", "comparison", "rule_supported", "store_exact"])
+def test_real_go_entrypoint_three_four_drafts(tmp_path, real_go_binary, count, stage):
+    """Real Python transport, Go main, and TTY input; no test-only Go protocol."""
+    controller = LabelController(many_drafts(tmp_path, count))
+    key = "c2.grounded" if stage == "claim" else stage
+    target = "preferred" if stage == "comparison" else f"{SLOTS[count - 1]}.{key}"
+    while controller.step != target:
+        answer(controller, selected_answer(controller))
+    screen = controller.screen()
+    if stage == "comparison":
+        screen = replace(screen, selected=SLOTS[count - 1].lower())
+    elif stage in ("rule_supported", "store_exact"):
+        screen = replace(screen, selected="u")
+    path = tmp_path / "screen.json"
+    path.write_text(json.dumps(screen.payload()))
+    body = """
+import fcntl, json, sys, termios
+from pathlib import Path
+from agent_memory.judge.label_controller import Action, DisplayDraft, Screen
+from agent_memory.judge.label_frontend import GoFrontend
+from agent_memory.judge.label_questions import Option
+fcntl.ioctl(sys.stdin.fileno(), termios.TIOCSCTTY, 0)
+data = json.loads(Path(sys.argv[2]).read_text())
+data["drafts"] = [DisplayDraft(**d) for d in data["drafts"]]
+data["options"] = [Option(**o) for o in data["options"]]
+screen = Screen(**data)
+frontend = GoFrontend(Path(sys.argv[1]))
+try:
+    assert frontend.exchange(screen) == Action("answer", screen.selected)
+    frontend.finish("Finished synthetic round trip.")
+finally:
+    frontend.close()
+print("ROUNDTRIP_OK", flush=True)
+"""
+    master, slave = pty.openpty()
+    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 100, 0, 0))
+    process = subprocess.Popen(
+        [sys.executable, "-c", body, str(real_go_binary), str(path)],
+        stdin=slave,
+        stdout=slave,
+        stderr=slave,
+        start_new_session=True,
+        env={**os.environ, "TERM": "xterm-256color", "NO_COLOR": "1"},
+    )
+    os.close(slave)
+    output, submitted = bytearray(), False
+    deadline = time.monotonic() + 15
+    try:
+        while time.monotonic() < deadline:
+            if not select.select([master], [], [], 0.2)[0]:
+                if process.poll() is not None:
+                    break
+                continue
+            try:
+                part = os.read(master, 65536)
+            except OSError as exc:
+                if exc.errno != errno.EIO:
+                    raise
+                break  # Linux reports the last PTY close as EIO.
+            if not part:
+                break
+            output.extend(part)
+            marker = "overgeneralization?" if stage == "rule_supported" else screen.question
+            if not submitted and marker.encode() in output:
+                os.write(master, b"\r")
+                submitted = True
+        assert submitted, output.decode(errors="replace")
+        assert process.wait(timeout=3) == 0, output.decode(errors="replace")
+        assert b"ROUNDTRIP_OK" in output
+        assert screen.subject.encode() in output
+        if stage == "claim":
+            assert b"Claim 2 of 2" in output
+        elif stage in ("rule_supported", "store_exact"):
+            assert b"Rule:" in output
+            assert b"Unclear" in output
+        assert b"PRIVATE_DRAFTER" not in output
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=3)
+        os.close(master)
 
 
 def fake_go(tmp_path: Path, monkeypatch):

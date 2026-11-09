@@ -12,6 +12,7 @@ from typing import Any
 from .label_questions import GUIDE, INTRO, NAMES, Option, display_safe, question
 from .labeling import (
     LABELS_VERSION,
+    SLOTS,
     DraftView,
     LabelSummary,
     assemble,
@@ -21,6 +22,7 @@ from .labeling import (
     order_drafts,
     raw_answers,
     steps_for,
+    validate_draft_count,
 )
 from .questions import QUESTIONS_VERSION
 from .store import JudgeError, RunStore, ensure_experiment_home, utc_now_iso
@@ -60,6 +62,23 @@ class Screen:
     guide: str = GUIDE
     drafts: list[DisplayDraft] = field(default_factory=list)
 
+    def __post_init__(self) -> None:
+        validate_draft_count(len(self.drafts))
+        slots = [draft.slot for draft in self.drafts]
+        if len(set(slots)) != len(slots) or any(
+            len(slot) != 1 or slot not in SLOTS for slot in slots
+        ):
+            raise JudgeError("Invalid labeling draft slots.")
+        if self.subject not in {
+            "Turn",
+            "Compare drafts",
+            "Notes",
+            "Review",
+            "Summary",
+            *(f"Draft {slot}" for slot in SLOTS),
+        }:
+            raise JudgeError("Invalid labeling subject.")
+
     def payload(self) -> dict[str, Any]:
         return asdict(self)
 
@@ -91,7 +110,7 @@ class LabelController:
         ensure_experiment_home(store.cfg)
         self.store, self.seed, self.review = store, seed, review
         version = store.read_run().get("questions_version")
-        if version is not None and version != QUESTIONS_VERSION:
+        if version != QUESTIONS_VERSION:
             raise JudgeError(
                 f"This run uses {version} and is read-only. Label a current-version run instead."
             )
@@ -130,6 +149,9 @@ class LabelController:
             self.todo = backfill + fresh
         if limit is not None:
             self.todo = self.todo[:limit]
+        # Refuse unsupported items before either frontend opens or any labels are saved.
+        for item in self.todo:
+            validate_draft_count(len(self.draft_rows.get(item["item_id"], [])))
         self.index = self.labeled = self.skipped = self.changed = 0
         self.stopped = False
         self.notice = INTRO
@@ -225,6 +247,8 @@ class LabelController:
                 "error_intended": "Expected and used error",
                 "grounded": "Grounded",
                 "faithful": "Faithful",
+                "rule_supported": "Exact rule supported",
+                "store_exact": "Store this exact draft",
                 "generalizable": "Useful on",
                 "enforced_by": "Already enforced by",
                 "preferred": "Keep",
@@ -353,6 +377,11 @@ class LabelController:
 
     def _save(self) -> None:
         item_id, stamp = self.item["item_id"], utc_now_iso()
+        current = order_drafts(item_id, self.store.read_drafts().get(item_id, []), self.seed)
+        if current != self.drafts:
+            raise JudgeError(
+                "Drafts changed during labeling. Quit and reopen to label the new drafts."
+            )
         row = assemble(self.answers, self.drafts, self.has_errors(self.item))
         previous = self.existing.get(item_id)
         moved = changed_values(previous, row) if previous is not None else {}

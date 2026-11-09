@@ -533,6 +533,7 @@ def test_question_set_shape_and_derived_action():
     assert [q.id for q in STAGE_B] == [
         "grounded",
         "faithful",
+        "rule_supported",
         "generalizable",
         "actionable",
         "enforced",
@@ -540,16 +541,23 @@ def test_question_set_shape_and_derived_action():
     assert BY_ID["category"].options()[-1] == "none"
     assert BY_ID["generalizable"].options() == ["0", "1", "2"]
     assert BY_ID["enforced"].options() == ["none", "harness", "project_docs", "tooling"]
-    # The v2 write rule reads Stage B only: grounded, faithful, reusable, enforced by nothing.
+    # v4 adds exact-rule support; Stage A failure is still not a write prerequisite.
     probs = {
         "failed": {"yes": 0.1, "no": 0.9},
         "grounded": {"yes": 0.9, "no": 0.1},
         "faithful": {"yes": 0.8, "no": 0.2},
+        "rule_supported": {"yes": 0.9, "no": 0.1},
         "generalizable": {"0": 0.2, "1": 0.5, "2": 0.3},
         "enforced": {"none": 0.7, "harness": 0.1, "project_docs": 0.1, "tooling": 0.1},
     }
     gates = gate_probabilities(probs)
-    assert gates == {"grounded": 0.9, "faithful": 0.8, "generalizable": 0.8, "enforced": 0.7}
+    assert gates == {
+        "grounded": 0.9,
+        "faithful": 0.8,
+        "generalizable": 0.8,
+        "enforced": 0.7,
+        "rule_supported": 0.9,
+    }
     assert derive_action(gates).action == "write_lesson"
     assert derive_action({**gates, "enforced": 0.2}).action == "discard"
     assert derive_action({**gates, "faithful": 0.55}).action == "review"
@@ -1573,6 +1581,7 @@ def test_claim_questions_aggregation_and_rules():
         "faithful.2",
         "grounded.3",
         "faithful.3",
+        "rule_supported",
         "generalizable",
         "actionable",
         "enforced",
@@ -1628,7 +1637,7 @@ def test_judge_draft_keeps_claim_answers_and_derived_gates():
     )
     assert verdict["claims"] == 2
     assert verdict["draft_hash"] == draft_hash(draft["lesson"])
-    assert verdict["questions_version"] == "questions_v3"
+    assert verdict["questions_version"] == "questions_v4"
     assert verdict["action"] == "review"  # enforced=0.6 still lies inside the unchanged band
     assert "grounded=0.10 below 0.50" in verdict["reasons"]
     assert verdict["answers"]["grounded.1"]["probabilities"]["yes"] == 0.8
@@ -1749,6 +1758,7 @@ def _verdict(
         answers["incomplete"] = ans("no", {"yes": 0.1, "no": 0.9}, 0.9)
         answers["grounded"] = yes_if_failed
         answers["faithful"] = yes_if_failed
+        answers["rule_supported"] = yes_if_failed
         answers["enforced"] = ans(
             "none", {"none": 0.7, "harness": 0.1, "project_docs": 0.1, "tooling": 0.1}, 0.7
         )
@@ -1847,13 +1857,15 @@ def synthetic_run(tmp_path: Path, *, n: int = 20, v1: bool = False) -> RunStore:
                             "declined": False,
                             "grounded": failed,
                             "faithful": failed,
+                            "rule_supported": failed,
+                            "store_exact": worth,
                             "generalizable": 1 if failed else 0,
                             "enforced_by": "none",
                         }
                     },
                     "preferred": None,
                     "note": None,
-                    "labels_version": "labels_v2",
+                    "labels_version": "labels_v4",
                     "labeled_at": "2026-01-01T00:00:00+00:00",
                 }
             )
@@ -1902,7 +1914,7 @@ def test_report_locks_held_out_until_freeze(tmp_path):
     assert "grounded ≥" in frozen_text
     assert "Cascade to `llm:ref`" in frozen_text
     assert "(2) confidence AUROC ≥ 0.75: yes" in frozen_text
-    assert "v2 write rule with `llm:ref` on `ollama:m` (criterion 6" in frozen_text
+    assert "v4 write rule with `llm:ref` on `ollama:m` (criterion 6" in frozen_text
     assert store.report_path.read_text() == frozen_text
     with pytest.raises(JudgeError, match="already frozen"):
         build_report(store, freeze=True)
@@ -1959,7 +1971,7 @@ def test_report_cli_keeps_raw_stdout_clean_and_warns_about_width(tmp_path, capsy
     assert "Judge report: syn" in out
     assert "written to" not in out
     assert "squeezed into 100 columns and need about 150" in err
-    assert "Versions: unknown, unknown, questions_v3" in out
+    assert "Versions: unknown, unknown, questions_v4" in out
 
 
 def test_labeling_shows_rubric_cited_evidence_and_incomplete(tmp_path):
@@ -2341,8 +2353,10 @@ def test_per_claim_labels_round_trip_partial_backfill_and_changes():
         "A.c1.faithful": "y",
         "A.c2.grounded": "n",
         "A.c2.faithful": "n",
+        "A.rule_supported": "n",
         "A.generalizable": "1",
         "A.enforced_by": "1",
+        "A.store_exact": "n",
         "note": "",
     }
     assert steps_for(raw, views, False) == list(raw)
@@ -2355,6 +2369,8 @@ def test_per_claim_labels_round_trip_partial_backfill_and_changes():
         "claims": [{"grounded": True, "faithful": True}, {"grounded": False, "faithful": False}],
         "grounded": False,
         "faithful": False,
+        "rule_supported": False,
+        "store_exact": False,
         "generalizable": 1,
         "enforced_by": "none",
     }
@@ -2424,19 +2440,21 @@ def test_claim_controller_focus_evidence_summary_navigation_and_history(tmp_path
     assert controller.screen().drafts[0].cited_evidence == "No cited evidence."
     controller.apply(Action("answer", "n"))
     controller.apply(Action("answer", "n"))
-    assert controller.step == "A.generalizable"
+    assert controller.step == "A.rule_supported"
     screen = controller.screen()
     assert screen.drafts[0].focus == ""
     assert "▶" not in screen.drafts[0].lesson
     assert "[1] Server evidence." in screen.drafts[0].cited_evidence
     assert "[2] Lock evidence." in screen.drafts[0].cited_evidence
+    controller.apply(Action("answer", "n"))
     controller.apply(Action("answer", "1"))
     controller.apply(Action("answer", "1"))
+    controller.apply(Action("answer", "n"))
     controller.apply(Action("answer", "continue"))
     assert "Draft A claim 2: Grounded: No" in controller.screen().evidence
     controller.apply(Action("answer", "save"))
     saved = store.read_jsonl(store.labels_path)[0]
-    assert saved["labels_version"] == "labels_v3"
+    assert saved["labels_version"] == "labels_v4"
     assert saved["drafts"]["ollama:m"]["grounded"] is False
     review = LabelController(store, item_ids=[item_id])
     while review.step != "A.c1.grounded":

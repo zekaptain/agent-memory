@@ -233,15 +233,11 @@ def segment_turns(
         if current.outcome_reason is None:
             current.events.append(event)
     for session_turns in by_session.values():
-        for i, turn in enumerate(session_turns):
-            turn.next_user = next(
-                (
-                    later.user_event
-                    for later in session_turns[i + 1 :]
-                    if later.opener_provenance != "harness"
-                ),
-                None,
-            )
+        next_user = None
+        for turn in reversed(session_turns):
+            turn.next_user = next_user
+            if turn.opener_provenance != "harness":
+                next_user = turn.user_event
     return turns
 
 

@@ -38,6 +38,42 @@ func screenWire(t *testing.T, s screen, id int64) []byte {
 	return wireFrame(t, frame{Version: protocolVersion, RequestID: id, Type: "screen", Screen: &s})
 }
 
+func multiDraftScreen(count int) screen {
+	s := syntheticScreen()
+	s.Subject, s.Key, s.Question = "Compare drafts", "1:preferred", "Which draft would you keep?"
+	s.Evidence, s.Options = "", nil
+	for i := 0; i < count; i++ {
+		slot := string(rune('A' + i))
+		s.Drafts = append(s.Drafts, draft{slot, "Lesson " + slot + " [literal] 界",
+			strings.Repeat("Cited evidence for "+slot+"\n", 8), ""})
+		s.Options = append(s.Options, option{strings.ToLower(slot), "Draft " + slot})
+	}
+	s.Options = append(s.Options, option{"same", "All equally"}, option{"neither", "None"})
+	s.Selected = strings.ToLower(s.Drafts[count-1].Slot)
+	return s
+}
+
+func TestProtocolThreeFourDrafts(t *testing.T) {
+	for _, count := range []int{3, 4} {
+		s := multiDraftScreen(count)
+		for _, subject := range []string{"Compare drafts", "Notes", "Review", "Summary"} {
+			s.Subject = subject
+			f, err := decodeFrame(screenWire(t, s, 1))
+			if err != nil || len(f.Screen.Drafts) != count {
+				t.Fatalf("%s with %d drafts rejected: %v", subject, count, err)
+			}
+		}
+		for _, d := range s.Drafts {
+			focused := s
+			focused.Subject, focused.Drafts = "Draft "+d.Slot, []draft{d}
+			focused.Drafts[0].Focus = "Claim 2 of 2"
+			if _, err := decodeFrame(screenWire(t, focused, 1)); err != nil {
+				t.Fatalf("focused %s rejected: %v", d.Slot, err)
+			}
+		}
+	}
+}
+
 func TestProtocolRoundTrip(t *testing.T) {
 	s := syntheticScreen()
 	data := screenWire(t, s, 42)
@@ -129,6 +165,12 @@ func TestProtocolValidatesScreenSemantics(t *testing.T) {
 		"multiline note":   func(s *screen) { s.Note = "line\nline" },
 		"hidden identity":  func(s *screen) { s.Drafts = []draft{{Slot: "model-name"}} },
 		"duplicate slot":   func(s *screen) { s.Drafts = []draft{{Slot: "A"}, {Slot: "A"}} },
+		"empty slot":       func(s *screen) { s.Drafts = []draft{{Slot: ""}} },
+		"substring slot":   func(s *screen) { s.Drafts = []draft{{Slot: "AB"}} },
+		"lowercase slot":   func(s *screen) { s.Drafts = []draft{{Slot: "a"}} },
+		"fifth slot":       func(s *screen) { s.Drafts = []draft{{Slot: "E"}} },
+		"fifth subject":    func(s *screen) { s.Subject = "Draft E" },
+		"too many drafts":  func(s *screen) { *s = multiDraftScreen(5) },
 	}
 	for name, edit := range tests {
 		t.Run(name, func(t *testing.T) {

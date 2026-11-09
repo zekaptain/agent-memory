@@ -25,6 +25,7 @@ from ..config import Config
 from ..db import AgentMemoryError, MemoryClient, sql_literal
 from .backends import Answer, DecisionBackend, JudgeInput, make_backend
 from .drafter import DRAFTER_VERSION, draft_hash, make_drafter
+from .labeling import LABELS_VERSION
 from .lesson import lesson_from_row
 from .projection import PROJECTION_VERSION, drafter_rendering, project_candidate
 from .provenance import PROVENANCE_VERSION, session_callers
@@ -66,7 +67,7 @@ def require_current_questions(run: Mapping[str, Any]) -> None:
     """Drafting and judging write rows in the current question set; a run built under an older
     one keeps its verdicts and labels as they are and is read-only from here on."""
     version = run.get("questions_version")
-    if version is not None and version != QUESTIONS_VERSION:
+    if version != QUESTIONS_VERSION:
         raise JudgeError(
             f"run {run.get('run_id')!r} was built with {version}; this code drafts and judges "
             f"with {QUESTIONS_VERSION}. Its verdicts and labels stay as they are: start a new run."
@@ -245,6 +246,7 @@ def build_candidates(
                     "provenance_version": PROVENANCE_VERSION,
                     "projection_version": PROJECTION_VERSION,
                     "questions_version": QUESTIONS_VERSION,
+                    "labels_version": LABELS_VERSION,
                     "n": n,
                     "seed": seed,
                     "clean_share": clean_share,
@@ -423,7 +425,11 @@ def judge_draft(
         )
         answers.update(aggregate_claims(answers))
     probabilities = {k: a.probabilities for k, a in answers.items()}
-    derived = derive_action(gate_probabilities(probabilities), thresholds, declined=declined)
+    derived = derive_action(
+        gate_probabilities(probabilities, methods={k: a.method for k, a in answers.items()}),
+        thresholds,
+        declined=declined,
+    )
     snapshots = sorted({a.model_snapshot for a in answers.values() if a.model_snapshot})
     return {
         "run_id": run_id,
@@ -483,6 +489,9 @@ def decision_record(verdict: dict[str, Any], item: dict[str, Any], run_created: 
                 "drafter",
                 "draft_hash",
                 "declined",
+                "has_draft",
+                "claims",
+                "stage_a_reused",
                 "latency_ms",
                 "cost_usd",
                 "action",
@@ -589,9 +598,8 @@ def decide_items(
             copied = stage_a_from_verdict(v)
             if copied is not None and v["item_id"] not in stage_a_cache:
                 stage_a_cache[v["item_id"]] = copied
-        todo = [
-            i for i in items if any(key[0] == i["item_id"] and key not in done for key in expected)
-        ]
+        pending_items = {key[0] for key in expected if key not in done}
+        todo = [i for i in items if i["item_id"] in pending_items]
         if limit is not None:
             todo = todo[:limit]
         pending_records: list[Record] = []
@@ -642,7 +650,8 @@ def decide_items(
                 store.write_jsonl(path, [verdict], append=True)
                 count += 1
                 # Later drafts of this item copy these answers instead of paying again.
-                stage_a_cache[item["item_id"]] = stage_a_from_verdict(verdict) or stage_a
+                stage_a = stage_a_from_verdict(verdict) or stage_a
+                stage_a_cache[item["item_id"]] = stage_a
                 reused = True
                 if record_events:
                     pending_records.append(decision_record(verdict, item, run["created_at"]))
@@ -700,6 +709,7 @@ def live_step(
     ensure_experiment_home(cfg)
     parent = RunStore(cfg, run_id)
     run = parent.read_run()
+    require_current_questions(run)
     if not run.get("frozen"):
         raise JudgeError("thresholds are not frozen; run `mem judge report --freeze` first")
     day = day or datetime.now(UTC).strftime("%Y-%m-%d")

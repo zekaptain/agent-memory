@@ -21,8 +21,9 @@ from .lesson import Claim, lesson_from_row
 from .lesson import cited_entries as cited_entries
 from .lesson import entry_numbers as entry_numbers
 from .questions import CATEGORIES, ENFORCED
+from .store import JudgeError
 
-LABELS_VERSION = "labels_v3"
+LABELS_VERSION = "labels_v4"
 LABEL_KEYS = (
     "failed",
     "incomplete",
@@ -34,7 +35,15 @@ LABEL_KEYS = (
     "preferred",
     "note",
 )
-DRAFT_LABEL_KEYS = ("grounded", "faithful", "generalizable", "enforced_by")
+DRAFT_LABEL_KEYS = (
+    "grounded",
+    "faithful",
+    "rule_supported",
+    "generalizable",
+    "enforced_by",
+    "store_exact",
+)
+UNKNOWN_LABEL_KEYS = ("rule_supported", "store_exact")
 CATEGORY_ORDER = tuple(CATEGORIES)
 ENFORCED_BY = ENFORCED
 ENFORCED_ORDER = tuple(ENFORCED_BY)
@@ -70,12 +79,18 @@ class DraftView:
         return draft_hash(self.lesson)
 
 
+def validate_draft_count(count: int) -> None:
+    if count > len(SLOTS):
+        raise JudgeError(f"Labeling supports at most {len(SLOTS)} drafts per item; found {count}.")
+
+
 def order_drafts(item_id: str, rows: Sequence[Mapping[str, Any]], seed: int) -> list[DraftView]:
     """Seeded per item, so the same drafter does not always sit in slot A."""
+    validate_draft_count(len(rows))
     ordered = sorted(rows, key=lambda r: str(r.get("drafter") or ""))
     random.Random(f"{seed}:{item_id}").shuffle(ordered)
     views = []
-    for i, row in enumerate(ordered[: len(SLOTS)]):
+    for i, row in enumerate(ordered):
         lesson = lesson_from_row(row)
         views.append(
             DraftView(
@@ -108,7 +123,11 @@ def steps_for(
                     for i in range(1, len(draft.claims) + 1)
                     for key in ("grounded", "faithful")
                 )
-                steps.extend(f"{draft.slot}.{key}" for key in ("generalizable", "enforced_by"))
+                steps.extend(
+                    f"{draft.slot}.{key}"
+                    for key in DRAFT_LABEL_KEYS
+                    if key not in ("grounded", "faithful")
+                )
             else:
                 steps.extend(f"{draft.slot}.{key}" for key in DRAFT_LABEL_KEYS)
     if len(drafts) >= 2:
@@ -153,7 +172,10 @@ def assemble(
             elif key == "enforced_by":
                 entry[key] = ENFORCED_ORDER[int(value) - 1]
             else:
-                entry[key] = value == "y"
+                entry[key] = {"y": True, "n": False}.get(value)
+        unknown = [key for key in UNKNOWN_LABEL_KEYS if raw.get(f"{draft.slot}.{key}") == "u"]
+        if unknown:
+            entry["unknown"] = unknown
         if draft.claims:
             entry["claims"] = [
                 {
@@ -210,6 +232,8 @@ def raw_answers(row: Mapping[str, Any], drafts: Sequence[DraftView]) -> dict[str
                 continue
             value = entry.get(key)
             if value is None:
+                if key in UNKNOWN_LABEL_KEYS and key in (entry.get("unknown") or []):
+                    raw[f"{draft.slot}.{key}"] = "u"
                 continue
             if key == "generalizable":
                 raw[f"{draft.slot}.{key}"] = str(int(value))
@@ -223,7 +247,10 @@ def raw_answers(row: Mapping[str, Any], drafts: Sequence[DraftView]) -> dict[str
                 for key in ("grounded", "faithful"):
                     if claim.get(key) is not None:
                         raw[f"{draft.slot}.c{i}.{key}"] = "y" if claim[key] else "n"
-    preferred = row.get("preferred")
+    same_drafts = {draft.drafter: draft.hash for draft in drafts} == {
+        name: entry.get("draft_hash") for name, entry in entries.items()
+    }
+    preferred = row.get("preferred") if same_drafts else None
     if preferred in PREFERRED_OTHER:
         raw["preferred"] = str(preferred)
     elif preferred:

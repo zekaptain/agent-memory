@@ -17,6 +17,7 @@ const (
 	protocolVersion = 2
 	maxFrame        = 8 * 1024 * 1024 // Includes the terminating newline.
 	maxNote         = 4096
+	draftSlots      = "ABCD" // Mirrors labeling.SLOTS at the Python producer boundary.
 )
 
 var (
@@ -243,14 +244,17 @@ func decodeFrame(data []byte) (frame, error) {
 	}
 	s := f.Screen
 	if s.Item < 0 || s.Total < s.Item || s.Key == "" || cleanLine(s.Key) != s.Key ||
-		len(s.Options) == 0 || len(s.Options) > 64 || len(s.Drafts) > 2 ||
+		len(s.Options) == 0 || len(s.Options) > 64 || len(s.Drafts) > len(draftSlots) ||
 		len(s.Note) > maxNote || cleanLine(s.Note) != s.Note {
 		return frame{}, errProtocol
 	}
 	switch s.Subject {
-	case "Turn", "Draft A", "Draft B", "Compare drafts", "Notes", "Review", "Summary":
+	case "Turn", "Compare drafts", "Notes", "Review", "Summary":
 	default:
-		return frame{}, errProtocol
+		slot, found := strings.CutPrefix(s.Subject, "Draft ")
+		if !found || !validDraftSlot(slot) {
+			return frame{}, errProtocol
+		}
 	}
 	seen := make(map[string]bool)
 	selectedFound := s.Selected == ""
@@ -269,7 +273,7 @@ func decodeFrame(data []byte) (frame, error) {
 	seen = make(map[string]bool)
 	for i := range s.Drafts {
 		d := &s.Drafts[i]
-		if (d.Slot != "A" && d.Slot != "B") || seen[d.Slot] {
+		if !validDraftSlot(d.Slot) || seen[d.Slot] {
 			return frame{}, errProtocol
 		}
 		seen[d.Slot] = true
@@ -279,6 +283,10 @@ func decodeFrame(data []byte) (frame, error) {
 	s.Metadata, s.Evidence, s.Projection = clean(s.Metadata), clean(s.Evidence), clean(s.Projection)
 	s.Guide, s.Question, s.Notice = clean(s.Guide), clean(s.Question), clean(s.Notice)
 	return f, nil
+}
+
+func validDraftSlot(slot string) bool {
+	return len(slot) == 1 && strings.Contains(draftSlots, slot)
 }
 
 // clean treats all controller content as literal text, never Rich/ANSI markup.

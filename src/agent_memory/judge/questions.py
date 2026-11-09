@@ -1,10 +1,10 @@
-"""The typed question set (`questions_v3`) and the action derived from its answers.
+"""The typed question set (`questions_v4`) and the action derived from its answers.
 
 Stage A is asked once per item from the projection alone; Stage B once per draft. The write
 rule reads only Stage B: a lesson is written when it is grounded, faithful, reusable beyond
-the turn, and enforced by nothing else. `failed` and `recurrence` describe the turn and are
-scored on their own, but no longer gate a write. `questions_v1` runs (exp1, exp2) keep their
-rule through `write_gates`.
+the turn, enforced by nothing else, and its exact rule follows from the evidence. `failed`
+and `recurrence` describe the turn, not admission. Historical versions keep their rules
+through `write_gates`.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from .lesson import Claim, Lesson
 if TYPE_CHECKING:
     from .backends.base import Answer
 
-QUESTIONS_VERSION = "questions_v3"
+QUESTIONS_VERSION = "questions_v4"
 
 QuestionType = Literal["noul", "choice", "score"]
 Stage = Literal["A", "B"]
@@ -177,6 +177,19 @@ STAGE_B: tuple[Question, ...] = (
         },
     ),
     Question(
+        "rule_supported",
+        "noul",
+        "Do the supported claims and cited evidence justify this EXACT rule, including its "
+        "scope and conditions, without an unsupported causal leap or overgeneralization? "
+        "Judge the whole DRAFT LESSON, not whether its individual claims are true.",
+        "B",
+        {
+            "true": "The evidence warrants this exact rule and its scope and conditions.",
+            "false": "True claims do not establish the proposed rule, its causal explanation, "
+            "scope, or conditions; the rule overgeneralizes or goes beyond the evidence.",
+        },
+    ),
+    Question(
         "generalizable",
         "score",
         "How reusable is the DRAFT LESSON beyond this exact turn?",
@@ -276,7 +289,8 @@ def aggregate_claims(answers: Mapping[str, Answer]) -> dict[str, Answer]:
 
 
 # The questions whose probability of clearing gates a write, per questions version.
-WRITE_GATES: tuple[str, ...] = ("grounded", "faithful", "generalizable", "enforced")
+WRITE_GATES_V2: tuple[str, ...] = ("grounded", "faithful", "generalizable", "enforced")
+WRITE_GATES: tuple[str, ...] = (*WRITE_GATES_V2, "rule_supported")
 WRITE_GATES_V1: tuple[str, ...] = ("failed", "recurrence", "supported")
 
 DEFAULT_THRESHOLDS: dict[str, float] = {
@@ -285,6 +299,7 @@ DEFAULT_THRESHOLDS: dict[str, float] = {
     "supported": 0.5,
     "grounded": 0.5,
     "faithful": 0.5,
+    "rule_supported": 0.5,
     "generalizable": 0.5,
     "enforced": 0.5,
     "band": 0.15,
@@ -300,12 +315,18 @@ class Derived:
 
 
 def write_gates(questions_version: str | None) -> tuple[str, ...]:
-    return WRITE_GATES_V1 if questions_version == "questions_v1" else WRITE_GATES
+    if questions_version == "questions_v1":
+        return WRITE_GATES_V1
+    return WRITE_GATES if questions_version == QUESTIONS_VERSION else WRITE_GATES_V2
 
 
-def gate_probability(qid: str, probabilities: Mapping[str, float]) -> float | None:
+def gate_probability(
+    qid: str, probabilities: Mapping[str, float], *, method: str = ""
+) -> float | None:
     """The probability that a gate is cleared: p(yes) for a noul question, the mass on levels
     1 and 2 for `generalizable`, and p(none) for `enforced`."""
+    if qid == "rule_supported" and method.endswith(("_missing", "_unmatched")):
+        return None  # A parser's uniform fallback is not an answer, even after calibration.
     if qid == "generalizable":
         if "1" not in probabilities and "2" not in probabilities:
             return None
@@ -316,7 +337,10 @@ def gate_probability(qid: str, probabilities: Mapping[str, float]) -> float | No
 
 
 def gate_probabilities(
-    probabilities: Mapping[str, Mapping[str, float]], gates: Sequence[str] = WRITE_GATES
+    probabilities: Mapping[str, Mapping[str, float]],
+    gates: Sequence[str] = WRITE_GATES,
+    *,
+    methods: Mapping[str, str] | None = None,
 ) -> dict[str, float]:
     """`{question id: probabilities}` from a verdict's answers, reduced to the write gates."""
     out: dict[str, float] = {}
@@ -324,7 +348,7 @@ def gate_probabilities(
         probs = probabilities.get(qid)
         if probs is None:
             continue
-        p = gate_probability(qid, probs)
+        p = gate_probability(qid, probs, method=(methods or {}).get(qid, ""))
         if p is not None:
             out[qid] = p
     return out
@@ -352,7 +376,10 @@ def derive_action(
             reasons.append(f"{key}: no answer")
             all_above = False
             continue
-        if abs(p - t[key]) < band:
+        if key == "rule_supported" and p == 0.5:
+            uncertain = True
+            reasons.append("rule_supported=0.50: no direction of support")
+        elif abs(p - t[key]) < band:
             uncertain = True
             reasons.append(f"{key}={p:.2f} within {band:.2f} of {t[key]:.2f}")
         elif p < t[key]:
