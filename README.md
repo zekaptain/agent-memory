@@ -1,19 +1,21 @@
 # agent-memory
 
-A local, shared, auditable memory database for AI coding agents, built on
-DuckDB 2.0 and served over Quack. Every agent harness writes to one
-append-only ledger, so you can ask why an agent gave an answer: what it was
-shown, where that came from, and which agent recorded it.
+A local memory database shared by your AI coding agents. It uses DuckDB 2.0
+and serves local clients over Quack.
 
-Status: Phases 0 and 1 are done: the storage layer, the capture path
-(`mem event`, `mem ingest`, the spool) and the in-session tools (`mem-mcp`).
-Installing hooks into each harness is Phase 2. [PLAN.md](PLAN.md) has the
-design, the DuckDB 2.0 behaviors it relies on, and the roadmap;
-[docs/phase-1-spec.md](docs/phase-1-spec.md) describes the capture pipeline
-and the MCP tools.
+The ledger keeps a history instead of overwriting records. Use it to find:
 
-Supported harnesses: Factory Droid, Mistral Vibe, and oh-my-pi (full hooks),
-Amp (plugin API), and JetBrains Junie (MCP only, recorded as partial capture).
+- What an agent was shown.
+- Where that information came from.
+- Which memories the agent used in its answer.
+
+Storage, capture commands, MCP tools, the relation graph, and judge
+experiments are implemented. Automatic hook installation is still planned.
+
+Start with the [quick start](#quick-start), then
+[import a session](#import-a-droid-session) or
+[connect your agent through MCP](#connect-your-agent-through-mcp).
+For experiments, use the [judge how-to](docs/judge-how-to.md).
 
 ## Requirements
 
@@ -25,142 +27,233 @@ Amp (plugin API), and JetBrains Junie (MCP only, recorded as partial capture).
 
 ## Quick start
 
+Run these commands from the repository root.
+
+### 1. Install dependencies and initialize the database
+
 ```sh
 uv sync
-uv run mem init      # creates ~/.agent-memory, a token, and the database
-uv run mem serve     # leave this running
+uv run mem init
 ```
 
-In another shell:
+This creates `~/.agent-memory`, a private token, and the database.
+`init` is safe to rerun with the server stopped. It applies pending
+migrations; it does not reset your data.
+
+### 2. Start the server
+
+```sh
+uv run mem serve
+```
+
+Leave this terminal open. The server runs until you stop it with Ctrl-C.
+
+### 3. Check the connection
+
+Open another terminal at the repository root:
 
 ```sh
 uv run mem smoke --live
 uv run mem sql "SELECT agent_id, capture_tier FROM agents"
 ```
 
-`mem smoke` with no flags builds a throwaway database, serves it on a free
-port, and runs the full end-to-end check, including writes. It never touches
-`~/.agent-memory`.
+The smoke check is read-only. The query lists the registered agents.
 
-## Commands
+To run a full end-to-end check without using your database, run
+`uv run mem smoke` without `--live`. It uses a throwaway home and a free port.
 
-| Command | What it does |
-|---------|--------------|
-| `mem init` | Create the data directory, token, and database, and apply migrations. Safe to re-run. |
-| `mem serve` | Serve the database over Quack on localhost until interrupted. Writes a Parquet snapshot every 24 hours (`--export-interval-hours`, 0 to disable) and keeps the newest 14 (`--export-keep`). A failed export is logged and retried, not fatal. |
-| `mem sql QUERY` | Run a query through the server. `-` reads the query from stdin. `--json` prints JSON. |
-| `mem sql --direct QUERY` | Open the database file instead of using the server (server must be stopped). Read-only unless you add `--write`. |
-| `mem migrate` | Apply pending migrations (server must be stopped). `--status` lists them. |
-| `mem export` | Write every table to Parquet under `export/<timestamp>/` and point `export/latest` at it. `--direct` works without the server; `--keep N` prunes older snapshots. |
-| `mem smoke` | End-to-end check of the server, policy, and client. `--live` checks the running server, read-only. |
-| `mem event --harness droid\|vibe` | Record one hook payload read as JSON from stdin. Exits 0 once the records are in the ledger or the spool. `--keep-raw` keeps the whole payload; `--record-pre-tool` also records pre-tool hooks. |
-| `mem ingest --harness droid --transcript PATH` | Import a Droid session transcript (`~/.factory/sessions/<cwd-slug>/<id>.jsonl`). Re-running is a no-op; `--since-key <message id>` skips what a hook already knows about; `--include-thinking` also records thinking blocks. |
-| `mem ingest --spool` | Replay records that were spooled while the server was down. `--purge-done DAYS` deletes old replayed files. |
-| `mem spool status` | Pending spool files and lines per harness. |
-| `mem-mcp` | The stdio MCP server (`recall`, `remember`, `cite`, `review`, `relate`, `graph`, `status`). Needs `AGENT_MEMORY_AGENT`; see below. |
-| `mem graph entities` | Every entity in the active relations of a scope, with type and mention count. |
-| `mem graph show ENTITY` | The relations within `--hops` of an entity (logged as a `graph_hop_v1` retrieval). |
-| `mem graph resolve` | Ask a local Ollama model which entity names are the same thing; `--apply` records the merges as supersedes history. |
+### Optional: install commands for use outside this repository
 
-Global options: `--home` (default `$AGENT_MEMORY_HOME`, then `~/.agent-memory`)
-and `--port` (default `$AGENT_MEMORY_PORT`, then 9494). `AGENT_MEMORY_HOST`
-may be `localhost`, `127.0.0.1`, or `::1`.
-
-## Capturing sessions
-
-Hooks pipe their stdin to `mem event`, and a turn-end hook imports the
-transcript, because no Droid or Vibe hook carries the assistant's reply:
+Hook scripts, MCP clients, and the login service need `mem` and `mem-mcp`
+on their `PATH`:
 
 ```sh
-# in a hook script
-mem event --harness droid
-# at turn end (Droid Stop hook); $TRANSCRIPT_PATH comes from the hook payload
-mem ingest --harness droid --transcript "$TRANSCRIPT_PATH"
+uv tool install --editable .
 ```
 
-Everything is redacted before it is written anywhere (API keys, tokens, JWTs,
-private keys, URL credentials, `password=...` style assignments, and the
-server token itself). Content over 16 KiB goes to `blobs/` and the event keeps
-a 4 KiB prefix plus the hash. When the server is down the records go to
-`spool/` and the command still exits 0; `mem serve` replays the spool when it
-starts, or run `mem ingest --spool`.
+After installation, you can use `mem` instead of `uv run mem`.
 
-Import an existing Droid session to see real data:
+## Choose a home and port
+
+Defaults work for normal use. To change them:
+
+| Setting | CLI option | Environment variable | Default |
+|---|---|---|---|
+| Data directory | `--home PATH` | `AGENT_MEMORY_HOME` | `~/.agent-memory` |
+| Server port | `--port N` | `AGENT_MEMORY_PORT` | `9494` |
+| Server host | None | `AGENT_MEMORY_HOST` | `localhost` |
+
+CLI options take precedence over environment variables. Put `--home` and
+`--port` before the subcommand:
 
 ```sh
-uv run mem ingest --harness droid --transcript ~/.factory/sessions/<cwd-slug>/<id>.jsonl
+uv run mem --home "$HOME/.agent-memory" --port 9494 smoke --live
+```
+
+Use the same settings for the server and its clients. A different home
+does not select a different port. The host must be `localhost`, `127.0.0.1`,
+or `::1`.
+
+Add `--help` to any command to see its options, for example
+`uv run mem ingest --help`.
+
+## Capture sessions
+
+| Harness | Capture available now |
+|---|---|
+| Factory Droid | Hook payloads and transcript import. |
+| Mistral Vibe | Hook payloads. Transcript import is not implemented yet. |
+| oh-my-pi and Amp | MCP tools only; capture adapters are planned. |
+| JetBrains Junie | MCP tools only, recorded as partial capture. |
+
+### Import a Droid session
+
+Keep the server running. Replace `PROJECT_SLUG` and `SESSION_ID` with an
+existing directory and file under `~/.factory/sessions`:
+
+```sh
+uv run mem ingest --harness droid \
+  --transcript "$HOME/.factory/sessions/PROJECT_SLUG/SESSION_ID.jsonl"
 uv run mem sql "SELECT * FROM session_summary"
 ```
 
-## In-session tools (mem-mcp)
+- Reimporting the same transcript does not duplicate events.
+- `--since-key MESSAGE_ID` skips entries already known to a hook.
+- `--include-thinking` also imports thinking blocks.
 
-Register `mem-mcp` as a stdio MCP server in each harness, with the harness
-named in the environment:
+### Wire capture into hooks
+
+Hook installation is not automatic. After installing the commands on your
+`PATH`, use these patterns in your Droid hook scripts:
+
+```sh
+# Read the hook's JSON payload from stdin.
+mem event --harness droid
+
+# In a Stop hook, import the assistant's reply from the transcript.
+# Read TRANSCRIPT_PATH from the hook payload before calling this.
+mem ingest --harness droid --transcript "$TRANSCRIPT_PATH"
+```
+
+Neither Droid nor Vibe hooks carry the assistant's reply. Droid transcript
+import fills that gap; Vibe transcript support is still pending.
+
+For `mem event`, use `--keep-raw` to retain the full payload or
+`--record-pre-tool` to record pre-tool hooks as well.
+See the [capture spec](docs/phase-1-spec.md) for payload and adapter details.
+
+### Recover queued records
+
+If the server is down, capture saves records under `spool/` instead.
+The command exits 0 once the records are saved in the ledger or the spool.
+
+Starting `mem serve` replays pending records. You can also check and replay
+them yourself:
+
+```sh
+uv run mem spool status
+uv run mem ingest --spool
+```
+
+Add `--purge-done DAYS` to the replay command to remove old replayed files.
+
+Before saving, capture redacts known secret patterns, including API keys,
+tokens, JWTs, private keys, URL credentials, and password assignments.
+Content over 16 KiB goes to `blobs/`; the event keeps a 4 KiB prefix and hash.
+
+## Connect your agent through MCP
+
+Install `mem-mcp` on the harness's `PATH` using
+`uv tool install --editable .`, then add a stdio server to its MCP
+configuration. For example:
 
 ```json
 {
   "mcpServers": {
     "agent-memory": {
       "command": "mem-mcp",
-      "env": {"AGENT_MEMORY_AGENT": "factory-droid", "AGENT_MEMORY_PROJECT": "my-project"}
+      "env": {
+        "AGENT_MEMORY_AGENT": "factory-droid",
+        "AGENT_MEMORY_PROJECT": "my-project"
+      }
     }
   }
 }
 ```
 
-`AGENT_MEMORY_AGENT` is one of `factory-droid`, `mistral-vibe`, `oh-my-pi`,
-`amp`, `jetbrains-junie`. `AGENT_MEMORY_PROJECT` defaults to the working
-directory's name and sets the default recall scope. `AGENT_MEMORY_SESSION`
-(the harness session id) joins the tools to the session the hooks record;
-without it the server opens its own session, marked `partial`.
+Set the environment for your harness:
 
-Tools: `recall(query, scopes, limit, types)` ranks active memories with FTS
-and logs the retrieval; `remember(content, type, ...)` stores a memory (tool
-derived ones start quarantined; identical content is confirmed, not
-duplicated); `cite(retrieval_id, memory_ids)` records what an answer used;
-`review(action, memory_id, reason)` retires, approves, quarantines, confirms,
-or flags a contradiction; `status()` reports reachability and the spool. When
-the server is down, `recall` returns `degraded: true` and writes are queued to
-the spool.
+| Variable | Use |
+|---|---|
+| `AGENT_MEMORY_AGENT` | Required. One of `factory-droid`, `mistral-vibe`, `oh-my-pi`, `amp`, or `jetbrains-junie`. |
+| `AGENT_MEMORY_PROJECT` | Default recall scope. Defaults to the working directory's name. |
+| `AGENT_MEMORY_SESSION` | Harness session ID, when available. Joins MCP activity to the captured session. Without it, MCP creates a separate session marked `partial`. |
+
+If you changed the database home or port, include `AGENT_MEMORY_HOME` and
+`AGENT_MEMORY_PORT` in the MCP environment too.
+
+| Tool | What it does |
+|---|---|
+| `recall` | Search active memories with full-text ranking and log what was retrieved. |
+| `remember` | Store a memory. Identical content is confirmed, not duplicated. |
+| `cite` | Record which retrieved memories an answer used. |
+| `review` | Approve, quarantine, retire, confirm, or flag a contradiction. |
+| `relate` | Record a relation between two entities. |
+| `graph` | Retrieve relations around an entity. |
+| `status` | Check the server connection and spool. |
+
+Memories derived from tools start quarantined. If the server is down,
+`recall` returns `degraded: true` and writes are queued to the spool.
 
 ## Relations and the graph
 
-`relate(subject, predicate, object, ...)` records one typed edge, for example
-`("payments-api", "owned by", "Dana")`. It is stored as an ordinary `fact`
-memory: the key is the normalized triple (`payments-api|owned by|dana`), the
-display names, optional entity types, and merged aliases live in
-`metadata.graph`, and `memory_sources` points at the events it came from. The
-same triple in the same scope is confirmed, not duplicated, and tool-derived
-edges start quarantined like any other tool memory. There are no graph tables;
-the graph is rebuilt from metadata at query time.
+Use the MCP `relate` tool to record facts such as
+`("payments-api", "owned by", "Dana")`.
 
-`graph(entity, hops)` walks the active edges outward from an entity with a
-recursive CTE (1 to 3 hops, undirected, case- and punctuation-insensitive) and
-returns them as items and as `(subject) --[predicate]--> (object)` triples, plus
-a `retrieval_id` for `cite`. Every walk is logged in `retrievals` with
-strategy `graph_hop_v1`, including misses, so `why_answer` covers graph-backed
-answers the same way it covers text recall.
+### Browse relations
 
-Entity resolution is append-only. `mem graph resolve --scope <project>` lists
-the entities in a scope, asks a local Ollama model (default `qwen3:8b`, set
-`--model` and `--host`) to cluster surface forms per entity type, and prints
-the proposed merges. With `--apply`, each merge supersedes every relation that
-mentions the alias with the same relation under the canonical name (the alias
-is kept in the new row's metadata and its sources are copied), or retires the
-alias relation when the canonical one already exists. Names the model drops stay
-as they are; nothing is rewritten in place, and a bad merge is undone by
-superseding again.
+Replace `my-project` and `payments-api` with your scope and entity:
 
 ```sh
 uv run mem graph entities --scope my-project
 uv run mem graph show payments-api --hops 2 --scope my-project
-uv run mem graph resolve --scope my-project            # proposal only
+```
+
+Traversal follows active relations in either direction, from 1 to 3 hops.
+Name matching ignores case and punctuation. Results include a `retrieval_id`
+for `cite`; even searches with no results are logged for `why_answer`.
+
+### Merge names that refer to the same entity
+
+Have Ollama running with `qwen3:8b` installed. Use `--model` and `--host`
+to choose a different model or local endpoint.
+
+First, preview the proposed merges:
+
+```sh
+uv run mem graph resolve --scope my-project
+```
+
+After reviewing the proposal, rerun with `--apply` to record merges:
+
+```sh
 uv run mem graph resolve --scope my-project --apply
 ```
 
+Nothing is rewritten in place:
+
+- Relations are ordinary `fact` memories, not separate graph tables.
+  Repeating the same triple in the same scope confirms it.
+- A merge supersedes relations under the canonical name, preserving aliases
+  and sources. If the canonical relation exists, it retires the duplicate.
+- Unmatched names stay unchanged. Correct a bad merge by superseding again.
+
+See [PLAN.md](PLAN.md#data-model-migration-0001) for storage details.
+
 ## Asking why
 
-Every answer event can be traced back through the views:
+Use these queries to inspect the ledger. Replace `<event id>` with the
+answer event ID you want to trace:
 
 ```sh
 # Recent sessions, with capture tier and counts
@@ -175,16 +268,20 @@ uv run mem sql "SELECT via, rank, memory_content, status_at_recall, memory_statu
 uv run mem sql "SELECT * FROM memory_history ORDER BY ts DESC LIMIT 20"
 ```
 
-For notebooks or long analysis, query the Parquet export. It needs neither the
-server nor the token:
+Add `--json` to `mem sql` for JSON output. Use `-` as the query to read SQL
+from stdin.
+
+If you have the DuckDB CLI installed, you can query an export without the
+server or token. First create the export while the server is running:
 
 ```sh
+uv run mem export
 duckdb -c "FROM '$HOME/.agent-memory/export/latest/events.parquet' LIMIT 5"
 ```
 
 ## Data directory
 
-```
+```text
 ~/.agent-memory/          mode 0700
   memory.duckdb           the database; only mem serve opens it
   token                   Quack bearer token, mode 0600
@@ -194,87 +291,144 @@ duckdb -c "FROM '$HOME/.agent-memory/export/latest/events.parquet' LIMIT 5"
   blobs/<xx>/<sha256>.txt event content over 16 KiB, content-addressed
 ```
 
+## Backups and maintenance
+
+The running server automatically writes a Parquet snapshot every 24 hours
+and keeps the newest 14. Failed exports are logged and retried.
+
+| Task | Command or option |
+|---|---|
+| Export now | `uv run mem export` |
+| Keep only N snapshots after export | `uv run mem export --keep N` |
+| Change the automatic interval | `mem serve --export-interval-hours N` (`0` disables it) |
+| Change automatic retention | `mem serve --export-keep N` |
+
+Exports go to `export/<timestamp>/`; `export/latest` points to the newest.
+
+Stop the server before checking or applying migrations:
+
+```sh
+uv run mem migrate --status
+uv run mem migrate
+```
+
+The server must also be stopped for direct file access:
+
+- `mem sql --direct QUERY` reads the file without the server.
+  Add `--write` only when you intend to write.
+- `mem export --direct` exports without the server.
+
 ## Run the server at login (macOS)
 
+Stop any manually started server first. Run these steps from the repository root.
+
+1. Install the commands and initialize the home:
+
+   ```sh
+   uv tool install --editable .
+   mem init
+   ```
+
+2. Create the login service file:
+
+   ```sh
+   mkdir -p "$HOME/Library/LaunchAgents"
+   sed -e "s|__MEM__|$(command -v mem)|g" -e "s|__HOME__|$HOME|g" \
+       scripts/com.agent-memory.serve.plist \
+       > "$HOME/Library/LaunchAgents/com.agent-memory.serve.plist"
+   ```
+
+3. Start the service and check it:
+
+   ```sh
+   launchctl bootstrap "gui/$(id -u)" \
+       "$HOME/Library/LaunchAgents/com.agent-memory.serve.plist"
+   mem smoke --live
+   ```
+
+Logs go to `~/.agent-memory/serve.log`. To stop the service:
+
 ```sh
-uv tool install --editable .
-mem init
-sed -e "s|__MEM__|$(command -v mem)|g" -e "s|__HOME__|$HOME|g" \
-    scripts/com.agent-memory.serve.plist > ~/Library/LaunchAgents/com.agent-memory.serve.plist
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.agent-memory.serve.plist
-mem smoke --live
+launchctl bootout "gui/$(id -u)/com.agent-memory.serve"
 ```
 
-Logs go to `~/.agent-memory/serve.log`. To stop the service, for example
-before `mem migrate`:
-
-```sh
-launchctl bootout gui/$(id -u)/com.agent-memory.serve
-```
+For a migration, stop the service, run `mem migrate`, then repeat step 3.
 
 ## Security
 
-- The server only listens on localhost and requires the token. Traffic is
-  plain HTTP on the loopback interface; the token is never written to settings
-  or error messages.
-- Clients may only read and insert into ledger tables. The server's policy
-  rejects `UPDATE`, `DELETE`, DDL, settings changes, file access, comments, and
-  multiple statements in one text.
-- Every table is append-only, enforced by triggers. Corrections are new rows: a
-  superseding memory or a `retire` action.
-- Memories derived from tool output start quarantined until approved.
-- Secrets are redacted in the capture pipeline before anything is written to
-  the spool or the ledger. `events.redactions` counts what was removed.
-- The recall query is the one piece of agent text that enters SQL; it is
-  literal-quoted and the policy strips literals before classifying the
-  statement, so it cannot change what the statement does.
+- The server listens only on loopback and requires a private token.
+  Traffic is plain HTTP; the token is not printed in settings or errors.
+- Clients can read and insert ledger records, not update or delete them.
+  The policy also blocks schema changes, settings changes, file access,
+  comments, and multiple SQL statements in one text.
+- Triggers enforce the append-only ledger. Corrections use superseding
+  memories or review actions.
+- Tool-derived memories remain quarantined until approved.
+- Capture redacts secrets before writing to the ledger, blobs, or spool.
+  `events.redactions` counts removals.
+- Recall text is literal-quoted before entering SQL. The policy strips
+  literals before checking the statement.
+
+## Judge experiments
+
+See [Running judge experiments](docs/judge-how-to.md) for the command order,
+options, model choices, and how to resume a run. Experiments use a separate
+home and port; drafted lessons never enter the memory ledger.
+
+- The default labeling interface is full-screen and blinded.
+  It requires Go 1.26.4 or newer; its first build may need network access.
+- Add `--plain` to `judge label` for numbered prompts without Go or cursor
+  controls. Pipes and `TERM=dumb` select this mode automatically.
+- Both interfaces use the same labeling, resume, and edit-history rules.
+  Never label against the production home.
 
 ## Development
 
-### Labeling judge experiments
-
-`uv run mem --home /path/to/experiment judge label --run RUN` opens a
-full-screen, blinded review. Use arrows and Enter to answer, Page Up/Down
-to scroll evidence, `b` to go back, `p` for the full projection, and `?`
-for the guide. Notes are literal text; Enter accepts and Esc cancels.
-Review each item's summary before saving. Skip and quit never save the
-current item's unfinished answers.
-
-The interactive interface needs Go 1.26.4 or newer (pinned in
-`src/agent_memory/judge/label_ui/go.mod`). Its pinned dependencies may
-need network access on the first build. Sources ship in the Python
-wheel and source distribution. The first launch with work to label
-builds a private cached helper; unchanged launches reuse it. The cache
-is under `~/Library/Caches/agent-memory/label-ui` on macOS and
-`${XDG_CACHE_HOME:-~/.cache}/agent-memory/label-ui` on Linux. Source,
-dependency, protocol, platform, or Go toolchain changes trigger a new
-build. No experiment text is passed in command arguments or logs.
-
-Use `judge label --run RUN --plain` for numbered, linear prompts with
-no Go dependency or cursor controls. Pipes and `TERM=dumb` select plain
-mode automatically. Enter a choice number or a navigation command
-(`back`, `evidence`, `help`, `redo`, `skip`, `quit`). In the note input,
-letters are text and `/cancel` cancels the edit. Both interfaces share
-the same Python branching, blinding, resume, backfill, review, and
-label-history rules. Other judge commands still use Rich.
-
-Never label against the production home. See
-`docs/judge-experiment-spec.md` for experiment setup.
-
 ### Checks
+
+From the repository root:
 
 ```sh
 uv sync
 uv run pytest            # unit, schema, policy, and end-to-end Quack tests
 uv run ruff check .      # lint
-uv run ruff format .     # format
+uv run ruff format --check .
 uv run pyrefly check     # type check
 uv run mem smoke         # end-to-end check against a throwaway server
 ```
 
-For the Go labeling helper, run `gofmt -l .`, `go test ./...`,
-`go vet ./...`, and `go build -mod=readonly -o /tmp/agent-memory-label-ui .`
-from `src/agent_memory/judge/label_ui`.
+To fix formatting, run `uv run ruff format` with the paths of files you changed.
 
-Schema changes go in a new file under `src/agent_memory/migrations/`
-(`NNNN_name.sql`). Applied migrations are checksummed and must not be edited.
+For the Go labeling helper, start at the repository root:
+
+```sh
+cd src/agent_memory/judge/label_ui
+gofmt -l .
+go test ./...
+go vet ./...
+go build -mod=readonly -o /tmp/agent-memory-label-ui .
+```
+
+### Labeling helper cache
+
+The Python wheel and source distribution include the Go sources.
+The first labeling session with pending work builds a private cached helper:
+
+- macOS: `~/Library/Caches/agent-memory/label-ui`
+- Linux: `${XDG_CACHE_HOME:-~/.cache}/agent-memory/label-ui`
+
+Unchanged launches reuse it. Source, dependency, protocol, platform, or
+Go toolchain changes trigger a rebuild. Experiment text is not passed
+in command arguments or logs.
+
+### Schema changes
+
+Add a new `NNNN_name.sql` file under `src/agent_memory/migrations/`.
+Applied migrations are checksummed and must not be edited.
+
+## Further reading
+
+- [PLAN.md](PLAN.md): architecture, DuckDB behavior, and roadmap.
+- [Capture spec](docs/phase-1-spec.md): payloads, adapters, spool, and MCP tools.
+- [Judge how-to](docs/judge-how-to.md): step-by-step experiment commands.
+- [Judge experiment spec](docs/judge-experiment-spec.md): design and historical runs.

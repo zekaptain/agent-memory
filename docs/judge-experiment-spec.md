@@ -8,6 +8,9 @@ Builds on Phase 0 and Phase 1 (`PLAN.md`, `docs/phase-1-spec.md`, migration
 that decides whether a decision model earns a place there. The experiment
 runs against a separate home and never touches the production ledger.
 
+For setup commands and the step-by-step workflow, see
+[Running judge experiments](judge-how-to.md).
+
 ## Goal
 
 Answer one question with this project's own sessions: over a state
