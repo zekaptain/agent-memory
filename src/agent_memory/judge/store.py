@@ -133,20 +133,38 @@ class RunStore:
         if not path.exists():
             return []
         rows = []
-        with path.open(encoding="utf-8") as fh:
-            for line in fh:
+        with path.open("rb") as fh:
+            for number, line in enumerate(fh, start=1):
                 if line.strip():
-                    rows.append(json.loads(line))
+                    try:
+                        row = json.loads(line.decode("utf-8"))
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        # Only an unterminated final line can be a torn append.
+                        if not line.endswith(b"\n"):
+                            break
+                        raise JudgeError(f"{path}: invalid JSON on line {number}") from None
+                    if not isinstance(row, dict):
+                        raise JudgeError(f"{path}: expected a JSON object on line {number}")
+                    rows.append(row)
         return rows
 
     @staticmethod
     def write_jsonl(path: Path, rows: Iterable[Mapping[str, Any]], *, append: bool = False) -> int:
         path.parent.mkdir(parents=True, exist_ok=True)
         n = 0
-        with path.open("a" if append else "w", encoding="utf-8") as fh:
+        target = path if append else path.with_name(path.name + ".tmp")
+        if append:
+            stream = path.open("a", encoding="utf-8")
+        else:
+            fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            os.fchmod(fd, 0o600)
+            stream = os.fdopen(fd, "w", encoding="utf-8")
+        with stream as fh:
             for row in rows:
                 fh.write(json.dumps(row, ensure_ascii=False, sort_keys=True, default=str) + "\n")
                 n += 1
+        if not append:
+            os.replace(target, path)
         return n
 
     def read_drafts(self) -> dict[str, list[dict[str, Any]]]:
