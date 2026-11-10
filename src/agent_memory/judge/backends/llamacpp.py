@@ -7,10 +7,10 @@ report lays them side by side. Only an `llm:` backend can be the reference judge
 
 from __future__ import annotations
 
-import os
 from collections.abc import Sequence
 from typing import Any
 
+from ...endpoints import LLAMACPP_HOST
 from ..questions import Question
 from ..store import JudgeError
 from . import http
@@ -24,9 +24,6 @@ from .llm import (
     judge_prompt,
     judge_with_room,
 )
-
-# 9931 is llama-server's own default port.
-LLAMACPP_HOST = os.environ.get("LLAMACPP_HOST", "http://localhost:9931").rstrip("/")
 
 
 class LlamaCppJudgeBackend:

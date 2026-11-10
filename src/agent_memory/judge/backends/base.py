@@ -3,17 +3,17 @@
 from __future__ import annotations
 
 import math
-import os
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from typing import Any, Protocol
 
+from ... import endpoints
 from ..lesson import Claim
 from ..questions import Question
 from ..store import JudgeError
 
-REMOTE_ENV = "AGENT_MEMORY_JUDGE_ALLOW_REMOTE"
+REMOTE_ENV = endpoints.REMOTE_ENV
 
 
 @dataclass
@@ -109,14 +109,14 @@ def softmax(logits: Mapping[str, float]) -> dict[str, float]:
 
 
 def remote_allowed() -> bool:
-    return os.environ.get(REMOTE_ENV, "") == "1"
+    return endpoints.remote_allowed()
 
 
 def require_remote(what: str) -> None:
-    if not remote_allowed():
-        raise JudgeError(
-            f"{what} sends redacted state to a hosted service. Set {REMOTE_ENV}=1 to allow it."
-        )
+    try:
+        endpoints.require_egress("https://hosted.invalid", what)
+    except endpoints.EgressError as exc:
+        raise JudgeError(str(exc)) from None
 
 
 _SPEC = re.compile(r"^(?P<kind>[a-z]+)(?::(?P<arg>.+))?$")

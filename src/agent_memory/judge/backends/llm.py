@@ -7,18 +7,17 @@ calibrated; measuring it against the decision backends is part of the experiment
 from __future__ import annotations
 
 import json
-import os
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from ...endpoints import OLLAMA_HOST
 from ..questions import Question
 from ..store import JudgeError
 from . import http
 from .base import Answer, JudgeInput, answer_from_probabilities
 
-OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
 MAX_JUDGE_TOKENS = 4096
 # Thinking shares the budget with the answer. A judge cut off mid-thought is asked once more
 # with room before thinking is switched off: at temperature 0 the same budget stops at the

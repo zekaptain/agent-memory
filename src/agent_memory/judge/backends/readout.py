@@ -7,16 +7,15 @@ backend falls back to sampling and records which method produced each answer.
 
 from __future__ import annotations
 
-import os
 import string
 from collections.abc import Sequence
 from typing import Any
 
+from ...endpoints import OLLAMA_HOST
 from ..questions import Question
 from . import http
 from .base import Answer, JudgeInput, answer_from_probabilities, softmax
 
-OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
 LETTERS = string.ascii_uppercase
 SAMPLES = 8
 

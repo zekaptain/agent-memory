@@ -6,6 +6,7 @@ import json
 
 import pytest
 
+from agent_memory import endpoints
 from agent_memory.cli import main
 from agent_memory.db import sql_literal
 from agent_memory.graph import Relation, hop_sql, normalize_entity, relations_sql
@@ -21,7 +22,6 @@ from agent_memory.graph.resolve import (
     plan_merges,
     propose,
 )
-from agent_memory.judge.backends import http as judge_http
 from agent_memory.mcp_server import MemoryTools, ToolError
 
 # model
@@ -165,7 +165,7 @@ def test_ollama_resolver_posts_json_and_reports_truncation(monkeypatch):
         seen.append({"url": url, **body})
         return {"message": {"content": '{"clusters": []}'}}, 1.0
 
-    monkeypatch.setattr(judge_http, "post_json", post)
+    monkeypatch.setattr(endpoints, "post_json", post)
     resolver = OllamaResolver("tiny", host="http://ollama.test")
     assert resolver.clusters("PERSON", [_entity("A"), _entity("B")]) == [
         Cluster("A", ("A",)),
@@ -177,7 +177,7 @@ def test_ollama_resolver_posts_json_and_reports_truncation(monkeypatch):
     assert "- A: A did a thing" in seen[0]["messages"][0]["content"]
 
     monkeypatch.setattr(
-        judge_http,
+        endpoints,
         "post_json",
         lambda *a, **k: ({"message": {"content": "{"}, "done_reason": "length"}, 1.0),
     )
@@ -460,7 +460,7 @@ def test_mem_graph_cli_entities_show_and_resolve(live_cfg, monkeypatch, capsys):
             content = {"clusters": []}
         return {"message": {"content": json.dumps(content)}}, 1.0
 
-    monkeypatch.setattr(judge_http, "post_json", post)
+    monkeypatch.setattr(endpoints, "post_json", post)
     code, out = mem("resolve", "--scope", "cli", "--model", "stub")
     assert code == 0
     assert "A. Chen  ->  Alice Chen  (PERSON)" in out

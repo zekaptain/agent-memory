@@ -27,17 +27,17 @@ from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from ..endpoints import LLAMACPP_HOST, OLLAMA_HOST
 from .backends import http
 from .backends.base import require_remote
 from .backends.jev import KEY_ENV
-from .backends.llamacpp import LLAMACPP_HOST, disable_thinking
+from .backends.llamacpp import disable_thinking
 from .backends.llm import out_of_tokens, parse_judge_json
 from .lesson import LESSON_KINDS, LESSON_SCHEMA, Lesson, parse_lesson, render_lesson
 from .store import JudgeError
 
 DRAFTER_VERSION = "drafter_v3"
 DRAFTER_KINDS = ("ollama", "llamacpp", "openrouter")
-OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 MAX_DRAFT_TOKENS = 700
 # A model that writes long claims, or reasons before it answers, can spend the whole

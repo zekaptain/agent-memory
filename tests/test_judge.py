@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 
+from agent_memory import endpoints
 from agent_memory.adapters.droid import DroidAdapter
 from agent_memory.capture import ids
 from agent_memory.capture.redact import Redactor
@@ -1349,7 +1350,7 @@ def test_http_status_error_exposes_code(monkeypatch):
             "http://localhost/test", 422, "bad schema", Message(), io.BytesIO(b"unsupported")
         )
 
-    monkeypatch.setattr(judge_http.urllib.request, "urlopen", reject)
+    monkeypatch.setattr(endpoints.urllib.request, "urlopen", reject)
     with pytest.raises(judge_http.HttpStatusError, match="HTTP 422") as error:
         judge_http.post_json("http://localhost/test", {})
     assert error.value.code == 422
@@ -2011,7 +2012,7 @@ def test_post_json_retries_one_timeout(monkeypatch):
         return Response()
 
     monkeypatch.setattr(urllib.request, "urlopen", urlopen)
-    parsed, _ = judge_http.post_json("http://x/api", {"a": 1}, timeout=5)
+    parsed, _ = judge_http.post_json("http://localhost/api", {"a": 1}, timeout=5)
     assert parsed == {"ok": True}
     assert len(calls) == 2
     calls.clear()
@@ -2019,7 +2020,7 @@ def test_post_json_retries_one_timeout(monkeypatch):
         urllib.request, "urlopen", lambda r, timeout: (_ for _ in ()).throw(TimeoutError())
     )
     with pytest.raises(JudgeError, match="timed out after 5s"):
-        judge_http.post_json("http://x/api", {}, timeout=5)
+        judge_http.post_json("http://localhost/api", {}, timeout=5)
 
 
 def test_drafter_caps_output_and_draft_items_skips_bad_items(tmp_path, monkeypatch):

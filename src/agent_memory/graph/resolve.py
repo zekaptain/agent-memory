@@ -9,19 +9,17 @@ are shown before they are applied, and any name the model leaves out keeps its o
 from __future__ import annotations
 
 import json
-import os
 import re
 from collections import Counter, defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from .. import endpoints
 from ..db import AgentMemoryError
-from ..judge.backends import http
 from .model import Relation, normalize_entity
 from .sql import ROW
 
-OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
 DEFAULT_MODEL = "qwen3:8b"
 BLOCK_SIZE = 60
 MAX_SENTENCES = 3
@@ -195,9 +193,9 @@ class Resolver(Protocol):
 
 
 class OllamaResolver:
-    """Clusters with a local Ollama model, so nothing leaves the machine."""
+    """Clusters with Ollama; non-loopback hosts require the shared egress opt-in."""
 
-    def __init__(self, model: str = DEFAULT_MODEL, *, host: str = OLLAMA_HOST) -> None:
+    def __init__(self, model: str = DEFAULT_MODEL, *, host: str = endpoints.OLLAMA_HOST) -> None:
         self.model = model
         self.host = host
         self.name = f"ollama:{model}"
@@ -211,7 +209,7 @@ class OllamaResolver:
             "messages": [{"role": "user", "content": cluster_prompt(entity_type, entities)}],
         }
         try:
-            response, _ = http.post_json(f"{self.host}/api/chat", body)
+            response, _ = endpoints.post_json(f"{self.host}/api/chat", body)
         except AgentMemoryError as exc:
             raise ResolveError(str(exc)) from None
         content = str((response.get("message") or {}).get("content") or "")

@@ -8,12 +8,12 @@ from typing import Annotated
 
 import typer
 
+from .. import endpoints
 from ..config import Config, load_config
 from ..mcp_server.tools import MemoryTools
 from .resolve import (
     BLOCK_SIZE,
     DEFAULT_MODEL,
-    OLLAMA_HOST,
     Merge,
     OllamaResolver,
     collect_entities,
@@ -110,7 +110,7 @@ def resolve(
     model: Annotated[
         str, typer.Option(help="Ollama model that proposes clusters.")
     ] = DEFAULT_MODEL,
-    host: Annotated[str, typer.Option(help="Ollama host.")] = OLLAMA_HOST,
+    host: Annotated[str, typer.Option(help="Ollama host.")] = endpoints.OLLAMA_HOST,
     block_size: Annotated[int, typer.Option(min=2)] = BLOCK_SIZE,
     apply: Annotated[
         bool, typer.Option("--apply", help="Record the merges. Without it, only propose.")
