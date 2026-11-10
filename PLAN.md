@@ -371,10 +371,17 @@ until usefulness and withdrawal/backflow can be measured.
   ...`, `password: ...`) and does hit code and config text in tool calls. The
   count lands in `events.redactions`; loosen the rule only with new fixture
   cases.
-- Droid hook `message_id` is assumed to equal the transcript entry `id`. Until
-  Phase 2 verifies it, hooks and transcript ingest may record the same prompt
-  twice under different ids; the Phase 2 hook set only captures what the
-  transcript lacks.
+- Droid hooks and transcript import already overlap on prompts and tools.
+  The hook's `UserPromptSubmit:` prefix, not a demonstrated difference between
+  `message_id` and transcript entry `id`, caused duplicate prompts.
+  `src/agent_memory/capture/identity.py` now owns the key rules and removes
+  that prefix for keyed prompts. Synthetic overlap and spool replay tests
+  pass, but live verification of the two harness IDs is still pending.
+  No hooks were installed for this implementation. Before merge, capture
+  one synthetic `UserPromptSubmit` payload with a temporary local hook,
+  compare its `message_id` with the matching transcript entry `id`, and
+  record only the equality result here. If they differ, adjust `prompt_key`
+  and its regressions before merge. Do not commit the raw hook payload.
 
 ## Phase 0 audit (2026-10-25)
 

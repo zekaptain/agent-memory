@@ -97,6 +97,24 @@ Use the terms returned, captured in context where observed, and declared
 used. These are evidence records, not access to the model's reasoning.
 Placeholders do not count as actual captured replies.
 
+### Cross-session bindings, as built (2026-11-09)
+
+MCP need not share the harness session. A captured `cite` result carries the
+placeholder UUID returned to that agent, so reconciliation looks up that
+placeholder without a session filter. Calls, results, retrieval evidence,
+and candidate replies still require the transcript session. Evidence stores
+`placeholder_session_id`; explicit future answer IDs use the same rule.
+Late citations revisit persisted observations by returned placeholder ID.
+
+Migration `0006_cross_session_answer_bindings` removes session equality from
+the binding validation trigger without rewriting events or old bindings.
+It preserves the placeholder, actual-reply, and linear-correction checks.
+Audit resolves the same bindings and checks retrieval ownership against
+the original context-link endpoint, rather than requiring a captured reply
+to live in the MCP session. Raw context links and historical provenance stay
+unchanged. Missing, ambiguous, or out-of-session transcript evidence does
+not become a successful binding.
+
 ## Judge version boundary
 
 New runs use `questions_v4` and `labels_v4`. Structured lessons and per-claim
