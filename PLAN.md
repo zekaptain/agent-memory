@@ -376,12 +376,10 @@ until usefulness and withdrawal/backflow can be measured.
   `message_id` and transcript entry `id`, caused duplicate prompts.
   `src/agent_memory/capture/identity.py` now owns the key rules and removes
   that prefix for keyed prompts. Synthetic overlap and spool replay tests
-  pass, but live verification of the two harness IDs is still pending.
-  No hooks were installed for this implementation. Before merge, capture
-  one synthetic `UserPromptSubmit` payload with a temporary local hook,
-  compare its `message_id` with the matching transcript entry `id`, and
-  record only the equality result here. If they differ, adjust `prompt_key`
-  and its regressions before merge. Do not commit the raw hook payload.
+  pass. B6 live check (2026-11-09): for one synthetic prompt captured by a
+  temporary local hook, `message_id` equaled the matching transcript entry
+  `id`. No key-rule change was needed. Raw hook payloads and transcripts
+  stay outside the repository; the live ledger was not used.
 
 ## Phase 0 audit (2026-10-25)
 

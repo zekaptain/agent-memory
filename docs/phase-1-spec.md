@@ -194,7 +194,7 @@ compaction, and notes. `capture.identity` gives hook and transcript prompts
 the same bare message ID and tools the same tool-use ID. The former
 `UserPromptSubmit:` prefix caused duplicate prompts even when the harness
 IDs matched. Live comparison of hook `message_id` and transcript entry `id`
-is still a pre-merge check, not a claim established by synthetic tests.
+is recorded in [PLAN.md](../PLAN.md), separately from the synthetic tests.
 
 **Vibe**: `~/.vibe/logs/session/` exists locally but holds no transcript yet.
 The adapter ships as a stub that raises `UnsupportedTranscript` with the path,
