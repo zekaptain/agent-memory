@@ -479,7 +479,14 @@ def judge_item(
     return judge_draft(backend, item, state, draft, thresholds, stage_a, run_id=run_id)
 
 
-def decision_record(verdict: dict[str, Any], item: dict[str, Any], run_created: str) -> Record:
+def decision_record(
+    verdict: dict[str, Any],
+    item: dict[str, Any],
+    run_created: str,
+    *,
+    harness_session_id: str | None = None,
+    project: str = "judge-experiment",
+) -> Record:
     """The ledger copy of a verdict: distributions and provenance, never the state text."""
     answers = {
         qid: {k: a[k] for k in ("value", "probabilities", "confidence", "method")}
@@ -519,7 +526,7 @@ def decision_record(verdict: dict[str, Any], item: dict[str, Any], run_created: 
     }
     return Record(
         agent_id=JUDGE_AGENT,
-        harness_session_id=f"judge-{verdict['run_id']}",
+        harness_session_id=harness_session_id or f"judge-{verdict['run_id']}",
         kind="decision",
         ts=now(),
         # Keyed on every input, so judging the same turn again with a draft (or a new
@@ -538,7 +545,7 @@ def decision_record(verdict: dict[str, Any], item: dict[str, Any], run_created: 
         content=f"judge {verdict['backend']}: {verdict['action']} for turn {item['turn_event_id']}",
         payload=payload,
         session=SessionInfo(
-            project="judge-experiment",
+            project=project,
             scope="judge",
             started_at=datetime.fromisoformat(run_created),
             metadata={"run_id": verdict["run_id"]},

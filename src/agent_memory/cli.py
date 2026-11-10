@@ -15,6 +15,7 @@ import typer
 
 from . import __version__, audit
 from .adapters import HARNESS_NAMES, UnsupportedTranscript, get_adapter
+from .admission.cli import admit_app
 from .capture.pipeline import Delivery, deliver, replay_spool
 from .capture.spool import Spool
 from .config import Config, ConfigError, load_config
@@ -454,6 +455,7 @@ spool_app = typer.Typer(help="Inspect the spool of records waiting for the serve
 app.add_typer(spool_app, name="spool")
 app.add_typer(judge_app, name="judge")
 app.add_typer(graph_app, name="graph")
+app.add_typer(admit_app, name="admit")
 
 
 @spool_app.command("status")
