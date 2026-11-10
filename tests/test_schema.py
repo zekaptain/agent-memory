@@ -54,6 +54,7 @@ def test_agents_are_seeded_with_capture_tiers(con):
         ("factory-droid", "A"),
         ("human", "A"),
         ("jetbrains-junie", "C"),
+        ("judge", "A"),
         ("mistral-vibe", "A"),
         ("oh-my-pi", "A"),
     ]

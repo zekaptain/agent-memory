@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import re
+
 import pytest
+
+from agent_memory.db import WRITABLE_TABLES
 
 ALLOWED = [
     "SELECT 1",
@@ -22,7 +26,6 @@ ALLOWED = [
     "insert into context_links select * from s",
     "INSERT INTO memory_replacements SELECT * FROM stage",
     "INSERT INTO memory_deduplications SELECT * FROM stage",
-    "INSERT INTO memory_correction_work SELECT * FROM stage",
     "INSERT INTO memory_correction_closures SELECT * FROM stage",
     "INSERT INTO capture_observations SELECT * FROM stage",
     "INSERT INTO answer_bindings SELECT * FROM stage",
@@ -36,6 +39,7 @@ ALLOWED = [
 ]
 
 DENIED = [
+    "INSERT INTO memory_correction_work SELECT * FROM stage",
     "UPDATE events SET content = ''",
     "DELETE FROM events",
     "DROP TABLE events",
@@ -95,3 +99,12 @@ def test_allowed(con, sql):
 @pytest.mark.parametrize("sql", DENIED)
 def test_denied(con, sql):
     assert authorize(con, sql) is False
+
+
+def test_insert_policy_matches_client_writable_tables(con):
+    definition = con.execute(
+        "SELECT macro_definition FROM duckdb_functions() WHERE function_name = 'mem_authorize'"
+    ).fetchone()[0]
+    match = re.search(r"insert into \(main\\\.\)\?\(([^)]+)\)", definition)
+    assert match is not None, "mem_authorize insert allow-list was not found"
+    assert set(match[1].split("|")) == WRITABLE_TABLES

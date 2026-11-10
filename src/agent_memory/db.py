@@ -55,7 +55,6 @@ WRITABLE_TABLES = frozenset(
         "memory_actions",
         "memory_deduplications",
         "memory_replacements",
-        "memory_correction_work",
         "memory_correction_closures",
         "retrievals",
         "retrieval_items",

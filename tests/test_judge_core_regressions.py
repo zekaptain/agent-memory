@@ -53,6 +53,7 @@ def test_stage_a_is_charged_only_to_first_persisted_verdict(tmp_path, monkeypatc
 
     monkeypatch.setattr(RulesBackend, "decide", paid)
     monkeypatch.setattr(pipeline, "_record", lambda cfg, batch, log: records.extend(batch))
+    monkeypatch.setattr(pipeline, "require_judge_agent", lambda cfg: None)
     written = pipeline.decide_items(store.cfg, store.run_id, ["rules"], store=store)
     assert written == {"rules": 2 if first == "failed" else 3}
     rows = [row for row in store.read_jsonl(path) if row["item_id"] == item_id]

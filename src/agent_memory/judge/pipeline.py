@@ -54,13 +54,23 @@ from .triggers import (
 Log = Callable[[str], None]
 """`log` takes progress lines; `warn` takes problems the user has to act on (a skipped item, a
 spooled batch). A caller with one channel passes only `log` and gets both on it."""
-JUDGE_AGENT = "human"
+JUDGE_AGENT = "judge"
 CALIBRATION_SHARE = 0.6
 EVENT_BATCH = 25
 
 
 def _quiet(_: str) -> None:
     return None
+
+
+def require_judge_agent(cfg: Config) -> None:
+    """Fail before model calls or imports when an experiment home needs migration."""
+    with MemoryClient.from_config(cfg) as client:
+        _, rows = client.query(
+            f"SELECT agent_id FROM agents WHERE agent_id = {sql_literal(JUDGE_AGENT)}"
+        )
+    if not rows:
+        raise JudgeError(f"run mem --home {cfg.home} init")
 
 
 def require_current_questions(run: Mapping[str, Any]) -> None:
@@ -574,6 +584,8 @@ def decide_items(
     require_current_questions(run)
     items = store.read_jsonl(store.items_path)
     drafts = store.read_drafts()
+    if record_events:
+        require_judge_agent(cfg)
     expected = expected_verdicts(items, drafts)
     written: dict[str, int] = {}
     for spec in backend_specs:
@@ -712,6 +724,7 @@ def live_step(
     require_current_questions(run)
     if not run.get("frozen"):
         raise JudgeError("thresholds are not frozen; run `mem judge report --freeze` first")
+    require_judge_agent(cfg)
     day = day or datetime.now(UTC).strftime("%Y-%m-%d")
     imported = import_sessions(cfg, sessions_dir, since=since, log=log)
     child = parent.child(day)

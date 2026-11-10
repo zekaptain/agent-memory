@@ -78,7 +78,7 @@ def test_import_candidates_decide_and_ledger_events(live_cfg, live_client, sessi
     )
     assert len(rows) == 4
     for content, payload, agent, project, scope in rows:
-        assert (agent, project, scope) == ("human", "judge-experiment", "judge")
+        assert (agent, project, scope) == ("judge", "judge-experiment", "judge")
         judge = json.loads(payload)["judge"]
         assert judge["run_id"] == "t1"
         assert judge["backend"] == "rules"
@@ -165,6 +165,59 @@ def test_cli_refuses_default_home(capsys, monkeypatch):
     err = capsys.readouterr().err
     assert code == 1
     assert "refuses to run against the default home" in err
+
+
+@pytest.mark.parametrize("command", ["decide", "live"])
+def test_judge_requires_initialized_agent_before_work(tmp_path, monkeypatch, capsys, command):
+    from agent_memory import db
+    from agent_memory.config import Config
+    from agent_memory.smoke import free_port
+
+    cfg = Config(home=tmp_path / "legacy-experiment", port=free_port())
+    migrations = db.available_migrations()
+    with monkeypatch.context() as patch:
+        patch.setattr(db, "available_migrations", lambda: [m for m in migrations if m.version < 5])
+        assert main(["--home", str(cfg.home), "init"]) == 0
+    store = RunStore(cfg, "legacy")
+    store.create({"questions_version": "questions_v4", "frozen": {"synthetic": True}})
+    before = store.run_json.read_bytes()
+    server = db.MemoryServer(cfg, export_interval_hours=0)
+    # Simulate a server that was started by the pre-migration package.
+    with monkeypatch.context() as patch:
+        patch.setattr(db, "available_migrations", lambda: [m for m in migrations if m.version < 5])
+        server.start()
+    try:
+        args = ["--backend", "rules"]
+        if command == "live":
+            args += ["--since", "2026-01-01"]
+        assert (
+            main(
+                [
+                    "--home",
+                    str(cfg.home),
+                    "--port",
+                    str(cfg.port),
+                    "judge",
+                    command,
+                    "--run",
+                    "legacy",
+                    *args,
+                ]
+            )
+            == 1
+        )
+        assert f"run mem --home {cfg.home} init" in capsys.readouterr().err
+        assert store.run_json.read_bytes() == before
+        assert not store.live_dir.exists()
+    finally:
+        server.stop()
+    assert main(["--home", str(cfg.home), "init"]) == 0
+    server = db.MemoryServer(cfg, export_interval_hours=0)
+    server.start()
+    try:
+        assert decide_items(cfg, "legacy", ["rules"]) == {"rules": 0}
+    finally:
+        server.stop()
 
 
 def test_cli_decide_without_remote_opt_in(live_cfg, capsys, monkeypatch):
