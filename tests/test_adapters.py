@@ -169,7 +169,7 @@ def test_droid_session_start_hook():
 
 def test_droid_prompt_hook():
     (r,) = DroidAdapter().from_hook(hook("UserPromptSubmit", prompt="hi there", message_id="m1"))
-    assert (r.kind, r.content, r.source_key) == ("user_msg", "hi there", "UserPromptSubmit:m1")
+    assert (r.kind, r.content, r.source_key) == ("user_msg", "hi there", "m1")
     assert r.payload is not None
     assert "prompt" not in r.payload
 

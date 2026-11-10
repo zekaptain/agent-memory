@@ -12,8 +12,7 @@ from typing import Any
 import duckdb
 
 from ..db import MemoryClient, sql_literal
-from . import ids
-from .observations import fingerprint
+from . import identity, ids
 from .record import Record
 
 METHOD = "captured_cite_turn_v1"
@@ -142,10 +141,28 @@ def evidence_from_records(records: Sequence[Record]) -> list[dict[str, Any]]:
     return evidence
 
 
-def reconcile_answers(client: MemoryClient, session_ids: Sequence[str]) -> int:
+def reconcile_answers(
+    client: MemoryClient,
+    session_ids: Sequence[str],
+    *,
+    placeholder_event_ids: Sequence[str] = (),
+) -> int:
     """Append or correct bindings from persisted evidence; safe to repeat after failure."""
     total = 0
-    for sid in sorted(set(session_ids)):
+    sessions = set(session_ids)
+    # A cite may arrive after its transcript in a separate MCP session.
+    placeholders = sorted(
+        {value for mid in placeholder_event_ids if (value := _uuid(mid)) is not None}
+    )
+    for start in range(0, len(placeholders), 500):
+        literals = ", ".join(sql_literal(mid) for mid in placeholders[start : start + 500])
+        _, rows = client.query(
+            "SELECT DISTINCT o.session_id::VARCHAR FROM capture_observations o, "
+            "json_each(o.attribution_evidence::JSON) item "
+            f"WHERE item.value->>'placeholder_event_id' IN ({literals})"
+        )
+        sessions.update(str(row[0]) for row in rows)
+    for sid in sorted(sessions):
         for attempt in range(2):
             try:
                 total += _reconcile_explicit(client, sid)
@@ -159,9 +176,9 @@ def reconcile_answers(client: MemoryClient, session_ids: Sequence[str]) -> int:
 
 def _reconcile_explicit(client: MemoryClient, sid: str) -> int:
     _, rows = client.query(
-        "SELECT p.event_id::VARCHAR, a.event_id::VARCHAR FROM events p "
+        "SELECT p.event_id::VARCHAR, a.event_id::VARCHAR, p.session_id::VARCHAR FROM events p "
         "JOIN events a ON a.event_id = try_cast(p.payload.explicit_answer_event_id AS UUID) "
-        f"WHERE p.session_id = {sql_literal(sid)} AND a.session_id = p.session_id "
+        f"WHERE (a.session_id = {sql_literal(sid)} OR p.session_id = {sql_literal(sid)}) "
         "AND coalesce(try_cast(p.payload.placeholder AS BOOLEAN), false) "
         "AND a.kind = 'assistant_msg' "
         "AND NOT coalesce(try_cast(a.payload.placeholder AS BOOLEAN), false) "
@@ -172,20 +189,18 @@ def _reconcile_explicit(client: MemoryClient, sid: str) -> int:
             {
                 "answer_bindings": [
                     {
-                        "binding_id": str(
-                            uuid.uuid5(
-                                uuid.NAMESPACE_URL,
-                                "agent-memory/answer-binding/" + fingerprint([placeholder, None]),
-                            )
-                        ),
+                        "binding_id": identity.binding_id(placeholder),
                         "placeholder_event_id": placeholder,
                         "root_placeholder_id": placeholder,
                         "answer_event_id": answer,
-                        "evidence": {"explicit_answer_event_id": answer},
+                        "evidence": {
+                            "explicit_answer_event_id": answer,
+                            "placeholder_session_id": placeholder_sid,
+                        },
                         "resolution_method": "explicit_answer_id_v1",
                         "reason_code": "explicit_answer_id",
                     }
-                    for placeholder, answer in rows
+                    for placeholder, answer, placeholder_sid in rows
                 ]
             }
         )
@@ -221,17 +236,30 @@ def _reconcile_session(client: MemoryClient, sid: str) -> int:
     if not wanted:
         return 0
     events: dict[str, tuple[str, bool]] = {}
+    placeholder_sessions: dict[str, str] = {}
     cite_calls: set[str] = set()
     ordered = sorted(wanted)
     for start in range(0, len(ordered), 500):
         literals = ", ".join(sql_literal(mid) for mid in ordered[start : start + 500])
+        placeholder_literals = ", ".join(
+            sql_literal(mid) for mid in ordered[start : start + 500] if mid in evidence
+        )
+        scope = f"session_id = {sql_literal(sid)}"
+        if placeholder_literals:
+            scope += (
+                f" OR (event_id IN ({placeholder_literals}) AND kind = 'assistant_msg' "
+                "AND coalesce(try_cast(payload.placeholder AS BOOLEAN), false))"
+            )
         _, rows = client.query(
             "SELECT event_id::VARCHAR, kind, "
-            "coalesce(try_cast(payload.placeholder AS BOOLEAN), false), payload::JSON::VARCHAR "
-            f"FROM events WHERE session_id = {sql_literal(sid)} AND event_id IN ({literals})"
+            "coalesce(try_cast(payload.placeholder AS BOOLEAN), false), payload::JSON::VARCHAR, "
+            "session_id::VARCHAR "
+            f"FROM events WHERE ({scope}) AND event_id IN ({literals})"
         )
-        for mid, kind, placeholder, raw in rows:
+        for mid, kind, placeholder, raw, event_sid in rows:
             events[str(mid)] = (str(kind), bool(placeholder))
+            if kind == "assistant_msg" and placeholder:
+                placeholder_sessions[str(mid)] = str(event_sid)
             if kind == "tool_call" and _memory_tool(json.loads(raw or "{}"), "cite"):
                 cite_calls.add(str(mid))
     inserts = []
@@ -239,7 +267,7 @@ def _reconcile_session(client: MemoryClient, sid: str) -> int:
         if events.get(placeholder) != ("assistant_msg", True):
             continue
         candidates: set[str] = set()
-        usable = []
+        usable: list[dict[str, Any]] = []
         for item in items:
             if (
                 item["call_event_id"] not in cite_calls
@@ -248,7 +276,7 @@ def _reconcile_session(client: MemoryClient, sid: str) -> int:
                 continue
             # Missing imported candidates cannot turn an ambiguous turn into a unique one.
             candidates.update(item.get("reply_event_ids", []))
-            usable.append(item)
+            usable.append({**item, "placeholder_session_id": placeholder_sessions[placeholder]})
         if not usable:
             continue
         answer = next(iter(candidates)) if len(candidates) == 1 else None
@@ -274,12 +302,7 @@ def _reconcile_session(client: MemoryClient, sid: str) -> int:
             continue
         previous = str(old[0][0]) if old else None
         # A deterministic root and unique correction parent settle concurrent reconciliation.
-        binding_id = str(
-            uuid.uuid5(
-                uuid.NAMESPACE_URL,
-                "agent-memory/answer-binding/" + fingerprint([placeholder, previous]),
-            )
-        )
+        binding_id = identity.binding_id(placeholder, previous)
         inserts.append(
             {
                 "binding_id": binding_id,

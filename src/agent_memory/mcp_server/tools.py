@@ -16,7 +16,7 @@ from typing import Any
 import duckdb
 from mcp.server.mcpserver.exceptions import ToolError as McpToolError
 
-from ..capture import blobs, ids
+from ..capture import blobs, identity, ids
 from ..capture.attribution import reconcile_answers
 from ..capture.observations import fingerprint, pending_observations
 from ..capture.pipeline import deliver, make_redactor
@@ -63,10 +63,13 @@ class MemoryTools:
     ) -> None:
         self.cfg = cfg
         self.agent_id = agent_id
-        self.own_session = harness_session_id is None
-        self.harness_session_id = harness_session_id or (
-            f"mcp-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}-{os.getpid()}"
+        self.harness_session_id, self.session_link = identity.mcp_harness_session(
+            agent_id,
+            {"AGENT_MEMORY_SESSION": harness_session_id}
+            if harness_session_id is not None
+            else os.environ,
         )
+        self.own_session = self.session_link == "own"
         self.session_id = ids.session_id(agent_id, self.harness_session_id)
         self.project = project or os.environ.get("AGENT_MEMORY_PROJECT") or _cwd_name()
         self._client: MemoryClient | None = None
@@ -124,7 +127,11 @@ class MemoryTools:
                         "cwd": self.redactor().text(os.getcwd())[0],
                         "capture_completeness": "partial",
                         "started_at": datetime.now(UTC),
-                        "metadata": {"via": "mem-mcp", "own_session": self.own_session},
+                        "metadata": {
+                            "via": "mem-mcp",
+                            "own_session": self.own_session,
+                            "session_link": self.session_link,
+                        },
                     }
                 ]
             }
@@ -462,7 +469,9 @@ class MemoryTools:
                 for link in links
             ]
             client.insert(rows)
-            reconcile_answers(client, [self.session_id])
+            reconcile_answers(
+                client, [self.session_id], placeholder_event_ids=[str(answer_event_id)]
+            )
         except (AgentMemoryError, ConfigError, duckdb.Error) as exc:
             self._reset()
             return {"degraded": True, "reason": f"{type(exc).__name__}: {exc}", "links": 0}

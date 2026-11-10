@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from ..capture import identity
 from ..capture.attribution import evidence_from_records
 from ..capture.record import Record, SessionInfo, now, parse_ts
 from .base import UnsupportedTranscript, iter_jsonl, project_of, render_tool_call, text_of
@@ -67,7 +68,8 @@ class DroidAdapter:
         kind = _HOOK_KINDS.get(event, "note")
 
         if event == "PostToolUse":
-            key = str(payload.get("tool_use_id") or f"{event}:{key_tail}")
+            tool_id = str(payload.get("tool_use_id") or identity.note_key(event, str(key_tail)))
+            key = identity.tool_call_key(tool_id)
             call = Record(
                 **base,
                 kind="tool_call",
@@ -82,7 +84,7 @@ class DroidAdapter:
             result = Record(
                 **base,
                 kind="tool_result",
-                source_key=key,
+                source_key=identity.tool_result_key(tool_id),
                 parent_key=key,
                 content=text_of(payload.get("tool_response")),
                 payload={"tool_name": payload.get("tool_name"), "hook": event},
@@ -95,16 +97,18 @@ class DroidAdapter:
                 Record(
                     **base,
                     kind="note",
-                    source_key=f"{event}:{key_tail}",
+                    source_key=identity.note_key(event, str(key_tail)),
                     content=render_tool_call(payload.get("tool_name"), payload.get("tool_input")),
                     payload={"hook": event, "tool_name": payload.get("tool_name")},
                 )
             ]
         if kind is None:
             return []
-        source_key = f"{event}:{key_tail}"
+        source_key = identity.note_key(event, str(key_tail))
         if event == "SessionStart":
-            source_key = f"{event}:{payload.get('source') or 'startup'}:{key_tail}"
+            source_key = identity.session_marker_key(
+                event, str(payload.get("source") or "startup"), str(key_tail)
+            )
             session = SessionInfo(
                 cwd=session.cwd,
                 project=session.project,
@@ -117,6 +121,7 @@ class DroidAdapter:
             base["session"] = session
         content: str | None
         if event == "UserPromptSubmit":
+            source_key = identity.prompt_key(payload.get("message_id"), ts)
             content = str(payload.get("prompt") or "")
         elif event == "PreCompact":
             content = payload.get("custom_instructions") or None
@@ -129,6 +134,8 @@ class DroidAdapter:
             for k, v in payload.items()
             if k not in {"session_id", "transcript_path", "cwd", "hook_event_name", "prompt"}
         }
+        if event == "UserPromptSubmit" and not payload.get("message_id"):
+            extra["dedupe"] = "unkeyed"
         return [
             Record(
                 **base,
@@ -356,7 +363,7 @@ def _message_records(
                 }
             )
         elif ptype == "tool_use":
-            key = str(part.get("id") or f"{entry_id}#tool_use")
+            key = identity.tool_call_key(str(part.get("id") or f"{entry_id}#tool_use"))
             out.append(
                 Record(
                     **base,
@@ -371,13 +378,14 @@ def _message_records(
                 )
             )
         elif ptype == "tool_result":
-            key = str(part.get("tool_use_id") or f"{entry_id}#tool_result")
+            tool_id = str(part.get("tool_use_id") or f"{entry_id}#tool_result")
+            key = identity.tool_result_key(tool_id)
             out.append(
                 Record(
                     **base,
                     kind="tool_result",
                     source_key=key,
-                    parent_key=key,
+                    parent_key=identity.tool_call_key(tool_id),
                     content=text_of(part.get("content")),
                     payload={"is_error": part.get("is_error")} if "is_error" in part else None,
                 )
@@ -387,7 +395,7 @@ def _message_records(
                 Record(
                     **base,
                     kind="assistant_msg",
-                    source_key=f"{entry_id}#thinking",
+                    source_key=identity.thinking_key(entry_id),
                     content=str(part["thinking"]),
                     payload={"part": "thinking", "durationMs": part.get("durationMs")},
                 )
@@ -409,7 +417,11 @@ def _message_records(
             Record(
                 **base,
                 kind=kind,
-                source_key=entry_id,
+                source_key=(
+                    identity.prompt_key(entry_id, base["ts"])
+                    if role == "user"
+                    else identity.reply_key(entry_id)
+                ),
                 content=text,
                 payload=payload or None,
             ),
