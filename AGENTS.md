@@ -110,9 +110,11 @@ Entry points are `mem` (`agent_memory.cli:main`) and `mem-mcp`
 ## Judge workflow and lessons from previous runs
 
 The experiment must stay separate from production. Never remove
-`ensure_experiment_home` or write drafted lessons into the memory ledger:
-lessons stay in run files; verdicts may be recorded as `decision` events
-without copying state text into them.
+`ensure_experiment_home`. Experiment commands never write lessons into the
+memory ledger; lessons stay in run files. Admission is a separate future
+path toward an automated approver trained against human labels (Jev-style),
+not part of the experiment commands. Verdicts use agent `judge` and may be
+recorded as `decision` events without copying state or lesson text into them.
 
 `--home` and `--port` are root options, before the subcommand. A separate
 home does not automatically select a different port. Use the same explicit

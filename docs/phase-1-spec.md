@@ -179,11 +179,15 @@ locally on 2026-10-25). Entry `type` values and their mapping:
 
 `modelId` on the first assistant message fills `sessions.model`.
 `session.project` is the basename of `cwd`. Signatures, encrypted reasoning
-content, and `openai*` fields are dropped. `message_id` in Droid hook stdin
-is assumed to equal the transcript entry `id`; Phase 2 verifies this before
-hooks and transcript capture the same kinds, and until then Droid hooks only
-record `session_start`, `session_end`, `compaction` (PreCompact) and
-`system_context`.
+content, and `openai*` fields are dropped. Droid hooks already record
+`user_msg`, `tool_call`, and `tool_result`, as well as session boundaries,
+compaction, and context. Tool keys use the tool-use ID in both paths.
+Prompt hooks currently add a `UserPromptSubmit:` prefix that transcript entries do
+not have. The capture-identity work centralizes these rules in
+`capture/identity.py`: keyed prompts use the bare message ID, while
+unkeyed prompts use `prompt:unkeyed:<ts>` and carry `payload.dedupe =
+"unkeyed"`. The live hook `message_id` / transcript `id` comparison remains
+a pre-merge check.
 
 **Vibe**: `~/.vibe/logs/session/` exists locally but holds no transcript yet.
 The adapter ships as a stub that raises `UnsupportedTranscript` with the path,

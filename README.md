@@ -193,6 +193,12 @@ Set the environment for your harness:
 | `AGENT_MEMORY_SESSION` | Harness session ID, when available. Joins MCP activity to the captured session. MCP-only coverage remains partial even when this ID is present. |
 | `AGENT_MEMORY_MCP_SERVER_NAME` | Optional capture setting when the MCP server is named something other than `agent-memory`. Attribution requires that exact server identity; a bare `cite` without recorded server identity stays unresolved. |
 
+Droid's MCP `env` expands shell variables only, not the current Droid
+session ID. `AGENT_MEMORY_SESSION` therefore cannot supply that session
+automatically. MCP uses its own partial session instead. The capture-identity
+work links a captured reply by the placeholder ID returned from `cite`,
+without requiring the MCP and Droid sessions to match.
+
 If you changed the database home or port, include `AGENT_MEMORY_HOME` and
 `AGENT_MEMORY_PORT` in the MCP environment too.
 

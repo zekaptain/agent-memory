@@ -453,6 +453,22 @@ home.
 
 ## As built
 
+Small-wins hardening (2026-11-09):
+
+- Migration `0005_judge_agent_policy` registers agent `judge` for verdict
+  events, rather than attributing them to `human`. Decide and live commands
+  check for that row before doing work and request `mem --home ... init`
+  when it is missing. Experiment commands still never admit lessons.
+- JSONL rewrites, including human labels and superseded verdicts, write a
+  sibling `.tmp` file before `os.replace`. A torn, unterminated final line
+  is ignored on read; other corrupt lines report the file and line number,
+  never their contents. Appends retain their existing behavior.
+- `agent_memory.endpoints` owns model hosts and HTTP egress. Literal
+  loopback hosts need no opt-in; every other host, including a remote
+  `OLLAMA_HOST`, requires `AGENT_MEMORY_JUDGE_ALLOW_REMOTE=1`. The judge
+  HTTP module remains a compatibility seam for callers and tests. Graph
+  resolution no longer imports the judge package.
+
 Implemented 2026-10-26 as specified, with these deviations:
 
 - HTTP uses `urllib` rather than `httpx`; `httpx` is not a declared
