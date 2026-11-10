@@ -201,7 +201,7 @@ def test_client_reports_when_server_is_down(cfg):
 
 def test_server_refuses_pending_migrations(cfg, monkeypatch):
     shipped = db.available_migrations()
-    extra = Migration(len(shipped) + 1, "later", "SELECT 1;\n")
+    extra = Migration(max(m.version for m in shipped) + 1, "later", "SELECT 1;\n")
     monkeypatch.setattr(db, "available_migrations", lambda: [*shipped, extra])
     with pytest.raises(AgentMemoryError, match="Pending migrations"):
         MemoryServer(cfg).start()

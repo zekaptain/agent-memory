@@ -373,10 +373,13 @@ until usefulness and withdrawal/backflow can be measured.
   cases.
 - Droid hooks and transcript import already overlap on prompts and tools.
   The hook's `UserPromptSubmit:` prefix, not a demonstrated difference between
-  `message_id` and transcript entry `id`, causes duplicate prompts.
-  The capture-identity work centralizes key rules in
-  `capture/identity.py` and removes that prefix for keyed prompts.
-  Live verification of the two harness IDs is still required before merge.
+  `message_id` and transcript entry `id`, caused duplicate prompts.
+  `src/agent_memory/capture/identity.py` now owns the key rules and removes
+  that prefix for keyed prompts. Synthetic overlap and spool replay tests
+  pass. B6 live check (2026-11-09): for one synthetic prompt captured by a
+  temporary local hook, `message_id` equaled the matching transcript entry
+  `id`. No key-rule change was needed. Raw hook payloads and transcripts
+  stay outside the repository; the live ledger was not used.
 
 ## Phase 0 audit (2026-10-25)
 

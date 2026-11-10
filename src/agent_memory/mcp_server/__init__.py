@@ -172,7 +172,6 @@ def tools_from_env() -> MemoryTools:
     return MemoryTools(
         cfg,
         agent,
-        harness_session_id=os.environ.get("AGENT_MEMORY_SESSION") or None,
         project=os.environ.get("AGENT_MEMORY_PROJECT") or None,
     )
 

@@ -83,6 +83,15 @@ Namespace `AGENT_MEMORY_NS = uuid5(NAMESPACE_URL, "agent-memory")`.
 
 Replaying the same record produces the same ids, so replay is a no-op.
 
+`agent_memory.capture.identity` chooses the source keys and MCP session
+identity; `capture.ids` hashes those choices. Both Droid capture paths and
+Vibe tool hooks use the shared builders. A keyed Droid prompt uses the bare
+message ID. Without one, its hook uses `prompt:unkeyed:<ts>` and marks
+`payload.dedupe` as `"unkeyed"`; it makes no hook/transcript dedupe claim.
+Replies keep their entry IDs, thinking appends `#thinking`, and tool calls
+and results keep their tool-use IDs. Session markers and notes retain their
+existing keys.
+
 ### Idempotent insert
 
 Rows are staged in temp tables as today, then inserted with an anti-join:
@@ -181,13 +190,11 @@ locally on 2026-10-25). Entry `type` values and their mapping:
 `session.project` is the basename of `cwd`. Signatures, encrypted reasoning
 content, and `openai*` fields are dropped. Droid hooks already record
 `user_msg`, `tool_call`, and `tool_result`, as well as session boundaries,
-compaction, and context. Tool keys use the tool-use ID in both paths.
-Prompt hooks currently add a `UserPromptSubmit:` prefix that transcript entries do
-not have. The capture-identity work centralizes these rules in
-`capture/identity.py`: keyed prompts use the bare message ID, while
-unkeyed prompts use `prompt:unkeyed:<ts>` and carry `payload.dedupe =
-"unkeyed"`. The live hook `message_id` / transcript `id` comparison remains
-a pre-merge check.
+compaction, and notes. `capture.identity` gives hook and transcript prompts
+the same bare message ID and tools the same tool-use ID. The former
+`UserPromptSubmit:` prefix caused duplicate prompts even when the harness
+IDs matched. Live comparison of hook `message_id` and transcript entry `id`
+is recorded in [PLAN.md](../PLAN.md), separately from the synthetic tests.
 
 **Vibe**: `~/.vibe/logs/session/` exists locally but holds no transcript yet.
 The adapter ships as a stub that raises `UnsupportedTranscript` with the path,
@@ -204,8 +211,10 @@ directly (Phase 2). `mem ingest --spool` is the whole integration.
 ### Hook adapter (`mem event`)
 
 Common stdin fields across Droid and Vibe (`session_id`, `cwd`,
-`hook_event_name`, `transcript_path`) map to the `session` block and to
-`source_key = f"{hook_event_name}:{message_id or tool_call_id or ts}"`.
+`hook_event_name`, `transcript_path`) map to the `session` block.
+`capture.identity` owns the keys: prompt and tool IDs are shared with
+transcript import, while hook-only notes use the event name plus ID or
+timestamp. `SessionStart` also includes its source (startup/resume/clear/compact).
 Mapping:
 
 | hook event | kind | notes |
@@ -305,9 +314,14 @@ returns the existing id with `deduplicated = true`.
 Writes `context_links` for the answer. When `answer_event_id` is omitted the
 server inserts an `events(kind='assistant_msg', content=NULL,
 payload={"placeholder": true})` row and returns its id so the transcript
-ingest can later link the real reply (Phase 2 maps the placeholder by
-`source_key = "cite:<retrieval_id>"`). This is the only way a Tier C harness
-gets `why_answer` coverage.
+ingest can later link the real reply. A captured, server-qualified `cite`
+tool result identifies that placeholder by UUID; a complete captured turn
+must have one unique reply. The placeholder can live in an MCP-owned
+session, while calls, results, and replies must belong to the observed
+transcript session. Binding evidence records `placeholder_session_id`.
+Explicit answer IDs take priority. Missing or ambiguous evidence remains
+unresolved; there is no nearest-message fallback. This also gives Tier C
+harnesses partial `why_answer` coverage without a captured reply.
 
 **`review(action: "approve"|"retire"|"quarantine"|"confirm"|"flag_contradiction", memory_id: str, reason: str, related_memory_id: str | None)`**
 Inserts `memory_actions` with `actor = AGENT_MEMORY_AGENT` and the session id,
@@ -349,6 +363,7 @@ Still unapplied, so edited in place rather than a 0002:
 src/agent_memory/
   capture/
     record.py      # Record dataclass, validation, (de)serialisation
+    identity.py    # source keys, binding identities, MCP session selection
     ids.py         # uuid5 derivation
     redact.py      # rules, apply(), tests fixtures in tests/fixtures/redact/
     blobs.py       # write_blob(), threshold constants
@@ -420,6 +435,24 @@ transcript, then `mem sql "SELECT * FROM session_summary"`.
    tokens (Phase 3) are the real fix; acceptable for now?
 
 ## As built (2026-10-25)
+
+Capture identity hardening (2026-11-09):
+
+- Shared key builders remove only the Droid prompt-hook prefix. Unkeyed
+  prompts are marked, not guessed. Existing transcript, tool, thinking,
+  session-marker, and note keys remain stable.
+- MCP sessions use `AGENT_MEMORY_SESSION` when available (`session_link =
+  "env"`), otherwise a unique own session (`session_link = "own"`).
+  Session metadata retains `own_session`; MCP-only coverage stays partial.
+- Migration `0006_cross_session_answer_bindings` replaces only the binding
+  validation trigger's session-equality rule. Event kinds, placeholder
+  checks, foreign keys, linear corrections, and append-only guards remain.
+  Migration `0005_judge_agent_policy` separately registers the judge agent
+  and removes correction-work writes from client authorization.
+- Reconciliation fetches placeholders by UUID across sessions. Transcript
+  evidence keeps its session boundary. Both citation/import arrival orders,
+  explicit future reply IDs, repeated imports, and spool replay are covered
+  through real MCP, capture, CLI, and Quack paths.
 
 Implemented as specified except for these points, each forced by a probe:
 

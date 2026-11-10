@@ -488,7 +488,6 @@ def _resolved_answers(
             and placeholder["placeholder"]
             and _actual_answer(answer)
             and answer is not None
-            and placeholder["session_id"] == answer["session_id"]
         ):
             resolved[binding["placeholder_id"]] = binding["answer_id"]
         else:
@@ -596,7 +595,7 @@ def _retrieval_findings(
         "FROM context_links WHERE link_type = 'retrieval'",
     ):
         eid = link["answer_event_id"]
-        links[link["retrieval_id"]].append(resolved.get(eid, eid))
+        links[link["retrieval_id"]].append(eid)
     for retrieval in _rows(
         source,
         "SELECT retrieval_id::VARCHAR AS retrieval_id, session_id::VARCHAR AS session_id, "
@@ -609,8 +608,9 @@ def _retrieval_findings(
         elif request["kind"] != "memory_recall" or request["session_id"] != sid:
             findings.append(Finding("retrieval_request_invalid", "retrieval", rid, (sid,)))
         attributed = any(
-            answer is not None and _actual_answer(answer) and answer["session_id"] == sid
-            for answer in (events.get(eid) for eid in links[rid])
+            _actual_answer(events.get(resolved.get(eid, eid)))
+            and events.get(eid, {}).get("session_id") == sid
+            for eid in links[rid]
         )
         if not attributed:
             findings.append(

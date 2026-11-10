@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from ..capture import identity
 from ..capture.record import Record, SessionInfo, now
 from .base import UnsupportedTranscript, project_of, render_tool_call, text_of
 
@@ -45,7 +46,8 @@ class VibeAdapter:
             },
         }
         if event == "post_tool":
-            key = str(payload.get("tool_call_id") or f"{event}:{ts.isoformat()}")
+            tool_id = str(payload.get("tool_call_id") or identity.note_key(event, ts.isoformat()))
+            key = identity.tool_call_key(tool_id)
             call = Record(
                 **base,
                 kind="tool_call",
@@ -63,7 +65,7 @@ class VibeAdapter:
             result = Record(
                 **base,
                 kind="tool_result",
-                source_key=key,
+                source_key=identity.tool_result_key(tool_id),
                 parent_key=key,
                 content=str(output),
                 payload={
@@ -81,7 +83,7 @@ class VibeAdapter:
                 Record(
                     **base,
                     kind="note",
-                    source_key=f"{event}:{key}",
+                    source_key=identity.note_key(event, key),
                     content=render_tool_call(payload.get("tool_name"), payload.get("tool_input")),
                     payload={"hook": event, "tool_name": payload.get("tool_name")},
                 )
@@ -98,7 +100,7 @@ class VibeAdapter:
             Record(
                 **base,
                 kind="note",
-                source_key=f"{event}:{ts.isoformat()}",
+                source_key=identity.note_key(event, ts.isoformat()),
                 content=None,
                 payload={"hook": event, **extra},
             )

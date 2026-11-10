@@ -1,0 +1,8 @@
+{"type":"session_start","id":"identity-session","timestamp":"2026-11-09T10:00:00Z","cwd":"/synthetic/identity"}
+{"type":"message","id":"prompt-1","timestamp":"2026-11-09T10:00:01Z","message":{"role":"user","content":"What do we know?"}}
+{"type":"message","id":"recall-message","timestamp":"2026-11-09T10:00:02Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"recall-call","name":"agent-memory__recall","input":{"query":"synthetic"}}]}}
+{"type":"message","id":"recall-result","timestamp":"2026-11-09T10:00:03Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"recall-call","content":"{\"retrieval_id\":\"@RETRIEVAL_ID@\",\"items\":[]}"}]}}
+{"type":"message","id":"cite-message","timestamp":"2026-11-09T10:00:04Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"cite-call","name":"agent-memory__cite","input":{"retrieval_id":"@RETRIEVAL_ID@"}}]}}
+{"type":"message","id":"cite-result","timestamp":"2026-11-09T10:00:05Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"cite-call","content":"{\"answer_event_id\":\"@PLACEHOLDER_ID@\",\"links\":1}"}]}}
+{"type":"message","id":"reply","timestamp":"2026-11-09T10:00:06Z","message":{"role":"assistant","channel":"final","content":"A synthetic answer."}}
+{"type":"agent_turn_outcome","turnId":"identity-turn","resultKind":"text"}

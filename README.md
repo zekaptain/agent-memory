@@ -195,9 +195,9 @@ Set the environment for your harness:
 
 Droid's MCP `env` expands shell variables only, not the current Droid
 session ID. `AGENT_MEMORY_SESSION` therefore cannot supply that session
-automatically. MCP uses its own partial session instead. The capture-identity
-work links a captured reply by the placeholder ID returned from `cite`,
-without requiring the MCP and Droid sessions to match.
+automatically. MCP uses its own partial session instead. Captured `cite`
+results carry the returned placeholder ID, which links the reply without
+requiring the MCP and Droid sessions to match.
 
 If you changed the database home or port, include `AGENT_MEMORY_HOME` and
 `AGENT_MEMORY_PORT` in the MCP environment too.
