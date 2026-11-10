@@ -19,6 +19,8 @@ Read the relevant spec before changing a subsystem:
 - `docs/judge-experiment-spec.md`: judge design, historical runs, exp3, and
   "As built" notes. Earlier sections describe older versions; check the
   later amendments and current code before implementing.
+- `docs/admission-spec.md`: production admission, fitted approver, human
+  review, and calibration/held-out safeguards.
 - `docs/parametric-consolidation-spec.md`: a draft research proposal, not
   implemented functionality or authorization to add its proposed migration.
 - `docs/agent-memory-literature-review.md` and `docs/paper/`: research
@@ -68,6 +70,7 @@ All runtime paths below are under `src/agent_memory/`.
 | `mcp_server/` | Stdio tools, recall ranking, writes, reviews, citations | `test_mcp` |
 | `graph/` | Relation metadata, traversal SQL, entity resolution | `test_graph` |
 | `judge/` | Import, provenance, candidates, projection, draft, decide, label, report | `test_judge`, `test_judge_pipeline` |
+| `admission/` | Production lesson admission, fitting and blinded review | `test_admission`, `test_admission_fit` |
 | `cli.py`, `smoke.py` | Typer entry point and end-to-end check | `test_cli`, `test_cli_capture` |
 
 Test names in the table refer to `tests/<name>.py`.
@@ -111,10 +114,12 @@ Entry points are `mem` (`agent_memory.cli:main`) and `mem-mcp`
 
 The experiment must stay separate from production. Never remove
 `ensure_experiment_home`. Experiment commands never write lessons into the
-memory ledger; lessons stay in run files. Admission is a separate future
-path toward an automated approver trained against human labels (Jev-style),
-not part of the experiment commands. Verdicts use agent `judge` and may be
-recorded as `decision` events without copying state or lesson text into them.
+memory ledger; lessons stay in run files. Admission lives in `admission/`:
+it reads human v4 experiment labels and writes production lessons through
+the lifecycle, quarantined unless human-approved or enabled by the held-out
+auto gate. Nothing under `judge/` imports admission. Verdicts use agent
+`judge` and may be recorded as `decision` events without copying state or
+lesson text into them.
 
 `--home` and `--port` are root options, before the subcommand. A separate
 home does not automatically select a different port. Use the same explicit

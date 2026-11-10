@@ -316,6 +316,20 @@ uv run mem judge report --run "$RUN" --live 2026-11-09
 `--live DAY` also works on `draft` and `decide` for resuming those stages.
 Do not freeze the child again: it already inherits the frozen thresholds.
 
+## 10. Import human labels into admission
+
+After human-labeling and freezing a v4 run, switch to the production home
+and port to import its exact-draft labels:
+
+```sh
+uv run mem --home "$HOME/.agent-memory" --port 9494 admit import-labels \
+  --from "$HOME/.agent-memory-judge/judge/exp5" --backend llm:gemma4:26b
+```
+
+This reads experiment files without changing them. It does not make
+`mem judge` write lessons or enable automatic approval. Follow the
+[admission spec](admission-spec.md) for fitting, shadow runs and review.
+
 ## Resume, stop, or clean up
 
 - Resume `draft`, `decide`, or `label` with the same run and options.

@@ -447,6 +447,40 @@ read-only in the new version. Finish ongoing v3 labeling with the previous
 application version before upgrading the judge. Ledger migrations do not
 rewrite run files.
 
+## Admit lessons into memory
+
+Admission is separate from the sealed judge experiment. It reads captured
+production turns and quarantines lessons for review. Auto-approval is off
+by default.
+
+First create, human-label and freeze a **v4** experiment run such as
+`exp5`. Older turn labels and unlabeled model verdicts cannot train the
+approver. Then, with the production server running:
+
+```sh
+uv run mem admit import-labels --from "$HOME/.agent-memory-judge/judge/exp5"
+uv run mem admit fit
+uv run mem admit status
+uv run mem admit enable --shadow
+uv run mem admit run
+uv run mem admit review --day 2026-11-10
+```
+
+Defaults use local Ollama models: `gemma4:26b` for drafting and judging,
+`nomic-embed-text` for lesson embeddings. All commands need the existing
+`judge` agent row. If missing, stop the server, run `mem migrate`, then
+restart it.
+
+Review approves or retires exact lessons and samples 30 rejected drafts
+by default. Add `--plain` for numbered prompts, or `--again` to correct
+saved reviews. Refit after reviewing to refresh the model and its held-out
+estimate. `mem admit enable --auto` refuses unless held-out precision is
+at least 0.8 over 20 scored writes. A refit returns to shadow mode.
+
+See the [admission spec](docs/admission-spec.md) for calibration commands,
+provenance, safety rules, and an opt-in daily launchd template. No
+production run or scheduler is enabled by installing the code.
+
 ## Development
 
 ### Checks

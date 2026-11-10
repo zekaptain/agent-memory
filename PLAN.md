@@ -290,7 +290,11 @@ Parquet export for browsing.
 
 **Phase 4: memory quality.** Dedupe by `content_hash` and similarity,
 contradiction detection (`flag_contradiction`), confirmation and decay of
-`confidence`, and a review queue for quarantined tool-derived memories. The
+`confidence`. The quarantined lesson review queue now exists as
+`mem admit review`, with seeded discard sampling and feedback into the
+fitted approver. `mem admit run` drafts from captured production turns;
+auto-approval requires held-out precision of at least 0.8 over 20 scored
+writes. See `docs/admission-spec.md`. The
 relation graph's first step is in: `relate`, `graph`, and `mem graph resolve`
 (see "Relation graph" above). Still open: offline extraction of triples from
 `events` with a local model, and whether multi-hop recall earns dedicated

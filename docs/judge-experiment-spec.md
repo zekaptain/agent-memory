@@ -11,6 +11,13 @@ runs against a separate home and never touches the production ledger.
 For setup commands and the step-by-step workflow, see
 [Running judge experiments](judge-how-to.md).
 
+Production lesson admission is a separate subsystem, specified in
+[admission-spec.md](admission-spec.md). It reads frozen v4 human labels
+and composes guard-free judge helpers. Experiment guards and commands
+remain unchanged; no module under `judge/` imports admission.
+`decision_record` accepts an optional harness session and project for
+admission events, with its historical defaults preserved.
+
 ## Goal
 
 Answer one question with this project's own sessions: over a state
