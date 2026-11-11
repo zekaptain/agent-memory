@@ -153,7 +153,7 @@ def serve(
         server.serve_forever(
             stop,
             on_export=lambda path: print(f"exported {path}", flush=True),
-            on_error=lambda exc: print(f"export failed: {exc}", file=sys.stderr, flush=True),
+            on_error=lambda step, exc: print(f"{step} failed: {exc}", file=sys.stderr, flush=True),
         )
     finally:
         server.stop()

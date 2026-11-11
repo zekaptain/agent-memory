@@ -245,7 +245,7 @@ def test_connection_errors_never_include_the_token(served, uri):
 def test_serve_forever_survives_export_failures(cfg):
     server = MemoryServer(cfg, export_interval_hours=0.02 / 3600)
     calls: list[str] = []
-    errors: list[Exception] = []
+    errors: list[tuple[str, str]] = []
     exports: list[Path] = []
     stop = threading.Event()
 
@@ -257,9 +257,30 @@ def test_serve_forever_survives_export_failures(cfg):
         return Path("/snapshot")
 
     server.export = flaky_export  # type: ignore[method-assign]
-    server.serve_forever(stop, on_export=exports.append, on_error=errors.append, poll_seconds=0.005)
-    assert [type(e).__name__ for e in errors] == ["OSError"]
+    server.serve_forever(
+        stop,
+        on_export=exports.append,
+        on_error=lambda step, exc: errors.append((step, str(exc))),
+        poll_seconds=0.005,
+    )
+    assert errors == [("export", "disk full")]
     assert exports == [Path("/snapshot")]
+
+
+def test_serve_forever_names_a_failed_maintenance_pass(served, monkeypatch):
+    _, server = served
+    errors: list[tuple[str, str]] = []
+    stop = threading.Event()
+
+    def busy(connection, **_) -> int:
+        stop.set()
+        raise duckdb.Error("ledger busy")
+
+    monkeypatch.setattr("agent_memory.lifecycle.maintain_corrections", busy)
+    server.serve_forever(
+        stop, on_error=lambda step, exc: errors.append((step, str(exc))), poll_seconds=0.005
+    )
+    assert errors == [("correction maintenance", "ledger busy")]
 
 
 def test_export_retention(cfg, tmp_path):

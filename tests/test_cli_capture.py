@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import threading
 
 import pytest
 
@@ -258,3 +259,30 @@ def test_serve_drains_the_spool_at_startup(down_mem, down_cfg, monkeypatch, caps
     assert code == 0, err
     assert "spool replayed: 1 file(s), 2 rows inserted" in out
     assert Spool(down_cfg.spool_dir).pending() == []
+
+
+def test_serve_says_which_step_failed(down_mem, monkeypatch):
+    import agent_memory.cli as cli
+    import agent_memory.lifecycle as lifecycle
+
+    real_serve_forever = MemoryServer.serve_forever
+    real_maintain = lifecycle.maintain_corrections
+    stops: list[threading.Event] = []
+
+    def serve(self, stop, **kwargs):
+        stops.append(stop)
+        return real_serve_forever(self, stop, poll_seconds=0.005, **kwargs)
+
+    def maintain(connection, **kwargs) -> int:
+        if not stops:
+            return real_maintain(connection, **kwargs)  # the pass made before listening
+        stops[0].set()
+        raise RuntimeError("ledger busy")
+
+    monkeypatch.setattr(MemoryServer, "serve_forever", serve)
+    monkeypatch.setattr(lifecycle, "maintain_corrections", maintain)
+    monkeypatch.setattr(cli.signal, "signal", lambda *a: None)
+    code, _, err = down_mem("serve")
+    assert code == 0, err
+    assert "correction maintenance failed: ledger busy" in err
+    assert "export failed" not in err

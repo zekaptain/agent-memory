@@ -388,13 +388,13 @@ class MemoryServer:
         self,
         stop: threading.Event,
         on_export: Callable[[Path], None] | None = None,
-        on_error: Callable[[Exception], None] | None = None,
+        on_error: Callable[[str, Exception], None] | None = None,
         poll_seconds: float = 1.0,
     ) -> None:
-        """Block until `stop` is set, exporting on schedule.
+        """Block until `stop` is set, applying due corrections and exporting on schedule.
 
-        A failed export (full disk, permissions) is reported through on_error and
-        retried at the next interval. It must not take the server down.
+        A failed step (a full disk, a busy ledger) is reported through on_error with the
+        step's name and tried again at its next turn. It must not take the server down.
         """
         interval = self.export_interval_hours * 3600
         next_export = time.monotonic() + interval if interval > 0 else None
@@ -406,14 +406,14 @@ class MemoryServer:
                     maintain_corrections(self.con)
                 except Exception as exc:
                     if on_error:
-                        on_error(exc)
+                        on_error("correction maintenance", exc)
             if next_export is not None and time.monotonic() >= next_export:
                 next_export = time.monotonic() + interval
                 try:
                     path = self.export()
                 except Exception as exc:
                     if on_error:
-                        on_error(exc)
+                        on_error("export", exc)
                     continue
                 if on_export:
                     on_export(path)
