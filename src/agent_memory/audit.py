@@ -14,7 +14,10 @@ from typing import Any, Literal
 
 import duckdb
 
-from .db import MemoryClient
+from .db import MemoryClient, sql_literal
+
+# The agent of a person at the `mem` CLI.
+CLI_AGENT = "human"
 
 type AuditSource = MemoryClient | duckdb.DuckDBPyConnection
 type Row = dict[str, Any]
@@ -384,7 +387,19 @@ def check(source: AuditSource) -> AuditReport:
     }
     resolved = _resolved_answers(source, events, findings) if "answer_bindings" in schema else {}
     _capture_findings(source, events, findings, resolved, observed="capture_observations" in schema)
-    _retrieval_findings(source, events, findings, resolved)
+    cli_sessions = (
+        {
+            row["session_id"]
+            for row in _rows(
+                source,
+                "SELECT session_id::VARCHAR AS session_id FROM sessions "
+                f"WHERE agent_id = {sql_literal(CLI_AGENT)}",
+            )
+        }
+        if "agent_id" in schema["sessions"]
+        else set()
+    )
+    _retrieval_findings(source, events, findings, resolved, cli_sessions)
     return AuditReport(versions, _ordered(findings), legacy.acceptances)
 
 
@@ -579,7 +594,11 @@ def _capture_findings(
 
 
 def _retrieval_findings(
-    source: AuditSource, events: dict[str, Row], findings: list[Finding], resolved: dict[str, str]
+    source: AuditSource,
+    events: dict[str, Row],
+    findings: list[Finding],
+    resolved: dict[str, str],
+    cli_sessions: set[str],
 ) -> None:
     items: dict[str, list[Row]] = defaultdict(list)
     for item in _rows(
@@ -612,7 +631,8 @@ def _retrieval_findings(
             and events.get(eid, {}).get("session_id") == sid
             for eid in links[rid]
         )
-        if not attributed:
+        # A person at the CLI reads and never answers, so nothing can cite the recall.
+        if not attributed and sid not in cli_sessions:
             findings.append(
                 Finding("retrieval_missing_attribution", "retrieval", rid, (sid,), "warning")
             )

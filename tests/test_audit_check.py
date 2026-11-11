@@ -303,7 +303,7 @@ def test_empty_retrieval_still_needs_attribution_and_request(old_con):
             "sessions": [
                 {
                     "session_id": sid,
-                    "agent_id": "human",
+                    "agent_id": "mistral-vibe",
                     "started_at": WHEN,
                     "capture_completeness": "partial",
                 }
@@ -314,6 +314,50 @@ def test_empty_retrieval_still_needs_attribution_and_request(old_con):
         },
     )
     assert {"retrieval_missing_attribution", "retrieval_request_missing"} <= codes(check(old_con))
+
+
+def test_a_recall_by_a_person_at_the_cli_needs_no_citation(old_con):
+    # A person at the `mem` CLI reads and never answers, so nothing can cite the recall.
+    recalls = {}
+    for agent in ("human", "factory-droid"):
+        sid, eid, rid = new_id(), new_id(), new_id()
+        recalls[agent] = rid
+        insert_rows(
+            old_con,
+            {
+                "sessions": [
+                    {
+                        "session_id": sid,
+                        "agent_id": agent,
+                        "started_at": WHEN,
+                        "capture_completeness": "partial",
+                    }
+                ],
+                "events": [
+                    {
+                        "event_id": eid,
+                        "session_id": sid,
+                        "seq": 0,
+                        "kind": "memory_recall",
+                        "role": "memory",
+                        "ts": WHEN,
+                    }
+                ],
+                "retrievals": [
+                    {
+                        "retrieval_id": rid,
+                        "session_id": sid,
+                        "request_event_id": eid,
+                        "strategy": "graph_hop_v1",
+                        "returned": 0,
+                    }
+                ],
+            },
+        )
+    uncited = {
+        f.entity_id for f in check(old_con).findings if f.code == "retrieval_missing_attribution"
+    }
+    assert uncited == {recalls["factory-droid"]}
 
 
 def test_unknown_schema_does_not_report_clean(tmp_path, capsys):
@@ -520,6 +564,34 @@ def test_actual_mcp_cite_placeholder_over_quack(live_cfg, live_client, capsys):
         f["code"] == "retrieval_missing_attribution" and f["entity_id"] == recalled["retrieval_id"]
         for f in report["findings"]
     )
+
+
+def test_mem_graph_reads_warn_only_when_made_for_a_harness_agent(
+    live_cfg, live_client, monkeypatch, capsys
+):
+    for var in ("AGENT_MEMORY_HOME", "AGENT_MEMORY_HOST", "AGENT_MEMORY_PORT"):
+        monkeypatch.delenv(var, raising=False)
+    base = ["--home", str(live_cfg.home), "--port", str(live_cfg.port)]
+    assert main([*base, "graph", "entities", "--scope", "audit-cli"]) == 0
+    assert main([*base, "graph", "show", "nobody", "--scope", "audit-cli"]) == 0
+    assert main([*base, "graph", "entities", "--scope", "audit-cli", "--agent", "amp"]) == 0
+    capsys.readouterr()
+    _, rows = live_client.query(
+        "SELECT s.agent_id, r.retrieval_id::VARCHAR FROM retrievals r "
+        "JOIN sessions s USING (session_id) WHERE list_contains(r.scopes, 'audit-cli')"
+    )
+    by_person = {rid for agent, rid in rows if agent == "human"}
+    for_agent = {rid for agent, rid in rows if agent == "amp"}
+    assert (len(by_person), len(for_agent)) == (2, 1)
+
+    assert main([*base, "audit", "check", "--json"]) == 1
+    uncited = {
+        f["entity_id"]
+        for f in json.loads(capsys.readouterr().out)["findings"]
+        if f["code"] == "retrieval_missing_attribution"
+    }
+    assert not by_person & uncited
+    assert for_agent <= uncited
 
 
 def test_unreachable_server_never_falls_back_to_direct(down_cfg, monkeypatch, capsys):

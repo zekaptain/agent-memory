@@ -115,6 +115,17 @@ to live in the MCP session. Raw context links and historical provenance stay
 unchanged. Missing, ambiguous, or out-of-session transcript evidence does
 not become a successful binding.
 
+### Recalls at the CLI, as built (2026-11-11)
+
+A person at the `mem` CLI reads and never answers, so nothing can cite a
+recall made in a session of the `human` agent. `mem audit check` reported
+each one as `retrieval_missing_attribution` for good, and exits 1 on a
+warning. It no longer expects a citation for those recalls. This covers
+`mem graph show`, `entities` and `resolve` run with the default `--agent`,
+including the ones already in a ledger. A recall made with `--agent` set
+to a harness's agent is still expected to be cited, and the other
+retrieval checks apply to every session.
+
 ## Judge version boundary
 
 New runs use `questions_v4` and `labels_v4`. Structured lessons and per-claim
