@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import contextlib
-import json
 import os
 import re
 import uuid
-from collections import defaultdict
 from collections.abc import Sequence
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
 
@@ -26,21 +25,19 @@ from ..config import Config, ConfigError
 from ..db import AgentMemoryError, MemoryClient, sql_literal
 from ..graph import (
     MAX_HOPS,
+    EntityMerge,
     Relation,
     RelationListing,
     RelationWalk,
+    apply_merge,
     normalize_entity,
-    relations_sql,
 )
-from ..graph.sql import ROW as GRAPH_ROW
-from ..graph.sql import sources_sql
 from ..lifecycle import (
     REVIEW_ACTIONS,
     LifecycleError,
     LifecyclePlan,
     is_validation_error,
     maintain_corrections,
-    stable_id,
     validate_interval,
 )
 from . import ranking
@@ -652,141 +649,36 @@ class MemoryTools:
         actor: str | None = None,
         retrieval_id: str | None = None,
     ) -> dict[str, Any]:
-        """Entity resolution as append-only history: every active relation that mentions
-        `alias` is superseded by the same relation with `canonical` in its place, or retired
-        when that relation already exists. A relation between `alias` and `canonical` is
-        retired too, since the merge makes them one entity. Nothing is rewritten; the alias
-        stays in the new rows' metadata and the old rows stay readable.
-
-        `retrieval_id` names the recall the merge was proposed from, so the merge event
-        says what its proposer was shown."""
+        """Entity resolution as append-only history: what `graph.apply_merge` does, in this
+        session. `retrieval_id` names the recall the merge was proposed from."""
         redact = self.redactor()
-        alias = redact.text(alias or "")[0]
-        canonical = redact.text(canonical or "")[0]
-        canonical_type = redact.value(canonical_type)[0]
-        reason = redact.text(reason or "")[0]
-        alias_norm = normalize_entity(alias or "")
-        canonical_norm = normalize_entity(canonical or "")
-        if not alias_norm or not canonical_norm:
-            raise ToolError("alias and canonical are required")
-        if alias_norm == canonical_norm:
-            raise ToolError("alias and canonical normalize to the same entity")
-        if not (reason or "").strip():
-            raise ToolError("reason is required")
+        try:
+            merge = EntityMerge(
+                alias=redact.text(alias or "")[0],
+                canonical=redact.text(canonical or "")[0],
+                reason=redact.text(reason or "")[0],
+                actor=redact.text(actor or self.agent_id)[0],
+                scopes=self._scopes(scopes),
+                canonical_type=redact.value(canonical_type)[0],
+            )
+        except ValueError as exc:
+            raise ToolError(str(exc)) from None
         if retrieval_id is not None:
-            retrieval_id = _uuid(retrieval_id, "retrieval_id")
-        scopes = self._scopes(scopes)
-        actor = redact.text(actor or self.agent_id)[0]
+            merge = replace(merge, retrieval_id=_uuid(retrieval_id, "retrieval_id"))
         try:
             client = self._client_or_raise()
-            maintain_corrections(client)
-            _, rows = client.query(relations_sql(scopes, [alias_norm]))
-            old: list[tuple[dict[str, Any], Relation, Relation | None]] = []
-            for row in rows:
-                record = dict(zip(GRAPH_ROW, row, strict=True))
-                relation = Relation.from_metadata(json.loads(record["metadata"]))
-                if relation is None:
-                    continue
-                ends = {relation.subject_norm, relation.object_norm}
-                # Renamed, a relation between the two names would point an entity at itself.
-                renamed = (
-                    None
-                    if ends == {alias_norm, canonical_norm}
-                    else relation.renamed(alias_norm, canonical, canonical_type)
-                )
-                old.append((record, relation, renamed))
-            summary: dict[str, Any] = {
-                "degraded": False,
-                "alias": alias,
-                "canonical": canonical,
-                "superseded": [],
-                "retired": [],
-            }
-            if not old:
-                return summary
-            _, source_rows = client.query(sources_sql([rec["memory_id"] for rec, _, _ in old]))
-            sources: dict[str, list[tuple[str, str]]] = defaultdict(list)
-            for mid, eid, rel in source_rows:
-                sources[str(mid)].append((str(eid), str(rel)))
-            event = self._event(
+            done = apply_merge(
                 client,
-                "memory_write",
-                f"merge entity {alias} into {canonical}",
-                {
-                    "merge": {
-                        "alias": alias,
-                        "alias_norm": alias_norm,
-                        "canonical": canonical,
-                        "canonical_norm": canonical_norm,
-                        "reason": reason,
-                        "actor": actor,
-                        "scopes": scopes,
-                        **({"retrieval_id": retrieval_id} if retrieval_id else {}),
-                    }
-                },
+                merge,
+                lambda content, payload: self._event(client, "memory_write", content, payload),
+                redact,
             )
-            plan = LifecyclePlan(client)
-
-            def retire(mid: str, into: str | None) -> None:
-                plan.review(
-                    {
-                        "action_id": stable_id(event["event_id"], f"merge-retire:{mid}"),
-                        "memory_id": mid,
-                        "action": "retire",
-                        "actor": actor,
-                        "session_id": self.session_id,
-                        "event_id": event["event_id"],
-                        "related_memory_id": into,
-                        "reason": reason,
-                    }
-                )
-                summary["retired"].append({"memory_id": mid, "into": into})
-
-            for record, relation, renamed in old:
-                mid = record["memory_id"]
-                if renamed is None:
-                    retire(mid, None)
-                    continue
-                content = redact.text(_rename_in_text(record["content"], relation, renamed))[0]
-                target, duplicate = plan.remember(
-                    {
-                        "memory_id": client.new_ids()[0],
-                        "scope": redact.text(record["scope"])[0],
-                        "type": record["type"],
-                        "key": renamed.key,
-                        "content": content,
-                        "content_hash": blobs.content_hash(content),
-                        "confidence": float(record["confidence"]),
-                        "importance": float(record["importance"]),
-                        "trust_level": record["trust_level"],
-                        "supersedes": mid,
-                        "valid_from": _ts(record["valid_from"]),
-                        "valid_to": _ts(record["valid_to"]),
-                        "expires_at": _ts(record["expires_at"]),
-                        "created_by_session": self.session_id,
-                        "metadata": redact.value(renamed.metadata())[0],
-                    },
-                    event_id=event["event_id"],
-                    actor=actor,
-                    carry_approval_from=mid,
-                    sources=[
-                        {"event_id": event["event_id"], "relation": "derived_from"},
-                        *({"event_id": eid, "relation": rel} for eid, rel in sources[mid]),
-                    ],
-                )
-                if duplicate:
-                    retire(mid, target)
-                else:
-                    summary["superseded"].append(
-                        {
-                            "memory_id": mid,
-                            "by": target,
-                            "key": renamed.key,
-                        }
-                    )
-            client.insert([("events", [event]), *plan.rows])
-            summary["event_id"] = event["event_id"]
-            return summary
+            return {
+                "degraded": False,
+                "alias": merge.alias,
+                "canonical": merge.canonical,
+                **done,
+            }
         except (AgentMemoryError, ConfigError, duckdb.Error) as exc:
             if is_validation_error(exc):
                 raise ToolError(f"merge conflict or validation failure: {exc}") from None
@@ -794,8 +686,8 @@ class MemoryTools:
             return {
                 "degraded": True,
                 "reason": f"{type(exc).__name__}: {exc}",
-                "alias": alias,
-                "canonical": canonical,
+                "alias": merge.alias,
+                "canonical": merge.canonical,
                 "superseded": [],
                 "retired": [],
             }
@@ -856,26 +748,6 @@ class MemoryTools:
             out["memory_id"] = action["memory_id"]
             out["action"] = action["action"]
         return out
-
-
-def _rename_in_text(content: str, old: Relation, new: Relation) -> str:
-    """Carry a merge into the memory's prose when the old name appears in it; otherwise
-    the new relation's own sentence is the content."""
-    text = content
-    changed = False
-    for before, after in ((old.subject, new.subject), (old.object, new.object)):
-        if before == after:
-            continue
-        # A name stands alone: not inside a word, nor inside a longer name such as `al-bot`
-        # or `db.py`, since entity names keep `-`, `/` and an inner `.`.
-        pattern = re.compile(
-            rf"(?<![\w\-/])(?<!\w\.){re.escape(before)}(?![\w\-/])(?!\.\w)", re.IGNORECASE
-        )
-        if pattern.search(text):
-            # A function, so a backslash in the new name is not read as a group reference.
-            text = pattern.sub(lambda _match, name=after: name, text)
-            changed = True
-    return text if changed else new.sentence
 
 
 def _uuid(value: str, name: str) -> str:
