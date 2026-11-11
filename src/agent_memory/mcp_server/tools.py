@@ -535,14 +535,15 @@ class MemoryTools:
             )
 
     def status(self) -> dict[str, Any]:
-        spool = Spool(self.cfg.spool_dir).status()
+        spool = Spool(self.cfg.spool_dir)
         info: dict[str, Any] = {
             "agent_id": self.agent_id,
             "session_id": self.session_id,
             "harness_session_id": self.harness_session_id,
             "project": self.project,
             "server": self.cfg.uri,
-            "spool_pending_lines": sum(s.lines for s in spool),
+            "spool_pending_lines": sum(s.lines for s in spool.status()),
+            "spool_rejected_lines": sum(s.lines for s in spool.rejected()),
         }
         try:
             client = self._client_or_raise()

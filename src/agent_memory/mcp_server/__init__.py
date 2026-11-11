@@ -157,8 +157,8 @@ def build_server(tools: MemoryTools) -> MCPServer:
 
     @server.tool()
     def status() -> dict[str, Any]:
-        """Whether the memory server is reachable, this session's id, and how much is
-        waiting in the spool."""
+        """Whether the memory server is reachable, this session's id, how much is waiting
+        in the spool, and how many records the ledger rejected."""
         return tools.status()
 
     return server

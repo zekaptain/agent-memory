@@ -12,7 +12,8 @@ import pytest
 from mcp.types import CallToolResult, TextContent
 
 from agent_memory.capture import ids
-from agent_memory.capture.pipeline import replay_spool
+from agent_memory.capture.pipeline import deliver, replay_spool
+from agent_memory.capture.record import Record, now
 from agent_memory.db import MemoryClient, MemoryServer, sql_literal
 from agent_memory.mcp_server import MemoryTools, ToolError, build_server
 from agent_memory.mcp_server.ranking import normalize_query
@@ -351,6 +352,22 @@ def test_degraded_mode_queues_and_replays(down_cfg):
             server.stop()
     finally:
         tools.close()
+
+
+def test_status_counts_records_the_ledger_rejected(tools, live_cfg):
+    before = tools.status()
+    refused = Record(
+        agent_id="factory-droid",
+        harness_session_id="mcp-rejected",
+        kind="memory_write",
+        ts=now(),
+        source_key="bad",
+        memory={"content": ""},
+    )
+    assert deliver(live_cfg, [refused], deadline=10).failed_paths
+    after = tools.status()
+    assert after["spool_rejected_lines"] == before["spool_rejected_lines"] + 1
+    assert after["spool_pending_lines"] == before["spool_pending_lines"]
 
 
 # stdio entry point

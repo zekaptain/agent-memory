@@ -341,7 +341,9 @@ Inserts `memory_actions` with `actor = AGENT_MEMORY_AGENT` and the session id,
 and an `events(kind='memory_write')` row. Returns the resulting status.
 
 **`status()`** (read-only): server reachable, `session_id`, counts for this
-session, spool depth. Lets a harness surface outages to the user.
+session, spool depth (`spool_pending_lines`), and the number of rejected
+records kept under `spool/failed/` (`spool_rejected_lines`). Lets a harness
+surface outages and rejected records to the user.
 
 `relate` and `graph` were added after Phase 1 with the relation graph; see
 `README.md` and the "Relation graph" paragraph in `PLAN.md`.
@@ -649,3 +651,5 @@ Follow-ups the same day:
 - The Droid adapter passed a `PreCompact` hook's `custom_instructions`
   through as content without turning it into text, so a value that was not
   text was rejected. It now goes through `text_of` like other hook text.
+- The MCP `status` tool reports rejected records as `spool_rejected_lines`
+  beside `spool_pending_lines`, so an agent can see them without the CLI.

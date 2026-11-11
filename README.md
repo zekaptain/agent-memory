@@ -225,7 +225,7 @@ If you changed the database home or port, include `AGENT_MEMORY_HOME` and
 | `review` | Approve, quarantine, retire, confirm, or flag a contradiction. |
 | `relate` | Record a relation between two entities. |
 | `graph` | Retrieve relations around an entity. |
-| `status` | Check the server connection and spool. |
+| `status` | Check the server connection, the spool, and rejected records. |
 
 Memories derived from tools start quarantined. If the server is down,
 `recall` returns `degraded: true` and writes are queued to the spool.
