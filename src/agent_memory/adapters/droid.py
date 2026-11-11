@@ -44,6 +44,12 @@ _KEYED_ON_MESSAGE = frozenset({"SessionStart", "SessionEnd", "PreCompact"})
 # calls of a turn when it stops, and the outcome of the last turn when the session ends.
 _TRANSCRIPT_DUE = frozenset({"Stop", "SessionEnd"})
 
+# The hook events capture needs: those at which something is recorded or the transcript
+# is read.
+HOOK_EVENTS = tuple(
+    event for event, kind in _HOOK_KINDS.items() if kind is not None or event in _TRANSCRIPT_DUE
+)
+
 _ASSISTANT_META = ("modelId", "apiProvider", "reasoningEffort", "compactionSummaryId")
 
 
@@ -52,6 +58,11 @@ class DroidAdapter:
 
     def __init__(self, *, record_pre_tool: bool = False) -> None:
         self.record_pre_tool = record_pre_tool
+
+    @property
+    def hook_events(self) -> tuple[str, ...]:
+        """The hook events to run `mem event` at; at any other it would record nothing."""
+        return (*HOOK_EVENTS, "PreToolUse") if self.record_pre_tool else HOOK_EVENTS
 
     # Hooks
 

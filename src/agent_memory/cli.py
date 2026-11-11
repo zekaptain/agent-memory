@@ -31,6 +31,7 @@ from .db import (
     open_direct,
 )
 from .graph.cli import graph_app
+from .hooks import hooks_app, runs_event
 from .judge.cli import judge_app
 from .mcp_server.tools import ToolError
 from .review import review_app
@@ -511,6 +512,7 @@ app.add_typer(judge_app, name="judge")
 app.add_typer(graph_app, name="graph")
 app.add_typer(admit_app, name="admit")
 app.add_typer(review_app, name="review")
+app.add_typer(hooks_app, name="hooks")
 
 
 @spool_app.command("status")
@@ -568,19 +570,6 @@ def render_table(columns: Sequence[str], rows: Sequence[Sequence[Any]], max_widt
     return "\n".join(lines)
 
 
-def _subcommand(args: Sequence[str]) -> str | None:
-    """The first word that is neither a root option nor the value of one."""
-    is_value = False
-    for arg in args:
-        if is_value:
-            is_value = False
-        elif arg in ("--home", "--port"):
-            is_value = True
-        elif not arg.startswith("-"):
-            return arg
-    return None
-
-
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the CLI and return its exit code. Expected failures print one line, not a traceback."""
     args = list(sys.argv[1:] if argv is None else argv)
@@ -590,7 +579,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if exc.code is None or isinstance(exc.code, int):
             code = exc.code or 0
             # A usage error exits 2, which a harness reads from a hook as "block the agent".
-            return 1 if code == 2 and _subcommand(args) == "event" else code
+            return 1 if code == 2 and runs_event(args) else code
         print(exc.code, file=sys.stderr)
         return 1
     except (AgentMemoryError, ConfigError, ToolError) as exc:

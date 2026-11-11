@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from agent_memory.adapters import UnsupportedTranscript, get_adapter
-from agent_memory.adapters.droid import DroidAdapter
+from agent_memory.adapters.droid import HOOK_EVENTS, DroidAdapter
 from tests.conftest import FIXTURES
 
 TRANSCRIPT = FIXTURES / "droid_session.jsonl"
@@ -410,6 +410,37 @@ def test_droid_says_at_which_hooks_its_transcript_is_read():
     ):
         assert DroidAdapter().transcript_due(hook(event)) is None
     assert DroidAdapter().transcript_due({"session_id": "s", "hook_event_name": "Stop"}) is None
+
+
+def test_droid_names_the_hook_events_capture_needs():
+    # Those at which the adapter records something or reads the transcript, and no other.
+    known = [
+        "SessionStart",
+        "SessionEnd",
+        "UserPromptSubmit",
+        "PreCompact",
+        "SubagentStop",
+        "Notification",
+        "Stop",
+        "PreToolUse",
+        "PostToolUse",
+    ]
+    adapter = DroidAdapter()
+    needed = [
+        event
+        for event in known
+        if adapter.from_hook(hook(event)) or adapter.transcript_due(hook(event))
+    ]
+    assert list(HOOK_EVENTS) == list(adapter.hook_events) == needed
+    assert needed == known[:7]
+    # Asked to record a note before each tool call, it needs that hook event too.
+    noting = DroidAdapter(record_pre_tool=True)
+    assert list(noting.hook_events) == [
+        event
+        for event in known
+        if noting.from_hook(hook(event)) or noting.transcript_due(hook(event))
+    ]
+    assert list(noting.hook_events) == known[:8]
 
 
 def test_droid_precompact_and_session_end():
