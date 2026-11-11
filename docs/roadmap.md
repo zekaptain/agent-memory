@@ -146,10 +146,18 @@ Verified against the code in the audit of 2026-11 and still open.
 - A caller chooses the `trust_level` of what it remembers, and any agent
   can approve any quarantined memory. Outside admission, no command lets a
   person review quarantined memories (`mcp_server/tools.py`).
-- `mem ingest --transcript --keep-raw` has no effect.
-- A Droid hook that carries no message or tool id is keyed on the wall
-  clock, so a retry of that hook becomes a second event
-  (`adapters/droid.py`).
+- `mem ingest --transcript --keep-raw` has no effect. A raw payload kept
+  with `mem event --keep-raw` is lost when its record goes through the
+  spool, unless the replay is given `--keep-raw` too, and the replay at
+  server start never is (`capture/pipeline.py`).
+- What identifies a Droid hook has been checked against a real payload
+  only for `UserPromptSubmit`. Factory documents an optional `message_id`
+  on every hook and no tool id on `PostToolUse`. The adapter keys a hook
+  on `message_id` when it has one, so the second tool call or
+  notification of one message is taken for a duplicate and dropped.
+  Without one it keys on the wall clock, so a hook that runs twice
+  becomes two events, and a tool call the transcript import also records
+  is in the ledger twice (`adapters/droid.py`).
 
 Reported in the same audit and not yet checked against the code: the
 hand-maintained `ALL_TABLES` list; lockdown happening after the listener
