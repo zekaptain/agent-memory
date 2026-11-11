@@ -35,6 +35,42 @@ def safe_name(value: str) -> str:
     return _UNSAFE.sub("_", value)
 
 
+def _mend_tail(path: Path) -> None:
+    """Make the next append start on a line of its own. A killed run can leave the last row
+    without its line ending: a whole row gets one, and a fragment is cut off, since
+    `read_jsonl` never returned it and the run that resumes writes that row again."""
+    try:
+        fh = path.open("r+b")
+    except FileNotFoundError:
+        return
+    with fh:
+        end = fh.seek(0, os.SEEK_END)
+        if not end:
+            return
+        fh.seek(end - 1)
+        if fh.read(1) == b"\n":
+            return
+        start = end
+        while start:
+            step = min(start, 1 << 16)
+            fh.seek(start - step)
+            found = fh.read(step).rfind(b"\n")
+            if found >= 0:
+                start = start - step + found + 1
+                break
+            start -= step
+        fh.seek(start)
+        tail = fh.read()
+        if not tail.strip():
+            return
+        try:
+            json.loads(tail.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            fh.truncate(start)
+        else:
+            fh.write(b"\n")
+
+
 def utc_now_iso() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
@@ -154,6 +190,7 @@ class RunStore:
         n = 0
         target = path if append else path.with_name(path.name + ".tmp")
         if append:
+            _mend_tail(path)
             stream = path.open("a", encoding="utf-8")
         else:
             fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)

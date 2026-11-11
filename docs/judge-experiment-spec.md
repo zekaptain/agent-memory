@@ -1412,3 +1412,19 @@ Stage A and Stage B: `TURN_QUESTIONS`, `DRAFT_QUESTIONS`,
 else changed. Report headings and the stored row key `stage_a_reused`
 keep the old names, so reports and stored rows read as before, and the
 earlier sections of this spec keep them too.
+
+### Appending after a cut-off row, as built (2026-11-11)
+
+A run killed while it appends a draft or a verdict can leave the last row
+of the file without its end. Reading has always ignored such a fragment,
+so the resumed run does that row again. But the append then joined the
+new row onto the fragment, and from then on the file could not be read:
+every later command stopped with "invalid JSON" until someone repaired the
+file by hand.
+
+An append now looks at the end of the file first. It cuts a fragment off,
+and it gives a whole row that only lacks its line ending that ending, so
+the new row starts on its own line. After an append, reading returns what
+it returned before plus the new rows. Admission's own store is unchanged:
+it refuses to append to a file it cannot read. Regressions are in
+`tests/test_judge_store.py`, one of them a resumed `decide`.
