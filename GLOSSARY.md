@@ -29,7 +29,7 @@ A coding-agent product whose sessions are captured, such as Factory Droid or Mis
 _Avoid_: Agent (for the product), client, tool, IDE
 
 **Agent**:
-An identity registered to write to the ledger: one for each harness, one for a human at the CLI, and one for the judge. Subagents that a harness spawns write as that harness's agent.
+An identity registered to write to the ledger: one for each harness, one for a human at the CLI, one for the judge, and one for admission. Subagents that a harness spawns write as that harness's agent.
 _Avoid_: Harness (for the identity), actor, writer, model
 
 ### Capture
@@ -39,11 +39,11 @@ Recording what happened in a harness session into the ledger.
 _Avoid_: Ingestion, logging, tracking
 
 **Session**:
-One conversation in one harness, as recorded in the ledger.
-_Avoid_: Thread, conversation, chat
+One stretch of activity by one agent, recorded in the ledger as a unit. A conversation in a harness is the usual kind; a judge run, a day of admission, and a graph command run at the CLI are sessions too.
+_Avoid_: Thread, chat, conversation (which is only one kind of session)
 
 **Event**:
-One thing that happened in a session: a message, a tool call or its result, a recall, a memory write, a compaction, or an outcome.
+One thing that happened in a session: a message, a tool call or its result, a recall, a memory write, a compaction, a decision, or an outcome.
 _Avoid_: Log entry, record, message (for anything that is not a message)
 
 **Turn**:
