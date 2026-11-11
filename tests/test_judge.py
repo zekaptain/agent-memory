@@ -70,6 +70,7 @@ from agent_memory.judge.triggers import (
     trigger_flags,
 )
 from agent_memory.judge.verdict import Verdict, judge
+from agent_memory.model_call import LlamaCpp, Ollama
 from tests.conftest import FIXTURES
 
 JUDGE_TRANSCRIPT = FIXTURES / "droid_session_judge.jsonl"
@@ -1158,8 +1159,6 @@ def lesson_reply(rule="Stop the server first.", *, cited=(3, 5), claims=None):
 
 
 def test_drafter_parsing_and_spec(monkeypatch):
-    from agent_memory.judge.drafter import OpenAIChatDrafter
-
     lesson = parse_lesson(lesson_reply("Stop  the server\nfirst.", cited=("[3]", 5, "x", 3)))
     assert lesson is not None
     assert lesson.rule == "Stop the server first."
@@ -1174,10 +1173,8 @@ def test_drafter_parsing_and_spec(monkeypatch):
     assert draft_hash("x") == draft_hash("x") != draft_hash("y")
     assert make_drafter("ollama:gemma4:26b").name == "ollama:gemma4:26b"
     local = make_drafter("llamacpp:ggml-org/gpt-oss-20b-GGUF:MXFP4")
-    assert isinstance(local, OpenAIChatDrafter)
     assert (local.name, local.local) == ("llamacpp:ggml-org/gpt-oss-20b-GGUF:MXFP4", True)
-    assert local.url == "http://localhost:9931/v1/chat/completions"
-    assert local.extra["chat_template_kwargs"] == {"enable_thinking": False}
+    assert local.server == LlamaCpp("ggml-org/gpt-oss-20b-GGUF:MXFP4", timeout=180)
     remote = make_drafter("openrouter:openai/gpt-5")
     assert (remote.name, remote.local) == ("openrouter:openai/gpt-5", False)
     for bad in ("openai:gpt", "ollama", "openrouter:"):
@@ -1208,10 +1205,12 @@ def test_drafter_parsing_and_spec(monkeypatch):
         [2],
         False,
     )
-    assert draft.cost_usd == pytest.approx(0.0012)
+    # A local server charges nothing, whatever its usage block says.
+    assert draft.cost_usd == 0.0
     assert draft.model_snapshot == "served-model"
     assert draft.to_dict()["declined"] is False
     url, body, headers = bodies[0]
+    assert url == "http://localhost:9931/v1/chat/completions"
     assert headers == {}
     assert body["max_tokens"] == 700
     assert body["response_format"] == {
@@ -1221,6 +1220,7 @@ def test_drafter_parsing_and_spec(monkeypatch):
     assert draft.schema_enforced
     assert draft.rule == "Run the tests before claiming done."
     assert draft.to_dict()["claims"] == [{"text": "The database was locked.", "cited": [2]}]
+    assert body["chat_template_kwargs"] == {"enable_thinking": False}
     assert body["reasoning_effort"] == "none"
     assert "closed_by" in body["messages"][0]["content"]
     assert '{"lesson": null}' in body["messages"][0]["content"]
@@ -1263,7 +1263,10 @@ def test_drafter_prompt_leads_with_the_decline():
 
 
 def test_drafter_retries_a_cut_off_draft_with_more_room(monkeypatch):
-    from agent_memory.judge.drafter import MAX_DRAFT_TOKENS, RETRY_DRAFT_TOKENS, OllamaDrafter
+    from agent_memory.judge.drafter import MAX_DRAFT_TOKENS, RETRY_DRAFT_TOKENS
+
+    monkeypatch.setenv(REMOTE_ENV, "1")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
 
     full = json.dumps(
         lesson_reply("Check the script with ShellCheck before running it.", cited=(4,))
@@ -1286,8 +1289,8 @@ def test_drafter_retries_a_cut_off_draft_with_more_room(monkeypatch):
         }, 100.0
 
     monkeypatch.setattr(endpoints, "post_json", openai_post)
-    local = make_drafter("llamacpp:m")
-    draft = local.draft("i1", "[4] TOOL RESULT: shellcheck ok")
+    hosted = make_drafter("openrouter:m")
+    draft = hosted.draft("i1", "[4] TOOL RESULT: shellcheck ok")
     assert draft.rule == "Check the script with ShellCheck before running it."
     assert [b["max_tokens"] for b in bodies] == [MAX_DRAFT_TOKENS, RETRY_DRAFT_TOKENS]
     assert bodies[0]["seed"] == bodies[1]["seed"]
@@ -1306,8 +1309,17 @@ def test_drafter_retries_a_cut_off_draft_with_more_room(monkeypatch):
         }, 10.0
 
     monkeypatch.setattr(endpoints, "post_json", always_cut)
-    with pytest.raises(JudgeError, match=r"drafter ran out of tokens after 300 chars of reasoning"):
-        local.draft("i2", "state")
+    with pytest.raises(JudgeError, match=r"drafter ran out of tokens after 300 chars of thinking"):
+        hosted.draft("i2", "state")
+
+    # llama-server calls thinking reasoning_content; the error counts that too.
+    def llama_cut(url, body, **kwargs):
+        message = {"content": partial, "reasoning_content": "x" * 120}
+        return {"choices": [{"message": message, "finish_reason": "length"}]}, 10.0
+
+    monkeypatch.setattr(endpoints, "post_json", llama_cut)
+    with pytest.raises(JudgeError, match=r"drafter ran out of tokens after 120 chars of thinking"):
+        make_drafter("llamacpp:m").draft("i2", "state")
 
     # The Ollama drafter reads done_reason and widens num_predict the same way.
     bodies.clear()
@@ -1322,7 +1334,7 @@ def test_drafter_retries_a_cut_off_draft_with_more_room(monkeypatch):
         }, 50.0
 
     monkeypatch.setattr(endpoints, "post_json", ollama_post)
-    draft = OllamaDrafter("m").draft("i3", "state")
+    draft = make_drafter("ollama:m").draft("i3", "state")
     assert draft.cited == [4]
     assert [b["num_predict"] for b in bodies] == [MAX_DRAFT_TOKENS, RETRY_DRAFT_TOKENS]
     assert draft.latency_ms == 100.0
@@ -1546,9 +1558,8 @@ def test_schema_fallback_does_not_swallow_server_or_repeated_errors(monkeypatch,
         raise endpoints.HttpStatusError("rejected", code)
 
     monkeypatch.setattr(endpoints, "post_json", post)
-    with pytest.raises(judge_http.HttpStatusError) as error:
+    with pytest.raises(JudgeError, match="rejected"):
         make_drafter(spec).draft("i", "state")
-    assert error.value.code == code
     assert len(calls) == (2 if spec == "openrouter:m" and code == 400 else 1)
 
 
@@ -1986,7 +1997,6 @@ def test_post_json_retries_one_timeout(monkeypatch):
 
 def test_drafter_caps_output_and_draft_items_skips_bad_items(tmp_path, monkeypatch):
     from agent_memory.judge import pipeline
-    from agent_memory.judge.drafter import OllamaDrafter
 
     store = synthetic_run(tmp_path, n=4)
     store.drafts_path.unlink(missing_ok=True)
@@ -2028,7 +2038,7 @@ def test_drafter_caps_output_and_draft_items_skips_bad_items(tmp_path, monkeypat
     assert rows[0]["drafter_version"] == "drafter_v3"
     # The skipped item is picked up by the next run.
     assert pipeline.draft_items(cfg, "syn", "ollama:m", store=store).written == 1
-    assert isinstance(pipeline.make_drafter("ollama:m"), OllamaDrafter)
+    assert pipeline.make_drafter("ollama:m").server == Ollama("m")
     run = store.read_run()
     assert run["drafters"]["ollama:m"]["drafts"] == 4
     assert run["drafters"]["ollama:m"]["model_snapshot"] == "m"

@@ -23,34 +23,24 @@ identical turns.
 from __future__ import annotations
 
 import hashlib
-import os
-from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from ..endpoints import LLAMACPP_HOST, OLLAMA_HOST
-from .backends import http
-from .backends.base import require_remote
-from .backends.jev import KEY_ENV
-from .backends.llamacpp import disable_thinking
-from .backends.llm import out_of_tokens, parse_judge_json
+from .. import model_call
+from ..model_call import Ask, LlamaCpp, Ollama, OpenRouter, Schema, Server
 from .lesson import LESSON_KINDS, LESSON_SCHEMA, Lesson, parse_lesson, render_lesson
 from .store import JudgeError
 
 DRAFTER_VERSION = "drafter_v3"
 DRAFTER_KINDS = ("ollama", "llamacpp", "openrouter")
-OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 MAX_DRAFT_TOKENS = 700
-# A model that writes long claims, or reasons before it answers, can spend the whole
-# budget before the JSON closes. On OpenAI-compatible endpoints reasoning tokens share
-# max_tokens with the visible answer.
+# A model that writes long claims, or thinks before it answers, can spend the whole budget
+# before the JSON closes. The request is seeded, so a rerun at the same budget would be cut
+# off at the same place.
 RETRY_DRAFT_TOKENS = 3 * MAX_DRAFT_TOKENS
 TEMPERATURE = 0.2
 SEED = 7
-# OpenRouter passes a provider's rejection of the schema through as a 400; some providers
-# say 422. Auth, credit, timeout, and rate-limit codes are not schema problems, so they get
-# no second send without the schema.
-SCHEMA_REJECTED = frozenset({400, 422})
+OPENAI_CHAT_TIMEOUT = 180
 
 # One short harness sentence, on purpose. A paragraph spelling out harness behavior made a 26B
 # local model decline nearly every turn, project facts included, while still writing up the
@@ -124,168 +114,39 @@ class Draft:
         )
 
 
-@dataclass(frozen=True)
-class Attempt:
-    """One completion call: what came back and whether the budget ran out first."""
+class Drafter:
+    """A drafter on one model server. Thinking is off, the reply is held to the lesson
+    schema, and a cut-off draft is asked for once more with room to finish."""
 
-    response: Mapping[str, Any]
-    content: str
-    reasoning: str
-    cut_off: bool
-    latency_ms: float
-
-
-def draft_with_room(once: Callable[[int], Attempt]) -> list[Attempt]:
-    """Call at the normal budget; when that is cut off, once more with room to finish. The
-    request is seeded, so without the larger budget a rerun would be cut off at the same place.
-    Raises when the retry is cut off too."""
-    attempts = [once(MAX_DRAFT_TOKENS)]
-    if attempts[-1].cut_off:
-        attempts.append(once(RETRY_DRAFT_TOKENS))
-    last = attempts[-1]
-    if last.cut_off:
-        raise JudgeError(out_of_tokens(last.content, last.reasoning, who="drafter"))
-    return attempts
-
-
-class OllamaDrafter:
-    def __init__(self, model: str, *, host: str = OLLAMA_HOST) -> None:
-        self.model = model
-        self.host = host
-        self.name = f"ollama:{model}"
-        self.local = True
+    def __init__(self, server: Server) -> None:
+        self.server = server
+        self.name = f"{server.kind}:{server.model}"
+        self.local = server.local
 
     def draft(self, item_id: str, state: str) -> Draft:
-        body: dict[str, Any] = {
-            "model": self.model,
-            "stream": False,
-            "think": False,
-            "format": LESSON_SCHEMA,
-            "options": {"temperature": TEMPERATURE, "seed": SEED, "num_predict": MAX_DRAFT_TOKENS},
-            "messages": [
-                {"role": "system", "content": SYSTEM},
-                {"role": "user", "content": drafter_prompt(state)},
-            ],
-        }
-
-        def once(budget: int) -> Attempt:
-            body["options"]["num_predict"] = budget
-            response, latency = http.post_json(f"{self.host}/api/chat", body)
-            message = response.get("message") or {}
-            return Attempt(
-                response=response,
-                content=str(message.get("content") or ""),
-                reasoning=str(message.get("thinking") or ""),
-                cut_off=response.get("done_reason") == "length",
-                latency_ms=latency,
-            )
-
-        attempts = draft_with_room(once)
-        lesson = parse_lesson(parse_judge_json(attempts[-1].content))
-        return Draft.from_lesson(
-            item_id,
-            lesson=lesson,
-            drafter=self.name,
-            model_snapshot=str(attempts[-1].response.get("model") or self.model),
-            latency_ms=sum(a.latency_ms for a in attempts),
+        ask = Ask(
+            prompt=drafter_prompt(state),
+            budget=MAX_DRAFT_TOKENS,
+            system=SYSTEM,
+            temperature=TEMPERATURE,
+            seed=SEED,
+            shape=Schema("lesson", LESSON_SCHEMA),
+            think=False,
         )
-
-
-class OpenAIChatDrafter:
-    """A drafter behind an OpenAI-compatible `/v1/chat/completions`: llama-server locally, or
-    OpenRouter when the remote opt-in is set."""
-
-    def __init__(
-        self,
-        kind: str,
-        model: str,
-        url: str,
-        *,
-        local: bool,
-        extra: Mapping[str, Any] | None = None,
-        api_key: str | None = None,
-    ) -> None:
-        self.kind = kind
-        self.model = model
-        self.url = url
-        self.local = local
-        self.extra = dict(extra or {})
-        self.api_key = api_key
-        self.name = f"{kind}:{model}"
-
-    def _headers(self) -> dict[str, str]:
-        if self.local:
-            return {}
-        require_remote(f"The {self.kind} drafter")
-        key = self.api_key or os.environ.get(KEY_ENV)
-        if not key:
-            raise JudgeError(f"{KEY_ENV} is not set; the {self.kind} drafter needs an API key.")
-        return {"Authorization": f"Bearer {key}"}
-
-    def draft(self, item_id: str, state: str) -> Draft:
-        headers = self._headers()
-        schema_enforced = True
-        schema: dict[str, Any] = {"name": "lesson", "schema": LESSON_SCHEMA}
-        if self.kind == "openrouter":
-            schema["strict"] = True
-        body: dict[str, Any] = {
-            "model": self.model,
-            "stream": False,
-            "temperature": TEMPERATURE,
-            "seed": SEED,
-            "max_tokens": MAX_DRAFT_TOKENS,
-            "response_format": {"type": "json_schema", "json_schema": schema},
-            "messages": [
-                {"role": "system", "content": SYSTEM},
-                {"role": "user", "content": drafter_prompt(state)},
-            ],
-            **self.extra,
-        }
-
-        def once(budget: int) -> Attempt:
-            nonlocal schema_enforced
-            body["max_tokens"] = budget
-            try:
-                response, latency = http.post_json(self.url, body, headers=headers, timeout=180)
-            except http.HttpStatusError as exc:
-                if (
-                    self.kind != "openrouter"
-                    or not schema_enforced
-                    or exc.code not in SCHEMA_REJECTED
-                ):
-                    raise
-                body["response_format"] = {"type": "json_object"}
-                schema_enforced = False
-                response, latency = http.post_json(self.url, body, headers=headers, timeout=180)
-                latency += exc.latency_ms
-            choices = response.get("choices") or []
-            first = choices[0] if choices and isinstance(choices[0], dict) else {}
-            message = first.get("message") or {}
-            return Attempt(
-                response=response,
-                content=str(message.get("content") or ""),
-                reasoning=str(message.get("reasoning") or ""),
-                cut_off=first.get("finish_reason") == "length",
-                latency_ms=latency,
-            )
-
-        attempts = draft_with_room(once)
-        lesson = parse_lesson(parse_judge_json(attempts[-1].content))
+        try:
+            result = model_call.call(self.server, ask, who="drafter", wider=RETRY_DRAFT_TOKENS)
+        except model_call.ModelCallError as exc:
+            raise JudgeError(str(exc)) from None
         return Draft.from_lesson(
             item_id,
-            lesson=lesson,
-            schema_enforced=schema_enforced,
+            lesson=parse_lesson(result.data),
+            schema_enforced=result.shape_enforced,
             drafter=self.name,
-            model_snapshot=str(attempts[-1].response.get("model") or self.model),
-            latency_ms=sum(a.latency_ms for a in attempts),
+            model_snapshot=result.snapshot,
             # Every attempt is billed, the cut-off one included.
-            cost_usd=sum(
-                float((a.response.get("usage") or {}).get("cost") or 0.0) for a in attempts
-            ),
+            latency_ms=result.latency_ms,
+            cost_usd=result.cost_usd,
         )
-
-
-Drafter = OllamaDrafter | OpenAIChatDrafter
 
 
 def make_drafter(spec: str) -> Drafter:
@@ -297,15 +158,7 @@ def make_drafter(spec: str) -> Drafter:
             "openrouter:<model>"
         )
     if kind == "ollama":
-        return OllamaDrafter(model)
+        return Drafter(Ollama(model))
     if kind == "llamacpp":
-        extra: dict[str, Any] = {}
-        disable_thinking(extra)
-        return OpenAIChatDrafter(
-            kind, model, f"{LLAMACPP_HOST}/v1/chat/completions", local=True, extra=extra
-        )
-    # OpenRouter reports the charge in `usage.cost` when asked; that is the per-draft cost the
-    # report records.
-    return OpenAIChatDrafter(
-        kind, model, OPENROUTER_URL, local=False, extra={"usage": {"include": True}}
-    )
+        return Drafter(LlamaCpp(model, timeout=OPENAI_CHAT_TIMEOUT))
+    return Drafter(OpenRouter(model, timeout=OPENAI_CHAT_TIMEOUT))
