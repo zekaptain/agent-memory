@@ -138,9 +138,11 @@ def resolve(
     project: PROJECT = None,
 ) -> None:
     """Propose entity merges with a local model; --apply records them as supersedes history.
-    The relations the model is given are logged as a graph_relations_v1 retrieval, and each
-    merge names it. A block of entities the model returns no clusters for is named and the
-    command exits 1, after the merges from the other blocks are shown or recorded."""
+    Every relation the command reads is logged as a graph_relations_v1 retrieval, and each
+    merge names it. The model is given the entities named in them, only those of
+    --entity-type when it is set. A block of entities the model returns no clusters for is
+    named and the command exits 1, after the merges from the other blocks are shown or
+    recorded."""
     tools = _tools(ctx, agent, project)
     resolver = OllamaResolver(model, host=host)
     try:

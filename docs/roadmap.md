@@ -150,8 +150,6 @@ Verified against the code in the audit of 2026-11 and still open.
 - A Droid hook that carries no message or tool id is keyed on the wall
   clock, so a retry of that hook becomes a second event
   (`adapters/droid.py`).
-- The listing retrieval of `mem graph resolve` records every relation
-  even when `--entity-type` shows the model a subset.
 
 Reported in the same audit and not yet checked against the code: the
 hand-maintained `ALL_TABLES` list; lockdown happening after the listener
