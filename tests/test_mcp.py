@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import os
 import subprocess
 import sys
 from typing import Any
+from unittest.mock import create_autospec
 
 import pytest
 from mcp.types import CallToolResult, TextContent
@@ -361,6 +363,131 @@ def test_mcp_server_exposes_tools_and_keeps_error_messages(tools, live_client):
 
         with pytest.raises(McpToolError, match="type must be one of"):
             await server.call_tool("remember", {"content": "x", "type": "nonsense"})
+
+    asyncio.run(go())
+
+
+# What a harness is told each tool takes. A harness calls a tool by these names, so a
+# change here breaks every harness that has the tool list it read before.
+TOOL_INPUTS = {
+    "recall": {
+        "query": "string, required",
+        "scopes": "array of string | null = None",
+        "limit": "integer = 8",
+        "types": "array of string | null = None",
+    },
+    "remember": {
+        "content": "string, required",
+        "type": "string, required",
+        "scope": "string | null = None",
+        "key": "string | null = None",
+        "confidence": "number = 0.7",
+        "importance": "number = 0.5",
+        "trust_level": "string = 'agent'",
+        "supersedes": "string | null = None",
+        "source_event_ids": "array of string | null = None",
+        "valid_from": "string | null = None",
+        "expires_at": "string | null = None",
+        "valid_to": "string | null = None",
+    },
+    "cite": {
+        "retrieval_id": "string | null = None",
+        "memory_ids": "array of string | null = None",
+        "context_event_ids": "array of string | null = None",
+        "answer_event_id": "string | null = None",
+    },
+    "review": {
+        "action": "string, required",
+        "memory_id": "string, required",
+        "reason": "string, required",
+        "related_memory_id": "string | null = None",
+    },
+    "relate": {
+        "subject": "string, required",
+        "predicate": "string, required",
+        "object": "string, required",
+        "subject_type": "string | null = None",
+        "object_type": "string | null = None",
+        "content": "string | null = None",
+        "scope": "string | null = None",
+        "confidence": "number = 0.7",
+        "importance": "number = 0.5",
+        "trust_level": "string = 'agent'",
+        "source_event_ids": "array of string | null = None",
+        "valid_from": "string | null = None",
+        "expires_at": "string | null = None",
+        "valid_to": "string | null = None",
+    },
+    "graph": {
+        "entity": "string, required",
+        "hops": "integer = 1",
+        "scopes": "array of string | null = None",
+        "limit": "integer = 25",
+        "types": "array of string | null = None",
+    },
+    "status": {},
+}
+
+
+def kind(spec: dict[str, Any]) -> str:
+    if "anyOf" in spec:
+        return " | ".join(kind(option) for option in spec["anyOf"])
+    if spec["type"] == "array":
+        return f"array of {kind(spec['items'])}"
+    return spec["type"]
+
+
+def test_every_tool_keeps_the_inputs_harnesses_were_told_of():
+    server = build_server(create_autospec(MemoryTools, instance=True))
+
+    async def go():
+        told = {}
+        for tool in await server.list_tools():
+            required = tool.input_schema.get("required", [])
+            told[tool.name] = {
+                name: (
+                    f"{kind(spec)}, required"
+                    if name in required
+                    else f"{kind(spec)} = {spec['default']!r}"
+                )
+                for name, spec in tool.input_schema["properties"].items()
+            }
+        assert told == TOOL_INPUTS
+
+    asyncio.run(go())
+
+
+def test_every_tool_hands_each_input_to_the_parameter_of_its_name():
+    memory = create_autospec(MemoryTools, instance=True)
+    server = build_server(memory)
+    renamed = {("remember", "type"): "memory_type"}
+
+    def sample(name: str, n: int, spec: dict[str, Any]) -> object:
+        # No two inputs of a tool are sent the same value, so one that reaches
+        # another's parameter shows.
+        first = kind(spec).split(" | ")[0]
+        if first == "integer":
+            return n + 2
+        if first == "number":
+            return (n + 1) / 100
+        return [f"{name} sent"] if first.startswith("array") else f"{name} sent"
+
+    async def go():
+        for tool in await server.list_tools():
+            method = getattr(memory, tool.name)
+            method.return_value = {"tool": tool.name}
+            sent = {
+                name: sample(name, n, spec)
+                for n, (name, spec) in enumerate(tool.input_schema["properties"].items())
+            }
+            assert structured(await server.call_tool(tool.name, sent)) == {"tool": tool.name}
+            call = method.call_args
+            signature = inspect.signature(getattr(MemoryTools, tool.name))
+            got = dict(signature.bind(memory, *call.args, **call.kwargs).arguments)
+            del got["self"]
+            assert got == {
+                renamed.get((tool.name, name), name): value for name, value in sent.items()
+            }
 
     asyncio.run(go())
 
