@@ -6,8 +6,10 @@ import json
 import subprocess
 import sys
 import threading
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 
 import duckdb
 import pytest
@@ -192,6 +194,101 @@ def test_server_export_writes_every_table(served):
     path = server.export()
     assert sorted(p.stem for p in path.iterdir()) == sorted(ALL_TABLES)
     assert (cfg.export_dir / "latest").resolve() == path.resolve()
+
+
+class _Between:
+    """A connection under which the ledger grows right after `sessions` has been copied."""
+
+    def __init__(self, con: duckdb.DuckDBPyConnection, write: Callable[[], object], times: int):
+        self.con, self.write, self.left = con, write, times
+
+    def __getattr__(self, name: str):
+        return getattr(self.con, name)
+
+    def execute(self, sql: str, *args):
+        out = self.con.execute(sql, *args)
+        if self.left and sql.startswith("COPY") and "sessions)" in sql:
+            self.left -= 1
+            self.write()
+        return out
+
+
+def written_to_during_export(
+    con: duckdb.DuckDBPyConnection, cfg: Config, *, times: int = 1
+) -> tuple[duckdb.DuckDBPyConnection, list[str]]:
+    """The connection, and the sessions a second client adds (each with one event) while an
+    export through it runs."""
+    added: list[str] = []
+
+    def write() -> None:
+        with MemoryClient.from_config(cfg) as other:
+            sid = other.new_ids()[0]
+            session = {
+                "session_id": sid,
+                "agent_id": "human",
+                "capture_completeness": "full",
+                "started_at": datetime.now(UTC),
+            }
+            other.insert([("sessions", [session]), ("events", [event(sid, 1)])])
+        added.append(sid)
+
+    return cast(duckdb.DuckDBPyConnection, _Between(con, write, times)), added
+
+
+def exported(path: Path) -> tuple[set[str], int]:
+    """The sessions in an export, and how many of its events belong to none of them."""
+    sessions, events = (sql_literal(str(path / f"{t}.parquet")) for t in ("sessions", "events"))
+    con = duckdb.connect()
+    try:
+        ids = con.execute(f"SELECT session_id::VARCHAR FROM read_parquet({sessions})").fetchall()
+        orphans = con.execute(
+            f"SELECT count(*) FROM read_parquet({events}) WHERE session_id NOT IN "
+            f"(SELECT session_id FROM read_parquet({sessions}))"
+        ).fetchone()
+    finally:
+        con.close()
+    assert orphans is not None
+    return {row[0] for row in ids}, orphans[0]
+
+
+def test_the_servers_export_holds_one_moment_of_the_ledger(served):
+    """Each table was copied by its own statement. A session and its event written while the
+    export ran left the event in the files and its session out of them."""
+    cfg, server = served
+    con, added = written_to_during_export(server.con, cfg)
+    sessions, orphans = exported(export_snapshot(con, cfg.export_dir.resolve()))
+    assert len(added) == 1
+    assert orphans == 0
+    assert added[0] not in sessions
+
+
+def test_a_clients_export_is_made_again_when_the_ledger_grew_under_it(
+    served, client, tmp_path, monkeypatch
+):
+    """A client cannot hold the tables still: each of its statements sees the server as it
+    is then. It finds out that a table grew and copies them again."""
+    cfg, _ = served
+    con, added = written_to_during_export(client.con, cfg)
+    monkeypatch.setattr(client, "con", con)
+    sessions, orphans = exported(client.export(tmp_path))
+    assert orphans == 0
+    assert added[0] in sessions
+
+
+def test_a_clients_export_publishes_nothing_while_the_ledger_keeps_growing(
+    served, client, tmp_path, monkeypatch
+):
+    cfg, _ = served
+    previous = client.export(tmp_path)
+    con, added = written_to_during_export(client.con, cfg, times=db.EXPORT_ATTEMPTS)
+    monkeypatch.setattr(client, "con", con)
+    with pytest.raises(AgentMemoryError, match="written to during each of 3 attempts"):
+        client.export(tmp_path)
+    assert len(added) == db.EXPORT_ATTEMPTS
+    assert (tmp_path / "latest").resolve() == previous.resolve()
+    assert not list(tmp_path.glob(".tmp-*"))
+    monkeypatch.undo()
+    assert exported(client.export(tmp_path))[1] == 0
 
 
 def test_client_reports_when_server_is_down(cfg):

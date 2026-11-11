@@ -295,23 +295,50 @@ def _rollback_quietly(con: duckdb.DuckDBPyConnection) -> None:
 
 _SNAPSHOT_DIR = re.compile(r"\d{8}T\d{6}\d{6}Z")
 
+# How many times a client copies the tables before it gives up on a ledger that keeps growing.
+EXPORT_ATTEMPTS = 3
 
-def export_snapshot(
-    con: duckdb.DuckDBPyConnection, export_dir: Path, prefix: str = "", keep: int = 0
-) -> Path:
+
+def export_snapshot(con: duckdb.DuckDBPyConnection, export_dir: Path, keep: int = 0) -> Path:
     """Write every table to Parquet under export_dir/<timestamp>/ and repoint export_dir/latest.
 
-    With keep > 0, snapshots older than the newest `keep` are removed afterwards.
+    For a connection to the database file. The copies share one transaction, so the files
+    hold the ledger as it was at one moment, whatever clients write meanwhile. With
+    keep > 0, snapshots older than the newest `keep` are removed afterwards.
     """
+
+    def copy(staging: Path) -> None:
+        con.execute("BEGIN TRANSACTION")
+        try:
+            _copy_tables(con, staging)
+        finally:
+            _rollback_quietly(con)
+
+    return _publish_snapshot(export_dir, keep, copy)
+
+
+def _copy_tables(con: duckdb.DuckDBPyConnection, staging: Path, prefix: str = "") -> dict[str, int]:
+    """Copy every table into the directory. Returns how many rows each file holds."""
+    copied = {}
+    for table in ALL_TABLES:
+        target = sql_literal(str(staging / f"{table}.parquet"))
+        row = con.execute(
+            f"COPY (SELECT * FROM {prefix}{table}) TO {target} (FORMAT parquet)"
+        ).fetchone()
+        copied[table] = int(row[0]) if row else 0
+    return copied
+
+
+def _publish_snapshot(export_dir: Path, keep: int, copy: Callable[[Path], None]) -> Path:
+    """Have `copy` fill a staging directory, then publish it as the newest snapshot. A copy
+    that fails publishes nothing and leaves only the earlier snapshots behind."""
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
     staging = export_dir / f".tmp-{stamp}"
     final = export_dir / stamp
     staging.mkdir(parents=True)
     link = export_dir / f".latest-{stamp}"
     try:
-        for table in ALL_TABLES:
-            target = sql_literal(str(staging / f"{table}.parquet"))
-            con.execute(f"COPY (SELECT * FROM {prefix}{table}) TO {target} (FORMAT parquet)")
+        copy(staging)
         staging.rename(final)
         link.symlink_to(final.name)
         os.replace(link, export_dir / "latest")
@@ -571,7 +598,31 @@ class MemoryClient:
         return columns, rows
 
     def export(self, export_dir: Path, keep: int = 0) -> Path:
-        return export_snapshot(self.con, export_dir, prefix=f"{CLIENT_ALIAS}.main.", keep=keep)
+        """Write every table to Parquet, as export_snapshot does for the database file.
+
+        Each statement a client sends sees the server as it is then, so no transaction here
+        holds the tables still. But the tables only grow: files with as many rows as one
+        later statement counts are the tables as they were at that statement. The copies are
+        made again while a table has grown, and nothing is published if they never agree.
+        """
+        prefix = f"{CLIENT_ALIAS}.main."
+
+        def copy(staging: Path) -> None:
+            for _ in range(EXPORT_ATTEMPTS):
+                if _copy_tables(self.con, staging, prefix) == self._row_counts():
+                    return
+            raise AgentMemoryError(
+                f"The ledger was written to during each of {EXPORT_ATTEMPTS} attempts to export "
+                "it, so no snapshot was published. Export again when no agent is writing."
+            )
+
+        return _publish_snapshot(export_dir, keep, copy)
+
+    def _row_counts(self) -> dict[str, int]:
+        """How many rows every table holds, counted by one statement and so at one moment."""
+        counts = ", ".join(f"(SELECT count(*) FROM {table})" for table in ALL_TABLES)
+        _, rows = self.query(f"SELECT {counts}")
+        return dict(zip(ALL_TABLES, (int(n) for n in rows[0]), strict=True))
 
 
 def _encode(value: Any, column_type: str) -> Any:
