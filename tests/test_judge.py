@@ -673,6 +673,29 @@ def test_jev_request_and_response_shapes(monkeypatch):
         parse_answers({"answers": {}}, questions, latency_ms=1)
 
 
+@pytest.mark.parametrize(
+    ("question", "entry"),
+    [
+        ("failed", {"type": "noul", "noul": "likely"}),
+        ("failed", {"type": "noul", "noul": 0.9, "confidence": "high"}),
+        ("category", {"type": "choice", "probabilities": {"none": "most"}}),
+        ("category", {"type": "choice", "probabilities": 3}),
+        ("generalizable", {"type": "score", "score": "two"}),
+        ("generalizable", {"type": "score", "probabilities": [0.1, None]}),
+    ],
+)
+def test_jev_answer_in_another_shape_is_a_judge_error(question, entry):
+    with pytest.raises(JudgeError) as info:
+        parse_answers({"answers": {question: entry}}, [BY_ID[question]], latency_ms=1)
+    assert str(info.value) == f"Jev answer for '{question}' is malformed"
+
+
+def test_jev_usage_in_another_shape_is_a_judge_error():
+    response = {"answers": {"failed": {"type": "noul", "noul": 0.9}}, "usage": "free"}
+    with pytest.raises(JudgeError, match="usage"):
+        parse_answers(response, [BY_ID["failed"]], latency_ms=1)
+
+
 def test_jev_refuses_without_opt_in_and_key(monkeypatch):
     monkeypatch.delenv(REMOTE_ENV, raising=False)
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)

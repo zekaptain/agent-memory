@@ -47,29 +47,23 @@ def parse_answers(
     if not isinstance(answers, dict):
         raise JudgeError("Jev response has no answers object")
     snapshot = str(response.get("model") or "")
-    usage = response.get("usage") or {}
-    cost = float(usage.get("cost") or 0.0)
+    try:
+        cost = float((response.get("usage") or {}).get("cost") or 0.0)
+    except (AttributeError, TypeError, ValueError):
+        raise JudgeError("Jev response has a malformed usage object") from None
     per_question = latency_ms / max(1, len(questions))
     out: dict[str, Answer] = {}
     for q in questions:
         entry = answers.get(q.id)
         if not isinstance(entry, dict):
             raise JudgeError(f"Jev response lacks an answer for {q.id!r}")
-        if q.type == "noul":
-            p = float(entry["noul"])
-            probs: dict[str, float] = {"yes": p, "no": 1 - p}
-        elif q.type == "choice":
-            probs = {str(k): float(v) for k, v in (entry.get("probabilities") or {}).items()}
-            if not probs and "choice" in entry:
-                probs = {str(entry["choice"]): 1.0}
-        else:
-            raw = entry.get("probabilities") or {}
-            if isinstance(raw, list):
-                probs = {str(i): float(v) for i, v in enumerate(raw)}
-            else:
-                probs = {str(k): float(v) for k, v in raw.items()}
-            if not probs and "score" in entry:
-                probs = {str(round(float(entry["score"]))): 1.0}
+        try:
+            probs = _probabilities(q, entry)
+            confidence = float(entry["confidence"]) if "confidence" in entry else None
+            score = float(entry["score"]) if q.type == "score" and "score" in entry else None
+        except (AttributeError, OverflowError, TypeError, ValueError):
+            # The entry is model output, so the message names only the question.
+            raise JudgeError(f"Jev answer for {q.id!r} is malformed") from None
         answer = answer_from_probabilities(
             q,
             probs,
@@ -80,12 +74,34 @@ def parse_answers(
         )
         # Jev's own confidence (for choice and score) is the distribution's concentration;
         # keep the gateway's number when it supplies one.
-        if "confidence" in entry:
-            answer.confidence = float(entry["confidence"])
-        if q.type == "score" and "score" in entry:
-            answer.value = float(entry["score"])
+        if confidence is not None:
+            answer.confidence = confidence
+        if score is not None:
+            answer.value = score
         out[q.id] = answer
     return out
+
+
+def _probabilities(q: Question, entry: dict[str, Any]) -> dict[str, float]:
+    """The distribution one entry states. An entry that states none is no answer."""
+    if q.type == "noul":
+        if entry.get("noul") is None:
+            return {}
+        p = float(entry["noul"])
+        return {"yes": p, "no": 1 - p}
+    raw = entry.get("probabilities") or {}
+    if q.type == "choice":
+        probs = {str(k): float(v) for k, v in raw.items()}
+        if not probs and "choice" in entry:
+            probs = {str(entry["choice"]): 1.0}
+        return probs
+    if isinstance(raw, list):
+        probs = {str(i): float(v) for i, v in enumerate(raw)}
+    else:
+        probs = {str(k): float(v) for k, v in raw.items()}
+    if not probs and "score" in entry:
+        probs = {str(round(float(entry["score"]))): 1.0}
+    return probs
 
 
 class JevBackend:

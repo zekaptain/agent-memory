@@ -1329,7 +1329,8 @@ stored distribution is a placeholder that nothing reads as a probability.
   as level 0 or a missing probability as 0.5, and only a string or a
   number can name an option.
 - Any backend's distribution with no mass on a listed option is marked
-  the same way. That covers a Jev entry with empty probabilities, readout
+  the same way. That covers a Jev entry with no value or with empty
+  probabilities (a value that is not a number is a `JudgeError`), readout
   samples that name no option (`sampling:8_missing`) and a question the
   rules baseline has no rule for (`rules_missing`).
 - With per-claim questions, one unanswered claim leaves the whole

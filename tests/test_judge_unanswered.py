@@ -285,11 +285,13 @@ def test_jev_entry_without_a_distribution_is_no_answer():
         "answers": {
             "generalizable": {"type": "score"},
             "enforced": {"type": "choice", "probabilities": {"elsewhere": 1.0}},
+            "failed": {"type": "noul"},
+            "grounded": {"type": "noul", "noul": None},
         },
     }
-    questions = [BY_ID["generalizable"], BY_ID["enforced"]]
+    questions = [BY_ID[name] for name in response["answers"]]
     answers = parse_answers(response, questions, latency_ms=1.0)
-    assert [answers[q.id].method for q in questions] == ["jev_missing", "jev_missing"]
+    assert [answers[q.id].method for q in questions] == ["jev_missing"] * 4
 
 
 def test_rules_have_no_answer_for_a_question_they_do_not_know():
