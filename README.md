@@ -205,7 +205,7 @@ Set the environment for your harness:
 
 | Variable | Use |
 |---|---|
-| `AGENT_MEMORY_AGENT` | Required. One of `factory-droid`, `mistral-vibe`, `oh-my-pi`, `amp`, or `jetbrains-junie`. |
+| `AGENT_MEMORY_AGENT` | Required. One of `factory-droid`, `mistral-vibe`, `oh-my-pi`, `amp`, or `jetbrains-junie`. `mem-mcp` does not start as `human`, the agent that `mem review` writes as. |
 | `AGENT_MEMORY_PROJECT` | Default recall scope. Defaults to the working directory's name. |
 | `AGENT_MEMORY_SESSION` | Harness session ID, when available. Joins MCP activity to the captured session. MCP-only coverage remains partial even when this ID is present. |
 | `AGENT_MEMORY_MCP_SERVER_NAME` | Optional capture setting when the MCP server is named something other than `agent-memory`. Attribution requires that exact server identity; a bare `cite` without recorded server identity stays unresolved. |
@@ -224,13 +224,16 @@ If you changed the database home or port, include `AGENT_MEMORY_HOME` and
 | `recall` | Search active memories with full-text ranking and log what was retrieved. |
 | `remember` | Store a memory. Identical content is confirmed, not duplicated. |
 | `cite` | Record which retrieved memories an answer used. |
-| `review` | Approve, quarantine, retire, confirm, or flag a contradiction. |
+| `review` | Quarantine, retire, confirm, or flag a contradiction. It refuses to approve. |
 | `relate` | Record a relation between two entities. |
 | `graph` | Retrieve relations around an entity. |
 | `status` | Check the server connection, the spool, and rejected records. |
 
-Memories derived from tools start quarantined. If the server is down,
-`recall` returns `degraded: true` and writes are queued to the spool.
+Memories derived from tools start quarantined. Only a human approves one,
+with `mem review` (see [Review what waits](#review-what-waits)). The
+`review` tool refuses `approve` and tells the agent to ask you. If the
+server is down, `recall` returns `degraded: true` and writes are queued
+to the spool.
 
 A correction proposes a replacement. The previous fact stays available
 until the replacement is approved when required, valid, and accepted.
@@ -242,6 +245,30 @@ upper bounds. Confirmation is evidence, not approval.
 Queued write IDs remain traceable if replay finds a duplicate. Inspect
 `memory_deduplications` for their canonical identity; ordinary supersession
 does not redirect later reviews.
+
+## Review what waits
+
+A quarantined memory is not recalled until a human approves it. With the
+server running, list what waits, then approve or retire a memory by its
+ID:
+
+```sh
+uv run mem review list --scope my-project
+uv run mem review approve <memory-id> --reason "checked against the runbook"
+uv run mem review retire <memory-id> --reason "the service was renamed"
+```
+
+`list` prints each waiting memory with its scope, the agent that wrote
+it, why it waits, and any memory that approving it would replace. Without
+`--scope` it reads every scope. `approve` shows the memory and asks for
+`y` typed at a terminal. It refuses piped input, and it refuses a memory
+that does not wait. `retire` withdraws any memory for good and does not
+ask. Both require `--reason` and are recorded as a review by the `human`
+agent.
+
+Review the lessons that admission wrote with `mem admit review` instead
+(see [Admit lessons into memory](#admit-lessons-into-memory)). It also
+keeps your answer as an example for the fitted approver.
 
 ## Relations and the graph
 
@@ -462,7 +489,11 @@ For a migration, stop the service, run `mem migrate`, then repeat step 3.
   comments, and multiple SQL statements in one text.
 - Triggers enforce the append-only ledger. Corrections use superseding
   memories or review actions.
-- Tool-derived memories remain quarantined until approved.
+- Tool-derived memories remain quarantined until a human approves them
+  with `mem review`. The MCP tools and spool replay refuse an approval
+  from any other agent. Every client holds the same token, so this binds
+  agents that use the tools, not a process that writes to the ledger
+  directly.
 - Capture redacts secrets before writing to the ledger, blobs, or spool.
   `events.redactions` counts removals.
 - Recall text is literal-quoted before entering SQL. The policy strips

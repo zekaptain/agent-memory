@@ -18,8 +18,9 @@ allow recall. Acceptance hides the predecessor permanently. Retirement,
 expiry, or quarantine of the successor never revives the predecessor.
 Restoration requires an explicit new memory or correction.
 
-Tool-origin memories require approval; existing agent/user trust defaults
-remain. Eligibility also requires `valid_from <= now`, when set, and
+Tool-origin memories require approval, which only a human gives (see
+"Approval is a human's, as built" below); existing agent/user trust
+defaults remain. Eligibility also requires `valid_from <= now`, when set, and
 `now < valid_to` and `now < expires_at`, when set. Empty/reversed intervals
 are invalid. Pending eligibility has an inspectable reason distinct from
 quarantine. Confirmation supplies evidence, not approval or restoration.
@@ -52,6 +53,36 @@ lineage. No merge silently drops evidence because content already exists.
 Validation failures are terminal diagnostics, not outages. Replay remains
 idempotent, parent-first, redacted, and bounded in its retries. A partial
 failure must not leave a correction half accepted.
+
+### Approval is a human's, as built (2026-11-11)
+
+Any agent could approve any quarantined memory, its own included, so the
+requirement that tool-origin memories be approved held nothing back. Now
+only the `human` agent may ask for an approval. The `review` tool refuses
+one from any other agent before it writes or queues anything, and replay
+rejects a queued one as a validation failure. A human approves with
+`mem review approve`, which shows the memory and asks for a yes typed at a
+terminal.
+
+Two approvals are still written without a human. A graph merge carries
+over the approval of the relation it replaces, which is not a new
+decision. The approver approves a lesson in admission's auto mode, which
+`mem admit enable --auto` allows only after the held-out gate passes. The
+check is therefore made where an approval is asked for, not where one is
+written.
+
+`quarantine`, `retire`, `confirm`, and `flag_contradiction` stay open to
+every agent. `trust_level` is still the writer's claim: a memory written
+with `user` trust needs no approval.
+
+`mem review` writes in a session of the `human` agent, like `mem graph`
+run with the default `--agent`. Its listing of what waits is not a
+recall: it reads memories that no agent may be shown, and records
+nothing.
+
+The commands, the replay rule, and the limits of a rule that the tools
+keep and the server does not are in "Only a human approves a memory" in
+[phase-1-spec.md](phase-1-spec.md).
 
 ## Coverage comes from observations
 
@@ -117,7 +148,7 @@ not become a successful binding.
 
 ### Recalls at the CLI, as built (2026-11-11)
 
-A person at the `mem` CLI reads and never answers, so nothing can cite a
+A human at the `mem` CLI reads and never answers, so nothing can cite a
 recall made in a session of the `human` agent. `mem audit check` reported
 each one as `retrieval_missing_attribution` for good. It no longer expects
 a citation for those recalls. This covers

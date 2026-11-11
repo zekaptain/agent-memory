@@ -208,6 +208,11 @@ followed by an optional note and save confirmation:
 - A sampled discard approved by the human is first admitted, then
   approved. A rejected discard stays out of the ledger.
 
+`mem review approve` and `mem review retire` change the same memories,
+also as `human`, but they are not this review. They hide nothing, ask
+nothing about the lesson, and record no example for the approver. They
+are for memories that admission did not write.
+
 The default seeded discard sample is 30; `--discards N` adjusts it.
 `--limit N` bounds a sitting. Back, redo, skip, quit and resume work in
 both frontends. `--again` reopens completed reviews, retaining history.

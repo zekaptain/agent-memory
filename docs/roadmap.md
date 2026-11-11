@@ -73,9 +73,10 @@ Parquet export for browsing.
 contradiction detection (`flag_contradiction`), confirmation and decay of
 `confidence`. The quarantined lesson review queue now exists as
 `mem admit review`, with seeded discard sampling and feedback into the
-fitted approver. `mem admit run` drafts from captured production turns;
-auto-approval requires held-out precision of at least 0.8 over 20 scored
-writes. See [admission-spec.md](admission-spec.md). The
+fitted approver. `mem review` lists every memory that waits and lets a
+human approve or retire one. `mem admit run` drafts from captured
+production turns; auto-approval requires held-out precision of at least
+0.8 over 20 scored writes. See [admission-spec.md](admission-spec.md). The
 relation graph's first step is in: `relate`, `graph`, and `mem graph resolve`
 (see the "Relation graph" paragraph in
 [architecture.md](architecture.md#data-model)). Still open: offline
@@ -115,7 +116,8 @@ Checked against the vendor documentation on 2026-10-25.
   possible later without protocol changes, and the server already sees each
   connection and its query in `quack_active_connections()`. All harnesses run
   as the same OS user, so this guards against bugs rather than malice; it is
-  scheduled with the audit tooling in Phase 3.
+  scheduled with the audit tooling in Phase 3. Until then the rule that only
+  a human approves a memory is kept by the tools, not by the server.
 - The server caches results for clients (`quack_result_ttl` 3600 s,
   `quack_cache_max_rows` 100 000). Watch memory if many clients poll.
 - The writer's event lookup is bounded by the incoming batch and its parent
@@ -131,7 +133,7 @@ Checked against the vendor documentation on 2026-10-25.
 Verified against the code in the audit of 2026-11 and still open.
 
 - Admission in auto mode can approve the canonical memory of a duplicate
-  even when a person quarantined that memory (`admission/ledger.py`,
+  even when a human quarantined that memory (`admission/ledger.py`,
   `lifecycle.py`). Auto mode is not in use.
 - One admission item that fails stops the items and the days after it
   (`admission/run.py`).
@@ -143,9 +145,20 @@ Verified against the code in the audit of 2026-11 and still open.
   judged every calibration item. A backend that skipped items gets its
   thresholds from the ones it judged, and nothing says so
   (`judge/report.py`).
-- A caller chooses the `trust_level` of what it remembers, and any agent
-  can approve any quarantined memory. Outside admission, no command lets a
-  person review quarantined memories (`mcp_server/tools.py`).
+- A caller chooses the `trust_level` of what it remembers and nothing
+  checks it. A memory an agent writes with `user` trust is recalled
+  without review (`mcp_server/tools.py`).
+- Only a human approves a memory, but the tools keep that rule and the
+  server does not. Every client holds the same token, so a process that
+  inserts into the ledger directly can record an approval as `human`.
+  `mem review approve` asks for a terminal, which a pseudo-terminal
+  satisfies. `mem admit review` makes no such check: when its input is
+  piped it falls back to the `--plain` prompts, reads the answers, and
+  records a Yes as an approval by `human` (`lifecycle.py`, `review.py`,
+  `admission/review.py`).
+- A memory that admission wrote and a human approves or retires with
+  `mem review` gives the fitted approver no example. Only
+  `mem admit review` records one (`review.py`).
 - What identifies a Droid hook has been checked against a real payload
   only for `UserPromptSubmit`. Factory documents an optional `message_id`
   on every hook and no tool id on `PostToolUse`. The adapter keys a hook
@@ -173,8 +186,8 @@ Proposed in the audit of 2026-11. None of these is approved.
 - Build `mem why` and `mem session` (Phase 3) as recorded reads, each a
   new strategy for the recall path.
 - Run the memory usefulness experiment.
-- Make review depend on the actor: per-harness tokens, and a route for a
-  person to review quarantined memories.
+- Per-harness tokens, so that the server and not only the tools keeps
+  the rule that only a human approves a memory.
 - Hybrid recall, once the usefulness experiment shows where text match
   fails.
 - A restore that is verified, blobs included.
@@ -190,8 +203,11 @@ above these were deepened on 2026-11-11: the ledger session
 
 ## Open decisions
 
-- May an agent approve its own quarantined memory, or assert
-  `trust_level = 'user'`?
+- Should `mem admit review` and `mem judge label` take their answers
+  from a terminal only, as `mem review approve` does? Both read piped
+  answers today.
+- Should a refused approval leave a row in the ledger? Today one the
+  tool refuses leaves none.
 - Should timeouts in a row stop a judge command? A timeout can be the
   item's doing, so today only an unreachable model server stops one.
 - Are the `readout` and `jev` backends and the `actionable` question still

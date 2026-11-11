@@ -341,6 +341,8 @@ harnesses partial `why_answer` coverage without a captured reply.
 **`review(action: "approve"|"retire"|"quarantine"|"confirm"|"flag_contradiction", memory_id: str, reason: str, related_memory_id: str | None)`**
 Inserts `memory_actions` with `actor = AGENT_MEMORY_AGENT` and the session id,
 and an `events(kind='memory_write')` row. Returns the resulting status.
+`approve` is refused: only the `human` agent approves, and `mem-mcp` does
+not run as it. See "Only a human approves a memory" under "As built".
 
 **`status()`** (read-only): server reachable, `session_id`, counts for this
 session, spool depth (`spool_pending_lines`), and the number of rejected
@@ -354,7 +356,9 @@ surface outages and rejected records to the user.
 Error handling: when the server is unreachable, `recall` returns an empty
 result with `degraded: true` and the reason; `remember`/`review` write a
 capture record to the spool (`kind='memory_write'`, payload = the request)
-and return `queued: true`. Nothing in the agent loop raises.
+and return `queued: true`. Nothing in the agent loop raises. A request
+the tool refuses, such as an agent's `approve`, is a tool error and is
+never queued.
 
 ### Tool descriptions
 
@@ -364,7 +368,8 @@ procedures; not transient task state; one statement per call; name the
 `supersedes` id when correcting. `recall` says: call before answering
 questions about the user, the project's history, or past decisions; pass
 `retrieval_id` to `cite`. `review` says: use `retire` when a memory is wrong,
-`flag_contradiction` when two conflict.
+`flag_contradiction` when two conflict; only the user approves a
+quarantined memory, with `mem review`.
 
 ## Migration 0001
 
@@ -755,3 +760,47 @@ adapter sets a raw payload.
 
 Regressions are in `tests/test_cli_capture.py` and
 `tests/test_audit_persistence.py`.
+
+### Only a human approves a memory (2026-11-11)
+
+Any agent could approve any quarantined memory through the `review` tool,
+including one it had just written from a tool's output. Quarantine
+therefore held nothing back from an agent that wanted a memory recalled.
+Outside admission, no command showed a human what was quarantined.
+
+- `review` refuses `approve` unless the session's agent is `human`. The
+  refusal is a tool error that tells the agent to ask the user to run
+  `mem review`. Nothing is written and nothing is queued. `quarantine`,
+  `retire`, `confirm`, and `flag_contradiction` stay open to every agent.
+- A queued approval is checked again at replay. One from any other agent
+  is rejected: it becomes a `capture_error` event and is kept under
+  `spool/failed/`, like any record the ledger refuses.
+- The actor of a queued review is the agent of the record's session. The
+  record's own `actor` field is ignored, so a spool line cannot name
+  another actor.
+- `mem-mcp` exits at start when `AGENT_MEMORY_AGENT=human`.
+- `mem review` is the human's route (`review.py`). `list` prints what
+  waits, oldest first: quarantined memories, and active ones that a
+  tool's output asked to put in another memory's place. It is a human's
+  read of memories that no agent may be shown, so it is not a recall and
+  records nothing. `approve` takes one waiting memory, shows it, and asks
+  for a yes typed at a terminal. It needs the server, so an approval is
+  never queued unseen. `retire` withdraws any memory and is queued when
+  the server is down. Both need `--reason`. Both write as agent `human`
+  in a session of their own (`via: mem review`, source mode `record`,
+  adapter version `mem_cli_v1`), through the same code as the tool.
+- The check is made where an approval is asked for: the tool and the
+  replay (`lifecycle.check_asker`). `LifecyclePlan.review` does not make
+  it, so the approval that an entity merge carries over and admission's
+  approvals are written as before.
+
+The rule binds agents that use the tools. Every client holds the same
+token, so a process that inserts into the ledger directly can still
+record an approval under any actor, and a pseudo-terminal satisfies the
+terminal check. Both limits are listed in
+[roadmap.md](roadmap.md#known-defects). An approval the tool refuses
+leaves no row in the ledger; one rejected at replay leaves its
+`capture_error` event.
+
+Regressions are in `tests/test_review.py`, `tests/test_mcp.py`, and
+`tests/test_lifecycle.py`.

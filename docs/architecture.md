@@ -97,15 +97,18 @@ transcript adapter is a stub until a real file exists (see
 write a `memory_write` event; `remember` dedupes on `(scope, content_hash)`
 with a `confirm` action. When the server is down, `recall` answers
 `degraded`, and `remember` and `review` queue a spool record that replay
-turns into the real memory or action.
+turns into the real memory or action. `review` refuses `approve`: only
+the `human` agent approves a memory, at `mem review`, and replay rejects
+a queued approval from any other agent.
 `AGENT_MEMORY_AGENT` names the agent; `AGENT_MEMORY_SESSION` shares the
 ledger session with hooks when the harness can pass it, otherwise the server
 opens its own `partial` session.
 
-The capture writer, these tools, `mem graph`, and admission take their
-session and event rows from one module, `capture/session.py`. A session is
-therefore the same row whether it is opened online or from the spool, and
-every event's content is hashed, measured, and moved to a blob by one rule.
+The capture writer, these tools, `mem graph`, `mem review`, and admission
+take their session and event rows from one module, `capture/session.py`. A
+session is therefore the same row whether it is opened online or from the
+spool, and every event's content is hashed, measured, and moved to a blob
+by one rule.
 
 ## Data model
 
@@ -119,7 +122,8 @@ Vocabulary (seeded by migrations, not writable by clients):
 Ledger:
 
 - `sessions`: one row per session (a conversation in a harness, a judge
-  run, a day of admission, or a `mem graph` command), with agent, model,
+  run, a day of admission, a `mem graph` command, or an approval or
+  retirement at `mem review`), with agent, model,
   project, cwd, `capture_completeness`, and a `VARIANT` metadata column.
 - `events`: everything that happened, ordered by `seq` within a session.
   Kinds include `user_msg`, `assistant_msg`, `system_context`, `tool_call`,
@@ -214,6 +218,11 @@ is append-only, and resolution never rewrites a row. Dedicated `entities` and
   a loopback address.
 - One bearer token in `~/.agent-memory/token`, mode 0600. The data directory is
   0700. The CLI refuses a token file that other users can read.
+- The token admits every client alike, so the server cannot tell one agent
+  from another. A rule about who may do what is kept by the code that
+  writes: the MCP tools and spool replay refuse an approval from any agent
+  but `human`. It binds agents that use the tools, not a process that
+  inserts into the ledger directly.
 - Every client statement passes the `mem_authorize` macro. It strips quoted
   literals and identifiers, then allows only `SELECT`, `WITH`, `FROM`,
   `DESCRIBE`, `SHOW`, `EXPLAIN`, `SUMMARIZE`, transaction control, and

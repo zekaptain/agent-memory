@@ -94,6 +94,7 @@ All runtime paths below are under `src/agent_memory/`.
 | `config.py`, `db.py`, `migrations/` | Configuration, migrations, authorization, Quack, export | `test_config`, `test_schema`, `test_migrations`, `test_attribution_migrations`, `test_authorize`, `test_server` |
 | `lifecycle.py` | Shared append-only memory writes, correction proposals, bounded due work | `test_lifecycle` |
 | `audit.py` | Read-only `mem audit check` diagnostics, legacy replacement reconstruction | `test_audit_check` |
+| `review.py` | `mem review`: the memories that wait for a human, and the human's approval or retirement of one | `test_review` |
 | `endpoints.py` | The HTTP transport to model servers and the opt-in check for sending data off-machine | `test_endpoints` |
 | `model_call.py` | A model call that must return a JSON object: its attempts, the three model servers, latency and cost over every attempt | `test_model_call` |
 | `adapters/`, `capture/` | Harness input to records, redaction, blobs, idempotent writes, spool/replay, capture identity, the session and event rows every writer shares, observed coverage, answer attribution | `test_adapters`, `test_capture`, `test_writer`, `test_spool`, `test_capture_identity`, `test_ledger_session`, `test_observed_capture`, `test_answer_bindings`, `test_audit_persistence` |
@@ -144,9 +145,17 @@ Entry points are `mem` (`agent_memory.cli:main`) and `mem-mcp`
   Add regression coverage for replay, partial failures, and parent/result
   linkage.
 - Session and event rows come from `capture/session.py`, whoever writes
-  them: the capture writer, the MCP tools, `mem graph`, and admission. A
-  new writer opens a `LedgerSession` and builds its events with
-  `event_row`; it does not assemble either row itself.
+  them: the capture writer, the MCP tools, `mem graph`, `mem review`, and
+  admission. A new writer opens a `LedgerSession` and builds its events
+  with `event_row`; it does not assemble either row itself.
+- Only the `human` agent approves a memory. An agent that could approve
+  what it wrote from tool output would hold the key to its own
+  quarantine. The check (`lifecycle.check_asker`) is made where an
+  approval is asked for: the `review` tool and spool replay. Do not move
+  it into `LifecyclePlan.review`, which also writes the approval an
+  entity merge carries over and admission's approvals. `mem-mcp` refuses
+  to run as `human`, and `mem review approve` takes its answer from a
+  terminal only. Do not add a route by which an agent's session approves.
 - Tool-derived memories start quarantined. Every recall reads active
   memories and records retrieval provenance, including misses, whatever
   its strategy: a query, a walk of relations from an entity, or the
