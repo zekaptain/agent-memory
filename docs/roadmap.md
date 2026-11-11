@@ -363,6 +363,12 @@ The same audit proposed removing the following. Each was looked at on
   0001 only (`legacy_preflight` in `audit.py`, `_migrate_lifecycle` in
   `db.py`). Both live homes are still at 0001, and their next
   `mem migrate` runs it.
+- Migrations 0002 to 0006 as five files. One file in their place would
+  change nothing at run time. `mem migrate` refuses a home whose applied
+  migrations have no file or another checksum, so any ledger that has
+  applied one of the five would be shut out. The upgrade of a ledger at
+  0001 is keyed on the name of 0002, and tests stop at the versions
+  between.
 
 ## Open decisions
 
