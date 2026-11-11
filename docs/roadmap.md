@@ -288,6 +288,15 @@ Verified against the code in the audit of 2026-11 and still open.
 - The transcript import drops which Script call a nested tool call ran
   inside (`script_execution.outer_tool_use_id`), so the ledger cannot
   tell a nested call from a top-level one (`adapters/droid.py`).
+- An event captured through Droid's hooks never names its turn in the
+  attribution stored with it (`capture_attribution`). The import at
+  `Stop` writes a turn's messages before Droid has written the outcome
+  that names the turn, and no event is rewritten. Nothing reads the
+  stored copy, and binding a reply to a citation uses the import's own
+  evidence, so no result is wrong. A person reading the event sees a
+  null turn and a turn marked not complete (`capture/writer.py`,
+  `adapters/droid.py`). See "What an event keeps of its message and
+  turn" in [phase-1-spec.md](phase-1-spec.md).
 
 Reported in the same audit and not yet checked against the code: the
 hand-maintained `ALL_TABLES` list; lockdown happening after the listener
@@ -344,6 +353,13 @@ above these were deepened on 2026-11-11: the ledger session
   item's doing, so today only an unreachable model server stops one.
 - Are the `readout` and `jev` backends and the `actionable` question still
   wanted? May the unreachable v4 fallbacks and `Question.stage` go?
+- Should the attribution stored with an event go, or hold only what is
+  known when it is written? Through the hooks it never names a turn,
+  nothing reads it, and an event cannot be rewritten once the outcome
+  arrives.
+- May the Droid adapter stop reading a turn or a channel named on a
+  message, and `turn_id`, `channel`, and `final_message_id` in a hook
+  payload? No transcript or payload recorded from Droid carries one.
 - May a run be relabeled after a freeze? Should `--freeze` also ask for
   every backend's verdicts on the calibration items?
 - Do Phases 0.5, 3, and 5 stay on this roadmap?

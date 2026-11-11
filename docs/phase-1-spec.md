@@ -1149,3 +1149,65 @@ therefore say that a running session may use the change at once or keep
 the hooks it started with.
 
 Regressions are in `tests/test_hooks.py` and `tests/test_adapters.py`.
+
+### What an event keeps of its message and turn (2026-11-11)
+
+The Droid adapter gives each record an attribution: the transcript
+message it was made from and, once something names it, its turn. An
+import reads the attributions of the whole transcript to find the reply
+a `cite` answered. The writer also stores each record's attribution
+with its event, in the payload under `capture_attribution`. Nothing
+reads the stored copy. It is kept for a person who asks why a reply
+was, or was not, bound to a citation. No test fixed what it holds: with
+the write taken out, all 1075 tests of that day passed.
+
+An event made from a transcript message holds these fields:
+
+| Field | What it says |
+|-------|--------------|
+| `message_id` | The id of the transcript entry. A tool call and a tool result hold the id of the message that carried them. |
+| `turn_id` | The turn the message is in, or null while nothing has named it. |
+| `turn_complete` | Whether that turn ended in a reply. False while `turn_id` is null. |
+| `turn_boundary` | `agent_turn_outcome` when the outcome that closed the turn named it. Absent otherwise. |
+| `channel` | The channel the entry names, or null. |
+| `has_tool_calls` | Whether the message held a tool call. |
+
+An event made from any other entry holds none, with one exception: a
+compaction between a prompt and the outcome of its turn holds the three
+turn fields. A hook's event holds whichever of `message_id`, `turn_id`,
+`channel`, and `final_message_id` its payload carried.
+
+What Droid sends, counted on 2026-11-11:
+
+- None of the 33,433 message entries in the 60 most recent local
+  transcripts names a turn or a channel. All 207 outcomes in them name
+  their turn, 145 of them with the `resultKind` `text` that
+  `turn_complete` reads.
+- None of the 3,044 hook payloads the probe recorded carries `turn_id`,
+  `channel`, or `final_message_id`. `UserPromptSubmit`, `Stop`,
+  `PreCompact`, `SessionEnd`, and a resumed `SessionStart` carry
+  `message_id`.
+
+For Droid, then, only an outcome names a turn, `channel` is always
+null, and a hook's event holds a `message_id` or nothing. The adapter
+also reads a turn or a channel named on a message or in a hook payload,
+and that reading has met no real input.
+
+The stored copy is what the adapter knew when the event was first
+written, and no event is rewritten. Droid writes a turn's outcome after
+its `Stop` hook has run, so the import at `Stop` writes the turn's
+messages before anything has named their turn. An event captured
+through the hooks therefore keeps a null `turn_id` and a false
+`turn_complete` for good, also once the outcome is in the ledger. A
+prompt the `UserPromptSubmit` hook wrote keeps only the hook's
+`message_id`. Read a null `turn_id` as "not known when this was
+written". The turn is stored only when the import that first writes a
+message also reads the outcome of its turn, as `mem ingest
+--transcript` of a finished session does.
+
+Binding a reply to a citation is not affected. Each import works out
+its evidence from the whole transcript, where the outcome has named the
+turn, and stores it with the import's observation
+(`attribution_evidence`).
+
+Regressions are in `tests/test_cli_capture.py`.
