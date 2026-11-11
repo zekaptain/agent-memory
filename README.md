@@ -9,8 +9,8 @@ The ledger keeps a history instead of overwriting records. Use it to find:
 - Where that information came from.
 - Which memories the agent declared it used in its answer.
 
-Storage, capture commands, MCP tools, the relation graph, and judge
-experiments are implemented. Automatic hook installation is still planned.
+Storage, capture commands, MCP tools, the relation graph, judge experiments,
+and admission are implemented. Automatic hook installation is still planned.
 
 Start with the [quick start](#quick-start), then
 [import a session](#import-a-droid-session) or
@@ -269,7 +269,7 @@ Nothing is rewritten in place:
   and sources even when the canonical relation already exists.
 - Unmatched names stay unchanged. Correct a bad merge by superseding again.
 
-See [PLAN.md](PLAN.md#data-model-migration-0001) for storage details.
+See [PLAN.md](PLAN.md#data-model) for storage details.
 
 ## Asking why
 
@@ -531,6 +531,8 @@ Applied migrations are checksummed and must not be edited.
 - [Capture spec](docs/phase-1-spec.md): payloads, adapters, spool, and MCP tools.
 - [Judge how-to](docs/judge-how-to.md): step-by-step experiment commands.
 - [Judge experiment spec](docs/judge-experiment-spec.md): design and historical runs.
+- [Admission spec](docs/admission-spec.md): calibration, the fitted approver,
+  human review, and safeguards.
 - [Contract hardening](docs/logic-hardening-spec.md): lifecycle, coverage,
   attribution, preflight, and rollout policy.
 - [Memory usefulness evaluation](docs/memory-utility-evaluation-spec.md):

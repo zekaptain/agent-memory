@@ -131,9 +131,6 @@ class Relation:
         )
         return replace(self, **changes)
 
-    def mentions(self, norm: str) -> bool:
-        return norm in (self.subject_norm, self.object_norm)
-
 
 def _clean(value: Any) -> str:
     return _SPACES.sub(" ", str(value or "")).strip()

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Iterable
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, replace
 from typing import Any
 
@@ -138,6 +138,3 @@ class Redactor:
 def redactor_for(token: str | None, extra: Iterable[str] = ()) -> Redactor:
     secrets = [token] if token else []
     return Redactor(extra_secrets=[*secrets, *extra])
-
-
-Redact = Callable[[str], tuple[str, int]]

@@ -1,8 +1,7 @@
 # Admission: captured turns to production memory
 
-Implemented on `feat/admission-judge-connection`, based on the capture-identity
-integration branch. Admission lives in
-`src/agent_memory/admission/`; the judge experiment remains separate.
+Implemented. Admission lives in `src/agent_memory/admission/`; the judge
+experiment remains separate.
 No migration is added. Existing memory types, the `judge` agent from 0005,
 and client authorization cover the writes.
 

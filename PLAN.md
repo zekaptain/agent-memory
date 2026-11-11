@@ -50,8 +50,9 @@ flowchart LR
   transaction is atomic across tables. Two kinds of client: harness hooks
   call the `mem` CLI directly (`mem event`, `mem ingest`; cold start to answer
   is about 110 ms, well inside Droid's 60 s default hook timeout), and
-  `mem-mcp` exposes recall, remember, cite, and review to the agent
-  mid-session. Both fall back to `spool/` when the server is unreachable.
+  `mem-mcp` exposes recall, remember, cite, review, relate, graph, and status
+  to the agent mid-session. Both fall back to `spool/` when the server is
+  unreachable.
 - Admin work (migrations, direct export, `mem sql --direct`) opens the file
   directly and needs the server stopped. DuckDB's file lock enforces this and
   the CLI explains it.
@@ -61,10 +62,11 @@ flowchart LR
 Phase 0 numbers on this machine: about 4 to 5 ms per single-row insert over
 Quack, measured by `mem smoke`.
 
-## Data model (migration 0001)
+## Data model
 
 Every table is append-only. Nothing is ever updated or deleted, so the
-database is its own audit log.
+database is its own audit log. Migration 0001 created the tables and views
+below unless a later migration is named.
 
 Vocabulary (seeded by migrations, not writable by clients):
 `agents`, `event_kinds`, `memory_types`, `memory_action_types`.
@@ -79,6 +81,9 @@ Ledger:
   `outcome`, and `capture_error`. Large content goes to `blobs/` with
   `blob_ref`, `content_hash`, and `truncated`. `redactions` counts what the
   spool scrubbed. `parent_event_id` links results to calls.
+- `capture_observations` (0003): what a capture run actually covered in a
+  session: source mode, covered range, parse errors, and exclusions.
+  Coverage is read from these rows, not inferred from the agent's tier.
 
 Memory:
 
@@ -88,7 +93,15 @@ Memory:
 - `memory_sources`: which events a memory came from (`user_stated`,
   `derived_from`, `supports`, `contradicts`).
 - `memory_actions`: review history (`quarantine`, `approve`, `retire`,
-  `confirm`, `flag_contradiction`), with actor and reason.
+  `confirm`, `flag_contradiction`, and from 0002 `propose_correction` and
+  `merge_lineage`), with actor and reason.
+- `memory_deduplications` (0002): a memory recorded as a duplicate of a
+  canonical memory.
+- `memory_replacements` (0002): an accepted correction. Only this row marks
+  the predecessor superseded.
+- `memory_correction_work` and `memory_correction_closures` (0002): proposed
+  corrections due for acceptance, and the record that closes each one.
+  Clients cannot insert correction work; a ledger trigger does.
 
 Retrieval provenance:
 
@@ -100,6 +113,9 @@ Retrieval provenance:
   a cited memory, or a context event (for example an injected AGENTS.md).
   `link_id` gives each link a stable identity so a replayed capture can skip
   what it already wrote.
+- `answer_bindings` (0004, allowed across sessions by 0006): which captured
+  reply a `cite` placeholder turned out to be. A later binding can supersede
+  an earlier one.
 
 Replay safety: `sessions` is unique on `(agent_id, harness_session_id)`,
 because harnesses fire their "session start" hook more than once per session
@@ -108,12 +124,17 @@ order; hooks can run concurrently, so audits order by `(ts, recorded_at)`.
 
 Derived views:
 
-- `memory_status`: current status of each memory. Precedence is
-  derived from terminal retirement, accepted replacements, validity bounds,
-  pending corrections, and review/default trust. A proposed correction does
+- `memory_status`: current status of each memory, one of `retired`,
+  `deduplicated`, `superseded`, `expired`, `quarantined`, `pending`, or
+  `active`, checked in that order. `pending` covers a future `valid_from`
+  and a correction that has not been accepted. A proposed correction does
   not hide its predecessor. Memories with `trust_level = 'tool'` require
   approval; confirmation does not approve.
 - `active_memories`: what recall may return.
+- `memory_eligibility` (0002): the status a memory has on its own merits,
+  before an unaccepted correction marks it `pending`.
+- `memory_proposal_status` (0002): each proposed correction as `accepted`,
+  `conflict`, or `pending`, with the reason a pending one is waiting.
 - `memory_history`: one feed of creations, supersessions, and review actions.
 - `session_summary`: per-session counts of answers, recalls, compactions, and
   capture errors, plus capability tier and separately observed coverage.
@@ -121,6 +142,9 @@ Derived views:
 - `why_answer`: for an answer event, every retrieval item, cited memory, and
   context event behind it, each memory's source events and agent, its status
   at recall, and its status now.
+- `effective_answer_bindings` and `effective_context_links` (0004): the
+  latest binding for each placeholder, and the context links resolved
+  through it.
 
 Full-text search: an incremental FTS index on `memories(content, key)`.
 
@@ -146,10 +170,10 @@ is append-only, and resolution never rewrites a row. Dedicated `entities` and
 - Every client statement passes the `mem_authorize` macro. It strips quoted
   literals and identifiers, then allows only `SELECT`, `WITH`, `FROM`,
   `DESCRIBE`, `SHOW`, `EXPLAIN`, `SUMMARIZE`, transaction control, and
-  `INSERT` into the eight ledger tables. It rejects comments, dollar quotes,
-  `E''` strings, multiple statements in one text, DDL, `UPDATE`, `DELETE`,
-  `COPY`, `SET`, `CALL`, `PRAGMA`, `ATTACH`, `query()`, and `quack_*`
-  functions.
+  `INSERT` into the thirteen client-writable tables. It rejects comments,
+  dollar quotes, `E''` strings, multiple statements in one text, DDL,
+  `UPDATE`, `DELETE`, `COPY`, `SET`, `CALL`, `PRAGMA`, `ATTACH`, `query()`,
+  and `quack_*` functions.
 - After `quack_serve` starts, the server sets `allowed_directories` to the
   export directory, turns off extension autoload and autoinstall, sets
   `enable_external_access = false`, and then `lock_configuration = true`.
@@ -205,6 +229,7 @@ Checked against the vendor documentation on 2026-10-25.
 | omp (`~/.omp/agent/hooks/{pre,post}/*.ts`) | `session_start`, `session_switch`, `session_compact`, `session_shutdown`, `agent_start`, `agent_end`, `turn_start`, `turn_end`, `message_start`, `message_end`, `tool_call`, `tool_result`, `tool_execution_*`, `tool_approval_*`, `auto_compaction_*`, `session_stop` | Typed in-process payloads with full message text, tool inputs and results, compaction entries, `session_file`. | None material. Skip the high-volume `message_update` and `tool_execution_update`. |
 | Amp (`.amp/plugins/*.ts`) | `session.start`, `agent.start`, `tool.call`, `tool.result`, `agent.end` | In-process: thread id, prompt and message id on `agent.start`; `toolUseID`, `tool`, `input`, `status`, `output` on tool events; every `ThreadMessage` of the turn on `agent.end`. | No compaction or session-end event; `onDispose` runs on unload for about 3 s. |
 | Junie | none | MCP tools only | Everything except what the agent chooses to log. |
+
 ## Changes from the approved spec
 
 - **Status is derived, not stored.** The spec had triggers on `memories` and
@@ -252,7 +277,8 @@ transcript imports in about 0.8 s and re-imports in 50 ms. The Vibe
 transcript adapter is a stub until a real file exists (Phase 2).
 
 **Phase 1b: in-session tools (done).** `mem-mcp` (stdio, `mcp>=2`) with
-`recall`, `remember`, `cite`, `review`, and `status`. Every call writes a
+`recall`, `remember`, `cite`, `review`, and `status` (`relate` and `graph`
+came later with the relation graph). Every call writes a
 `memory_recall` or `memory_write` event; `recall` logs `retrievals` and
 `retrieval_items` (strategy `fts_bm25_v1`, or `recent_v1` for an empty query)
 with `status_at_recall`, and returns a `retrieval_id` for `cite`. `remember`
@@ -264,7 +290,7 @@ ledger session with hooks when the harness can pass it, otherwise the server
 opens its own `partial` session.
 
 **Phase 2: harness adapters.** Two adapter shapes, chosen by what each
-harness exposes (see "Verified harness behavior" below):
+harness exposes (see "Verified harness behavior" above):
 
 - *Shell hooks + transcript* (Droid, Vibe). Hooks pipe their stdin JSON to
   `mem event`, which records prompts, tool calls and results, compaction, and

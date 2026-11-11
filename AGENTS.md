@@ -8,8 +8,10 @@ agent shown, where did it come from, and what did the agent actually use?
 Provenance matters as much as retrieval quality.
 
 Start with `README.md` for usage and `PLAN.md` for architecture and roadmap.
-Storage and capture (Phases 0 and 1), the relation graph, and the judge
-experiment are implemented. Do not confuse planned harness integrations with
+Storage and capture (Phases 0 and 1), the relation graph, the judge
+experiment, production admission, and the lifecycle, coverage, and
+attribution hardening are implemented. Do not confuse planned harness
+integrations with
 shipped adapters: `adapters/` currently implements Droid and Vibe; the wider
 harness roster includes MCP-only use and future hook work.
 
@@ -21,6 +23,11 @@ Read the relevant spec before changing a subsystem:
   later amendments and current code before implementing.
 - `docs/admission-spec.md`: production admission, fitted approver, human
   review, and calibration/held-out safeguards.
+- `docs/logic-hardening-spec.md`: lifecycle, coverage, attribution,
+  `mem audit check` preflight, and rollout policy.
+- `docs/judge-how-to.md`: step-by-step experiment commands.
+- `docs/memory-utility-evaluation-spec.md`: design only for the memory
+  usefulness study; nothing is implemented from it.
 - `docs/parametric-consolidation-spec.md`: a draft research proposal, not
   implemented functionality or authorization to add its proposed migration.
 - `docs/agent-memory-literature-review.md` and `docs/paper/`: research
@@ -30,7 +37,9 @@ Read the relevant spec before changing a subsystem:
 
 Use `uv`, Python 3.12+, Typer for CLI work, Rich for judge terminal output,
 Ruff for lint/format, and Pyrefly for typing. Do not substitute another
-package manager, CLI framework, or type checker.
+package manager, CLI framework, or type checker. The default labeling
+interface is a Go helper under `judge/label_ui/`; its `go.mod` pins the Go
+version, and `mem judge label --plain` avoids it.
 
 Run from the repository root:
 
@@ -41,6 +50,15 @@ uv run ruff check .
 uv run ruff format --check .
 uv run pyrefly check
 uv run mem smoke
+```
+
+When you touch the Go labeling helper, also run:
+
+```sh
+cd src/agent_memory/judge/label_ui
+gofmt -l .
+go vet ./...
+go test ./...
 ```
 
 Use `uv run ruff format <changed-files>` to format only files you touched.
@@ -65,15 +83,19 @@ All runtime paths below are under `src/agent_memory/`.
 
 | Location | Responsibility | Main tests |
 | --- | --- | --- |
-| `config.py`, `db.py`, `migrations/` | Configuration, migrations, authorization, Quack, export | `test_config`, `test_schema`, `test_migrations`, `test_authorize`, `test_server` |
-| `adapters/`, `capture/` | Harness input to records, redaction, blobs, idempotent writes, spool/replay | `test_adapters`, `test_capture`, `test_writer`, `test_spool` |
+| `config.py`, `db.py`, `migrations/` | Configuration, migrations, authorization, Quack, export | `test_config`, `test_schema`, `test_migrations`, `test_attribution_migrations`, `test_authorize`, `test_server` |
+| `lifecycle.py` | Shared append-only memory writes, correction proposals, bounded due work | `test_lifecycle` |
+| `audit.py` | Read-only `mem audit check` diagnostics, legacy replacement reconstruction | `test_audit_check` |
+| `endpoints.py` | Model HTTP calls and the opt-in check for sending data off-machine | `test_endpoints` |
+| `adapters/`, `capture/` | Harness input to records, redaction, blobs, idempotent writes, spool/replay, capture identity, observed coverage, answer attribution | `test_adapters`, `test_capture`, `test_writer`, `test_spool`, `test_capture_identity`, `test_observed_capture`, `test_answer_bindings`, `test_audit_persistence` |
 | `mcp_server/` | Stdio tools, recall ranking, writes, reviews, citations | `test_mcp` |
 | `graph/` | Relation metadata, traversal SQL, entity resolution | `test_graph` |
-| `judge/` | Import, provenance, candidates, projection, draft, decide, label, report | `test_judge`, `test_judge_pipeline` |
+| `judge/` | Import, provenance, candidates, projection, draft, decide, label (including the Go helper in `label_ui/`), report | `test_judge`, `test_judge_pipeline`, `test_judge_core_regressions`, `test_judge_store`, `test_judge_admission`, `test_label_ui` |
 | `admission/` | Production lesson admission, fitting and blinded review | `test_admission`, `test_admission_fit` |
 | `cli.py`, `smoke.py` | Typer entry point and end-to-end check | `test_cli`, `test_cli_capture` |
 
-Test names in the table refer to `tests/<name>.py`.
+Test names in the table refer to `tests/<name>.py`. The Go helper's own
+tests sit beside its sources in `judge/label_ui/`.
 Entry points are `mem` (`agent_memory.cli:main`) and `mem-mcp`
 (`agent_memory.mcp_server:main`).
 

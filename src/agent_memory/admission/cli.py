@@ -23,7 +23,9 @@ from .review import review_day
 from .run import DEFAULT_DRAFTER, run_day
 from .store import AdmissionStore
 
-admit_app = typer.Typer(help="Admit captured lessons into production memory.", no_args_is_help=True)
+admit_app = typer.Typer(
+    help="Admit lessons drafted from captured turns into production memory.", no_args_is_help=True
+)
 DEFAULT_BACKEND = "llm:gemma4:26b"
 DEFAULT_EMBEDDER = "ollama:nomic-embed-text"
 

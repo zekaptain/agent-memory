@@ -55,14 +55,6 @@ class Merge:
     canonical: str
     entity_type: str | None
 
-    @property
-    def alias_norm(self) -> str:
-        return normalize_entity(self.alias)
-
-    @property
-    def canonical_norm(self) -> str:
-        return normalize_entity(self.canonical)
-
 
 def relations_from_rows(rows: Sequence[tuple]) -> list[Relation]:
     """Relations from graph SQL rows (see sql.ROW); rows without graph metadata are skipped."""

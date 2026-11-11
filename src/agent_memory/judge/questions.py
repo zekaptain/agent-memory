@@ -396,11 +396,3 @@ def thresholds_from_run(run: Mapping[str, Any], backend: str | None = None) -> d
     """Defaults, then the run's thresholds, then whatever was frozen for this backend."""
     frozen = (run.get("frozen") or {}).get("backends", {}).get(backend or "", {})
     return {**DEFAULT_THRESHOLDS, **run.get("thresholds", {}), **frozen.get("thresholds", {})}
-
-
-def questions_for(stage: str | None) -> Sequence[Question]:
-    if stage == "A":
-        return STAGE_A
-    if stage == "B":
-        return STAGE_B
-    return ALL_QUESTIONS

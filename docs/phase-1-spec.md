@@ -44,7 +44,7 @@ JSON object, one per line in the spool:
 ```json
 {
   "v": 1,
-  "agent_id": "droid",
+  "agent_id": "factory-droid",
   "harness_session_id": "68e0fcdd-...",
   "kind": "tool_call",
   "ts": "2026-10-25T14:03:11.412Z",
@@ -119,7 +119,7 @@ Applied to `content`, to every string inside `payload`, and to
 `session.metadata`, before the row is staged or spooled. Replacement text is
 `[REDACTED:<rule>]`; `events.redactions` holds the count.
 
-Rules (module `agent_memory.redact`, each a compiled regex with a name):
+Rules (module `agent_memory.capture.redact`, each a compiled regex with a name):
 `aws_access_key`, `aws_secret` (when adjacent to an access key),
 `github_token` (`ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`, `github_pat_`),
 `openai_key` (`sk-`), `anthropic_key` (`sk-ant-`), `slack_token` (`xox[abpr]-`),
@@ -234,7 +234,7 @@ harness events are never silently lost.
 ### CLI shapes
 
 ```
-mem event  --harness droid|vibe [--spool-only] [--include-thinking]
+mem event  --harness droid|vibe [--spool-only] [--keep-raw]
 mem ingest --harness droid --transcript PATH [--since-key KEY] [--include-thinking]
 mem ingest --spool [--purge-done DAYS]
 mem spool  status            # files, lines, oldest record per harness
@@ -248,7 +248,7 @@ makes re-ingest correct but slower.
 
 ### Server
 
-`mem-mcp` console script, `python -m agent_memory.mcp`, stdio transport,
+`mem-mcp` console script, `python -m agent_memory.mcp_server`, stdio transport,
 built on `mcp>=2,<3` (`MCPServer` from `mcp.server.mcpserver`; verified 2.3.0
 installs and imports). One `MemoryClient` per server process, opened lazily
 on the first tool call and reopened on connection error. Environment:
@@ -330,6 +330,9 @@ and an `events(kind='memory_write')` row. Returns the resulting status.
 **`status()`** (read-only): server reachable, `session_id`, counts for this
 session, spool depth. Lets a harness surface outages to the user.
 
+`relate` and `graph` were added after Phase 1 with the relation graph; see
+`README.md` and the "Relation graph" paragraph in `PLAN.md`.
+
 Error handling: when the server is unreachable, `recall` returns an empty
 result with `degraded: true` and the reason; `remember`/`review` write a
 capture record to the spool (`kind='memory_write'`, payload = the request)
@@ -365,7 +368,7 @@ src/agent_memory/
     record.py      # Record dataclass, validation, (de)serialisation
     identity.py    # source keys, binding identities, MCP session selection
     ids.py         # uuid5 derivation
-    redact.py      # rules, apply(), tests fixtures in tests/fixtures/redact/
+    redact.py      # rules and Redactor; cases in tests/fixtures/redact_cases.json
     blobs.py       # write_blob(), threshold constants
     writer.py      # records -> staged rows -> idempotent insert, or spool
     spool.py       # append, iterate, mark done/failed, status
@@ -374,7 +377,7 @@ src/agent_memory/
     base.py        # Adapter protocol
     droid.py
     vibe.py
-  mcp/
+  mcp_server/
     __init__.py    # MCPServer construction, console script entry
     tools.py       # recall/remember/cite/review/status
     ranking.py     # SQL builders for fts_bm25_v1 and recent_v1

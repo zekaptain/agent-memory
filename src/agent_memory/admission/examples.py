@@ -120,10 +120,6 @@ def example_for(
     return result
 
 
-def load_examples(cfg: Config) -> list[dict[str, Any]]:
-    return AdmissionStore(cfg).read_examples()
-
-
 def _run_metadata(path: Path) -> dict[str, Any]:
     try:
         run = json.loads(path.read_text(encoding="utf-8"))

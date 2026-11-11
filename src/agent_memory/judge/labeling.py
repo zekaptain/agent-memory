@@ -24,17 +24,6 @@ from .questions import CATEGORIES, ENFORCED
 from .store import JudgeError
 
 LABELS_VERSION = "labels_v4"
-LABEL_KEYS = (
-    "failed",
-    "incomplete",
-    "category",
-    "worth_remembering",
-    "lesson_kind",
-    "error_intended",
-    "drafts",
-    "preferred",
-    "note",
-)
 DRAFT_LABEL_KEYS = (
     "grounded",
     "faithful",

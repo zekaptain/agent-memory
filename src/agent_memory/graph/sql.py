@@ -104,14 +104,6 @@ def relations_sql(
     )
 
 
-def active_keys_sql(scopes: Sequence[str], keys: Sequence[str]) -> str:
-    """Which of these keys already have an active memory, and in which scope."""
-    return (
-        "SELECT m.key, m.scope, m.memory_id::VARCHAR FROM active_memories m "
-        f"WHERE m.scope IN ({_in_list(scopes)}) AND m.key IN ({_in_list(keys)})"
-    )
-
-
 def sources_sql(memory_ids: Sequence[str]) -> str:
     return (
         "SELECT memory_id::VARCHAR, event_id::VARCHAR, relation FROM memory_sources "
