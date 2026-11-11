@@ -140,6 +140,9 @@ def test_event_with_nothing_to_record(live_mem, monkeypatch):
     assert live_mem("event", "--harness", "droid") == (0, "", "")
 
 
+# The transcript, read at the hooks where the harness has written what no hook carries
+
+
 def turn(n: int, *, outcome: bool = True) -> list[dict]:
     """The entries Droid writes for a turn: the prompt, the reply, and then its outcome."""
     entries: list[dict] = [
@@ -175,6 +178,162 @@ def write_transcript(path: Path, *turns: list[dict]) -> Path:
         entries.extend(entries_of_turn)
     path.write_text("".join(json.dumps(entry) + "\n" for entry in entries))
     return path
+
+
+def droid_hook(path: Path, event: str, **fields) -> dict:
+    return {
+        "session_id": path.stem,
+        "transcript_path": str(path),
+        "cwd": "/synthetic/hooks",
+        "hook_event_name": event,
+        **fields,
+    }
+
+
+def kinds_of(client: MemoryClient, harness_session_id: str) -> dict[str, int]:
+    sid = ids.session_id("factory-droid", harness_session_id)
+    return dict(
+        client.query(
+            f"SELECT kind, count(*) FROM events WHERE session_id = {sql_literal(sid)} GROUP BY kind"
+        )[1]
+    )
+
+
+def imports_of(client: MemoryClient, harness_session_id: str) -> list[tuple]:
+    """Where each import of a session's transcript began and ended."""
+    sid = ids.session_id("factory-droid", harness_session_id)
+    return client.query(
+        "SELECT cursor_start, cursor_end, range_start, range_end FROM capture_observations "
+        f"WHERE session_id = {sql_literal(sid)} AND source_mode = 'transcript_import' "
+        "ORDER BY range_end"
+    )[1]
+
+
+def test_a_stop_hook_imports_the_turn_and_the_next_reads_on_from_there(
+    live_mem, live_client, tmp_path, monkeypatch
+):
+    path = write_transcript(tmp_path / f"{tmp_path.name}.jsonl", turn(1, outcome=False))
+    feed(monkeypatch, droid_hook(path, "Stop", message_id="r1"))
+    assert live_mem("event", "--harness", "droid") == (0, "", "")
+    assert kinds_of(live_client, path.stem) == {
+        "session_start": 1,
+        "user_msg": 1,
+        "assistant_msg": 1,
+    }
+    # Droid writes a turn's outcome after its Stop hook has run, so it comes with the next.
+    write_transcript(path, turn(1), turn(2, outcome=False))
+    feed(monkeypatch, droid_hook(path, "Stop", message_id="r2"))
+    assert live_mem("event", "--harness", "droid") == (0, "", "")
+    assert kinds_of(live_client, path.stem) == {
+        "session_start": 1,
+        "user_msg": 2,
+        "assistant_msg": 2,
+        "outcome": 1,
+    }
+    assert imports_of(live_client, path.stem) == [(None, "r1", 1, 3), ("r1", "r2", 4, 6)]
+    # A Stop with nothing added since leaves no trace.
+    feed(monkeypatch, droid_hook(path, "Stop", message_id="r2"))
+    assert live_mem("event", "--harness", "droid") == (0, "", "")
+    assert len(imports_of(live_client, path.stem)) == 2
+
+
+def test_a_session_end_hook_brings_the_outcome_of_the_last_turn(
+    live_mem, live_client, tmp_path, monkeypatch
+):
+    path = write_transcript(tmp_path / f"{tmp_path.name}.jsonl", turn(1, outcome=False))
+    feed(monkeypatch, droid_hook(path, "Stop", message_id="r1"))
+    assert live_mem("event", "--harness", "droid") == (0, "", "")
+    write_transcript(path, turn(1))
+    feed(monkeypatch, droid_hook(path, "SessionEnd", message_id="r1", reason="other"))
+    assert live_mem("event", "--harness", "droid") == (0, "", "")
+    assert kinds_of(live_client, path.stem) == {
+        "session_start": 1,
+        "user_msg": 1,
+        "assistant_msg": 1,
+        "outcome": 1,
+        "session_end": 1,
+    }
+    # An outcome has no id of its own, so that import ended on the id of its turn, which is
+    # the prompt's too. The next reads on from the outcome, not from the prompt.
+    assert imports_of(live_client, path.stem) == [(None, "r1", 1, 3), ("r1", "p1", 4, 4)]
+    feed(monkeypatch, droid_hook(path, "SessionEnd", message_id="r1", reason="other"))
+    assert live_mem("event", "--harness", "droid") == (0, "", "")
+    assert len(imports_of(live_client, path.stem)) == 2
+    write_transcript(path, turn(1), turn(2, outcome=False))
+    feed(monkeypatch, droid_hook(path, "Stop", message_id="r2"))
+    assert live_mem("event", "--harness", "droid") == (0, "", "")
+    assert imports_of(live_client, path.stem)[-1] == ("p1", "r2", 5, 6)
+
+
+def test_a_stop_hook_reads_the_whole_transcript_when_the_last_import_cannot_be_placed(
+    live_mem, live_client, tmp_path, monkeypatch
+):
+    path = write_transcript(tmp_path / f"{tmp_path.name}.jsonl", turn(1, outcome=False))
+    feed(monkeypatch, droid_hook(path, "Stop", message_id="r1"))
+    assert live_mem("event", "--harness", "droid") == (0, "", "")
+    # The file no longer holds, at the line that import ended on, the entry it ended on.
+    write_transcript(path, turn(2, outcome=False), turn(3, outcome=False))
+    feed(monkeypatch, droid_hook(path, "Stop", message_id="r3"))
+    assert live_mem("event", "--harness", "droid") == (0, "", "")
+    assert kinds_of(live_client, path.stem) == {
+        "session_start": 1,
+        "user_msg": 3,
+        "assistant_msg": 3,
+    }
+    assert imports_of(live_client, path.stem)[-1] == (None, "r3", 1, 5)
+
+
+def test_a_stop_hook_reads_on_from_the_import_that_waits_while_the_server_is_down(
+    down_mem, down_cfg, tmp_path, monkeypatch
+):
+    path = write_transcript(tmp_path / "down-turns.jsonl", turn(1))
+    spool = Spool(down_cfg.spool_dir)
+    feed(monkeypatch, droid_hook(path, "Stop", message_id="r1"))
+    code, out, err = down_mem("event", "--harness", "droid")
+    assert (code, out) == (0, "")
+    assert "spooled to" in err
+    assert spool.status()[0].lines == 4
+    # With nothing added since, a hook has nothing to keep and nothing to say.
+    feed(monkeypatch, droid_hook(path, "Stop", message_id="r1"))
+    assert down_mem("event", "--harness", "droid") == (0, "", "")
+    assert spool.status()[0].lines == 4
+    write_transcript(path, turn(1), turn(2, outcome=False))
+    feed(monkeypatch, droid_hook(path, "Stop", message_id="r2"))
+    assert down_mem("event", "--harness", "droid")[0] == 0
+    # The ledger could not say where the last import ended. The one that waits did, so
+    # only the two records of the new turn were read and kept.
+    assert spool.status()[0].lines == 6
+    server = MemoryServer(down_cfg, export_interval_hours=0)
+    server.start()
+    try:
+        assert down_mem("ingest", "--spool")[0] == 0
+        with MemoryClient.from_config(down_cfg) as client:
+            assert kinds_of(client, path.stem) == {
+                "session_start": 1,
+                "user_msg": 2,
+                "assistant_msg": 2,
+                "outcome": 1,
+            }
+            assert imports_of(client, path.stem) == [(None, "p1", 1, 4), ("p1", "r2", 5, 6)]
+    finally:
+        server.stop()
+
+
+def test_a_hook_whose_transcript_cannot_be_read_exits_1_and_keeps_its_own_event(
+    live_mem, live_client, tmp_path, monkeypatch
+):
+    gone = tmp_path / f"{tmp_path.name}.jsonl"
+    feed(monkeypatch, droid_hook(gone, "SessionEnd", message_id="r1", reason="other"))
+    code, out, err = live_mem("event", "--harness", "droid")
+    assert (code, out) == (1, "")
+    assert "transcript" in err
+    assert kinds_of(live_client, gone.stem) == {"session_end": 1}
+    other = tmp_path / "not-a-transcript.json"
+    other.write_text("{}")
+    feed(monkeypatch, droid_hook(other, "Stop"))
+    code, out, err = live_mem("event", "--harness", "droid")
+    assert (code, out) == (1, "")
+    assert "transcript" in err
 
 
 def test_ingest_waits_for_a_write_that_is_under_way(live_mem, live_client, tmp_path, monkeypatch):

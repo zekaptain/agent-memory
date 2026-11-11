@@ -6,17 +6,21 @@ import hashlib
 import json
 import os
 import threading
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ..config import Config, ConfigError
 from ..db import MemoryClient
+from .observations import last_import_end, last_import_waiting
 from .record import Record, RecordError, now
 from .redact import Redactor, redactor_for
 from .spool import Spool, SpoolFile
 from .writer import Rejection, Writer, WriteResult
+
+if TYPE_CHECKING:
+    from ..adapters.base import Adapter
 
 # How long a hook waits for the ledger before it spools what it has.
 DEFAULT_DEADLINE = 2.0
@@ -58,7 +62,26 @@ class _Attempt:
 
     written: WriteResult | None = None
     unreported: list[Record] = field(default_factory=list)
-    error: str | None = None
+
+
+def _with_ledger(cfg: Config, work: Callable[[MemoryClient], None], deadline: float) -> str | None:
+    """Do `work` on a connection to the ledger. Returns why it failed, or that it had not
+    finished by the deadline, in which case it may still be going on."""
+    failures: list[str] = []
+
+    def run() -> None:
+        try:
+            with MemoryClient.from_config(cfg) as client:
+                work(client)
+        except Exception as exc:
+            failures.append(f"{type(exc).__name__}: {exc}")
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(deadline)
+    if failures:
+        return failures[0]
+    return "timed out waiting for the server" if worker.is_alive() else None
 
 
 def deliver(
@@ -83,28 +106,21 @@ def deliver(
     if not spool_only:
         attempt = _Attempt()
 
-        def write() -> None:
-            try:
-                with MemoryClient.from_config(cfg) as client:
-                    writer = Writer(client, cfg.blob_dir, redactor)
-                    written = writer.write(records)
-                    attempt.unreported = [
-                        _capture_error(r.record, r.record.to_json(), r.reason)
-                        for r in written.rejected
-                    ]
-                    attempt.written = written
-                    if attempt.unreported:
-                        writer.write(attempt.unreported)
-                        attempt.unreported = []
-            except Exception as exc:
-                attempt.error = f"{type(exc).__name__}: {exc}"
+        def write(client: MemoryClient) -> None:
+            writer = Writer(client, cfg.blob_dir, redactor)
+            written = writer.write(records)
+            attempt.unreported = [
+                _capture_error(r.record, r.record.to_json(), r.reason) for r in written.rejected
+            ]
+            attempt.written = written
+            if attempt.unreported:
+                writer.write(attempt.unreported)
+                attempt.unreported = []
 
-        worker = threading.Thread(target=write, daemon=True)
-        worker.start()
-        worker.join(deadline if deadline is not None else deadline_from_env())
-        if worker.is_alive():
-            attempt.error = attempt.error or "timed out waiting for the server"
-        error = redactor.text(attempt.error)[0] if attempt.error else None
+        failure = _with_ledger(
+            cfg, write, deadline if deadline is not None else deadline_from_env()
+        )
+        error = redactor.text(failure)[0] if failure else None
         if attempt.written is not None:
             return Delivery(
                 written=attempt.written,
@@ -116,6 +132,50 @@ def deliver(
         error = error or "server unavailable"
     paths = spool.append(redactor.record(rec) for rec in records)
     return Delivery(spooled=paths, error=error)
+
+
+def catch_up(
+    cfg: Config,
+    adapter: Adapter,
+    harness_session_id: str,
+    transcript: Path,
+    *,
+    spool_only: bool = False,
+) -> Delivery:
+    """Bring the ledger up to date with a session's transcript, reading on from where the
+    last import of it ended.
+
+    The ledger says where that was. When it does not answer within the deadline a hook
+    allows, the import of the session that waits in the spool says it, and what is read
+    goes to the spool. With no import to go on from, the whole transcript is read.
+    Raises what the adapter raises for a file it cannot read, and otherwise as `deliver`.
+    """
+    agent_id = adapter.agent_id
+    ends: list[tuple[str, int] | None] = []
+    error = None
+    if not spool_only:
+        failure = _with_ledger(
+            cfg,
+            lambda client: ends.append(last_import_end(client, agent_id, harness_session_id)),
+            deadline_from_env(),
+        )
+        error = make_redactor(cfg).text(failure)[0] if failure else None
+    to_spool = spool_only or error is not None
+    end = (
+        last_import_waiting(Spool(cfg.spool_dir).waiting(agent_id, harness_session_id))
+        if to_spool
+        else ends[0]
+    )
+    records = (
+        adapter.from_transcript(transcript, since_key=end[0], since_line=end[1])
+        if end
+        else adapter.from_transcript(transcript)
+    )
+    if to_spool:
+        delivery = deliver(cfg, records, spool_only=True)
+        delivery.error = error
+        return delivery
+    return deliver(cfg, records, deadline=IMPORT_DEADLINE)
 
 
 def _keep_rejected(spool: Spool, rejected: Sequence[Rejection]) -> list[Path]:

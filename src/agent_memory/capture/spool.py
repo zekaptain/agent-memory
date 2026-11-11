@@ -92,6 +92,14 @@ class Spool:
             _append(path, lines, once=True)
         return list(by_file)
 
+    def waiting(self, agent_id: str, harness_session_id: str) -> list[str]:
+        """The lines of one session's records that wait for the ledger, oldest first."""
+        path = self.path_for(agent_id, harness_session_id)
+        if not path.exists():
+            return []
+        with _lock(path.with_suffix(".lock")):
+            return [line for _, line in self.lines(path)] if path.exists() else []
+
     def pending(self) -> list[SpoolFile]:
         if not self.root.exists():
             return []

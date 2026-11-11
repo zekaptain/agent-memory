@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import asdict
 from typing import Any
 
@@ -96,6 +96,38 @@ def observation_rows(
         )
         found[oid] = {"observation_id": oid, **row}
     return list(found.values())
+
+
+def last_import_end(
+    client: MemoryClient, agent_id: str, harness_session_id: str
+) -> tuple[str, int] | None:
+    """The entry and the line at which the latest import of a session's transcript ended,
+    or None when the ledger holds no import of it."""
+    session = sql_literal(ids.session_id(agent_id, harness_session_id))
+    _, rows = client.query(
+        "SELECT cursor_end, range_end FROM capture_observations "
+        f"WHERE session_id = {session} AND source_mode = 'transcript_import' "
+        "AND cursor_end IS NOT NULL AND range_end IS NOT NULL "
+        "ORDER BY recorded_at DESC, range_end DESC LIMIT 1"
+    )
+    return (str(rows[0][0]), int(rows[0][1])) if rows else None
+
+
+def last_import_waiting(lines: Iterable[str]) -> tuple[str, int] | None:
+    """As `last_import_end`, read from the lines of a session's records that wait in the
+    spool, oldest first."""
+    end = None
+    for line in lines:
+        # Few records carry an observation, and a session's spool can hold tens of megabytes.
+        if '"transcript_import"' not in line:
+            continue
+        try:
+            observation = Record.from_json(line).observation or {}
+            if observation.get("source_mode") == "transcript_import":
+                end = (str(observation["cursor_end"]), int(observation["range_end"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+    return end
 
 
 def pending_observations(

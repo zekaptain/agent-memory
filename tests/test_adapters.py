@@ -156,6 +156,10 @@ def write(path: Path, entries: list[dict]) -> Path:
     return path
 
 
+def keys_of(records) -> list[tuple[str, str]]:
+    return [(r.kind, r.source_key) for r in records]
+
+
 def covered(records) -> dict:
     assert records[0].observation is not None
     return records[0].observation
@@ -175,6 +179,55 @@ def test_droid_session_start_without_a_time_is_placed_just_before_the_first_time
     # The file says the same thing however often it is read.
     again = DroidAdapter().from_transcript(path)
     assert [r.to_json() for r in again] == [r.to_json() for r in records]
+
+
+def test_droid_transcript_is_read_on_from_the_line_an_earlier_read_ended_on(tmp_path):
+    entries = two_turns()
+    path = write(tmp_path / "two.jsonl", entries[:4])
+    earlier = covered(DroidAdapter().from_transcript(path))
+    # The read ended on an outcome, and so on the id of its turn's prompt, two lines up.
+    assert (earlier["cursor_end"], earlier["range_end"]) == ("p1", 4)
+    write(path, entries)
+    records = DroidAdapter().from_transcript(path, since_key="p1", since_line=4)
+    assert keys_of(records) == [("user_msg", "p2"), ("assistant_msg", "r2")]
+    assert [
+        covered(records)[name]
+        for name in ("cursor_start", "cursor_end", "range_start", "range_end")
+    ] == ["p1", "r2", 5, 6]
+    # By the id alone the read goes on from the prompt and brings its reply again.
+    assert ("assistant_msg", "r1") in keys_of(DroidAdapter().from_transcript(path, since_key="p1"))
+    # Nothing was written after the last line.
+    assert DroidAdapter().from_transcript(path, since_key="r2", since_line=6) == []
+
+
+@pytest.mark.parametrize(
+    ("since_key", "since_line"),
+    [("gone", 4), ("p1", 3), ("r2", 9)],
+    ids=["no such entry", "entry on another line", "file is shorter"],
+)
+def test_droid_transcript_is_read_whole_when_an_earlier_read_cannot_be_placed(
+    tmp_path, since_key, since_line
+):
+    path = write(tmp_path / "two.jsonl", two_turns())
+    whole = DroidAdapter().from_transcript(path)
+    records = DroidAdapter().from_transcript(path, since_key=since_key, since_line=since_line)
+    assert keys_of(records) == keys_of(whole)
+    assert (covered(records)["cursor_start"], covered(records)["range_start"]) == (None, 1)
+
+
+def test_droid_transcript_line_cut_short_is_brought_by_the_next_read(tmp_path):
+    # A file read while Droid writes to it can end part way through a line.
+    entries = two_turns()
+    path = tmp_path / "two.jsonl"
+    whole_lines = "".join(json.dumps(entry) + "\n" for entry in entries[:3])
+    path.write_text(whole_lines + json.dumps(entries[3])[:20])
+    earlier = DroidAdapter().from_transcript(path)
+    assert earlier[-1].kind == "capture_error"
+    assert (covered(earlier)["cursor_end"], covered(earlier)["range_end"]) == ("r1", 4)
+    write(path, entries)
+    records = DroidAdapter().from_transcript(path, since_key="r1", since_line=4)
+    assert ("outcome", "p1") in keys_of(records)
+    assert ("assistant_msg", "r2") in keys_of(records)
 
 
 def hook_run(entry_id: str, event: str, parent: str, at: str) -> dict:
@@ -339,6 +392,24 @@ def test_droid_hooks_one_message_can_raise_twice_are_separate_events(event, monk
 @pytest.mark.parametrize("event", ["Stop"])
 def test_droid_turn_end_hooks_record_nothing(event):
     assert DroidAdapter().from_hook(hook(event, stop_hook_active=False)) == []
+
+
+def test_droid_says_at_which_hooks_its_transcript_is_read():
+    # The reply is on disk when Stop runs and the last turn's outcome when the session ends.
+    transcript = Path("/Users/tester/.factory/sessions/x/abc-123.jsonl")
+    for event in ("Stop", "SessionEnd"):
+        assert DroidAdapter().transcript_due(hook(event)) == transcript
+    for event in (
+        "SessionStart",
+        "UserPromptSubmit",
+        "PreCompact",
+        "Notification",
+        "SubagentStop",
+        "PreToolUse",
+        "PostToolUse",
+    ):
+        assert DroidAdapter().transcript_due(hook(event)) is None
+    assert DroidAdapter().transcript_due({"session_id": "s", "hook_event_name": "Stop"}) is None
 
 
 def test_droid_precompact_and_session_end():

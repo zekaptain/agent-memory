@@ -40,6 +40,10 @@ _HOOK_KINDS = {
 # one message can raise several notifications that each say something else.
 _KEYED_ON_MESSAGE = frozenset({"SessionStart", "SessionEnd", "PreCompact"})
 
+# The hooks at which the transcript holds what no hook carries: the reply and the tool
+# calls of a turn when it stops, and the outcome of the last turn when the session ends.
+_TRANSCRIPT_DUE = frozenset({"Stop", "SessionEnd"})
+
 _ASSISTANT_META = ("modelId", "apiProvider", "reasoningEffort", "compactionSummaryId")
 
 
@@ -140,10 +144,21 @@ class DroidAdapter:
             )
         ]
 
+    def transcript_due(self, payload: dict[str, Any]) -> Path | None:
+        path = payload.get("transcript_path")
+        if path and payload.get("hook_event_name") in _TRANSCRIPT_DUE:
+            return Path(str(path))
+        return None
+
     # Transcripts
 
     def from_transcript(
-        self, path: Path, *, since_key: str | None = None, include_thinking: bool = False
+        self,
+        path: Path,
+        *,
+        since_key: str | None = None,
+        since_line: int | None = None,
+        include_thinking: bool = False,
     ) -> list[Record]:
         if path.suffix != ".jsonl":
             raise UnsupportedTranscript(f"{path}: expected a .jsonl session transcript")
@@ -162,12 +177,29 @@ class DroidAdapter:
         source_hash = hashlib.sha256()
         last_ts: datetime | None = None
         last_seq = 0
+
+        def skip_through(number: int, entry_id: Any) -> None:
+            """Leave out what this line gave, and stop leaving out once it is the line to
+            read on from. An earlier read is found by the line it ended on: the id it ended
+            on can be a turn's, and the turn's prompt has that id too."""
+            nonlocal skipping, emit_start, range_start
+            emit_start = len(records)
+            if (
+                entry_id == since_key
+                if since_line is None
+                else number == since_line and cursor_end == since_key
+            ):
+                skipping = False
+                range_start = number + 1
+
         for number, entry, raw in iter_jsonl(path):
             source_hash.update(raw.encode("utf-8"))
             range_end = number
             if entry is None:
                 parse_errors.append({"line": number, "reason_code": "invalid_json_object"})
                 records.append(_bad_line(hsid, path, number, raw))
+                if skipping:
+                    skip_through(number, None)
                 continue
             entry_type = entry.get("type")
             if entry_type == "session_start":
@@ -283,10 +315,11 @@ class DroidAdapter:
                     unsupported.add(str(entry_type))
             cursor_end = entry.get("id") or entry.get("turnId") or cursor_end
             if skipping:
-                emit_start = len(records)
-                if entry.get("id") == since_key:
-                    skipping = False
-                    range_start = number + 1
+                skip_through(number, entry.get("id"))
+        if skipping and since_line is not None:
+            # Not the file the earlier read was of. Ids are deterministic, so a read of all
+            # of it gives the ledger nothing twice.
+            return self.from_transcript(path, include_thinking=include_thinking)
         if skipping:
             raise ValueError("since_key was not found; no coverage boundary can be verified")
         if model:

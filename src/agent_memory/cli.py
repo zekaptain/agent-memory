@@ -16,7 +16,7 @@ import typer
 from . import __version__, audit
 from .adapters import HARNESS_NAMES, UnsupportedTranscript, get_adapter
 from .admission.cli import admit_app
-from .capture.pipeline import IMPORT_DEADLINE, Delivery, deliver, replay_spool
+from .capture.pipeline import IMPORT_DEADLINE, Delivery, catch_up, deliver, replay_spool
 from .capture.spool import Spool
 from .config import Config, ConfigError, load_config
 from .db import (
@@ -335,6 +335,10 @@ def event(
     stderr. Exits 0 once every record is kept somewhere (the ledger, the spool, or
     spool/failed/ for a record the ledger rejected) and 1 when nothing could be kept. It
     never exits 2, which a harness reads as an instruction to block the agent.
+
+    At a hook where the harness has written to its transcript what no hook carries (for
+    Droid, Stop and SessionEnd), it also imports what the transcript has gained since the
+    last import of it.
     """
     cfg = _config(ctx)
     try:
@@ -350,13 +354,25 @@ def event(
         raise _hook_failure(str(exc)) from None
     if keep_raw:
         records = [replace(r, raw=payload) for r in records]
-    if not records:
+    reached = not spool_only
+    if records:
+        try:
+            delivery = deliver(cfg, records, spool_only=spool_only)
+        except Exception as exc:
+            raise _hook_failure(f"nothing could be kept: {type(exc).__name__}: {exc}") from None
+        _report_delivery(delivery, str(payload.get("hook_event_name")), summary=False)
+        reached = delivery.written is not None
+    transcript = adapter.transcript_due(payload)
+    if transcript is None:
         return
     try:
-        delivery = deliver(cfg, records, spool_only=spool_only)
+        # A ledger that did not take the hook's own record is not asked a second time.
+        delivery = catch_up(
+            cfg, adapter, str(payload["session_id"]), transcript, spool_only=not reached
+        )
     except Exception as exc:
-        raise _hook_failure(f"nothing could be kept: {type(exc).__name__}: {exc}") from None
-    _report_delivery(delivery, str(payload.get("hook_event_name")), summary=False)
+        raise _hook_failure(f"transcript not imported: {type(exc).__name__}: {exc}") from None
+    _report_delivery(delivery, transcript.name, summary=False)
 
 
 @app.command()

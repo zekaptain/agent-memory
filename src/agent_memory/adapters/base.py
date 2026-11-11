@@ -19,9 +19,27 @@ class Adapter(Protocol):
 
     def from_hook(self, payload: dict[str, Any]) -> list[Record]: ...
 
+    def transcript_due(self, payload: dict[str, Any]) -> Path | None:
+        """The transcript to read when this hook runs, if the harness has by then written
+        to it what no hook carries."""
+        ...
+
     def from_transcript(
-        self, path: Path, *, since_key: str | None = None, include_thinking: bool = False
-    ) -> list[Record]: ...
+        self,
+        path: Path,
+        *,
+        since_key: str | None = None,
+        since_line: int | None = None,
+        include_thinking: bool = False,
+    ) -> list[Record]:
+        """The records of a transcript's entries; the first carries what the read covered.
+
+        `since_key` leaves out every entry up to and including the one with that id, and
+        raises ValueError when no entry has it. Given `since_line` too, the line an earlier
+        read ended on, the read goes on from there if the file still holds `since_key` at
+        that line, and covers the whole file if it does not.
+        """
+        ...
 
 
 def text_of(content: Any) -> str:
