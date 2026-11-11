@@ -218,6 +218,17 @@ def test_empty_query_returns_recent_by_importance(tools):
     ]
 
 
+def test_recall_breaks_score_ties_newest_first(tools):
+    for name in ("alpha", "bravo", "charlie"):
+        tools.remember(f"tie {name} mentions ducks", "observation", scope="ties")
+    newest_first = [f"tie {name} mentions ducks" for name in ("charlie", "bravo", "alpha")]
+    recent = tools.recall("", scopes=["ties"], limit=3)
+    assert [i["content"] for i in recent["items"]] == newest_first
+    ranked = tools.recall("ducks", scopes=["ties"], limit=3)
+    assert len({i["score"] for i in ranked["items"]}) == 1
+    assert [i["content"] for i in ranked["items"]] == newest_first
+
+
 def test_types_filter_and_limit(tools):
     tools.remember("filter me: a procedure about ducks", "procedure", scope="filters")
     tools.remember("filter me: a fact about ducks", "fact", scope="filters")

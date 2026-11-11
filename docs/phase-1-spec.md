@@ -653,3 +653,10 @@ Follow-ups the same day:
   text was rejected. It now goes through `text_of` like other hook text.
 - The MCP `status` tool reports rejected records as `spool_rejected_lines`
   beside `spool_pending_lines`, so an agent can see them without the CLI.
+
+### Recall order (2026-11-11)
+
+- Recall listed memories with equal scores oldest first, although the
+  candidate SQL orders them newest first and empty-query recall promises
+  the newest memories. Equal scores now go newest first under both
+  strategies.

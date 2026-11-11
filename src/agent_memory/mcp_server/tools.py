@@ -956,7 +956,9 @@ def _rank(rows: Sequence[tuple], strategy: str, limit: int) -> list[dict[str, An
                 "status": status,
             }
         )
-    items.sort(key=lambda i: (-float(i["score"]), str(i["created_at"] or "")))
+    # Equal scores go newest first, the order the candidate SQL already uses.
+    items.sort(key=lambda i: str(i["created_at"] or ""), reverse=True)
+    items.sort(key=lambda i: -float(i["score"]))
     return items[:limit]
 
 
