@@ -276,23 +276,31 @@ class DecisionBackend(Protocol):
 - `llm:<model>`: the reasoning baseline. Same rubric, all questions in one
   prompt, JSON output, thinking on, temperature 0, self-reported probability
   as confidence. Served by Ollama's native `/api/chat` at `OLLAMA_HOST`
-  (default `http://localhost:11434`). If the thinking pass runs out of
-  tokens it is asked once more, still thinking, with three times the budget
-  (12,288 tokens; recorded as `llm_json` like any thinking answer). If
-  that is cut off too, or the pass returns no JSON, the same question is
-  asked once more with thinking off and the grammar dropped, recorded as
-  `llm_json_nothink`. Every attempt's latency is billed to the answer.
-- `llamacpp:<model>`: the same reasoning baseline served by llama.cpp's
+  (default `http://localhost:11434`). The judge makes one model call of at
+  most three attempts, and what happened chooses the next one. A reply
+  cut off by the 4,096-token budget is asked for once more, still
+  thinking, with three times the budget (12,288 tokens; recorded as
+  `llm_json` like any thinking answer). If that is cut off too, or a
+  reply holds no JSON object, the same question is asked a last time with
+  thinking off and the grammar dropped, recorded as `llm_json_nothink`. A
+  model that cannot think makes Ollama refuse the thinking switch (HTTP
+  400, "does not support thinking"); it gets that last attempt with the
+  switch left out. Any other fault fails the item at once, because
+  another attempt would not change it: a server that cannot be reached, a
+  timeout, any other HTTP rejection. Every attempt's latency is billed to
+  the answer, a refused request included.
+- `llamacpp:<model>`: the same reasoning judge asking llama.cpp's
   `llama-server` over its OpenAI-compatible `/v1/chat/completions` at
   `LLAMACPP_HOST` (default `http://localhost:9931`, llama-server's own
-  default port). Identical prompt, rubric, JSON parsing, wider-budget
-  retry, and no-thinking retry; the request uses `max_tokens`,
+  default port). Identical prompt, rubric, JSON parsing, and attempts;
+  the request uses `max_tokens`,
   `response_format: {"type": "json_object"}`, `reasoning_format: deepseek`
   (thoughts go to `reasoning_content`, not `content`), and
-  `chat_template_kwargs: {"enable_thinking": ...}` plus `reasoning_effort:
-  none` on the no-thinking retry. Templates without a switch (gpt-oss
-  renders `reasoning_effort` verbatim as `Reasoning: <value>`) ignore
-  both, so for them only the wider budget can rescue a cut-off item.
+  `chat_template_kwargs: {"enable_thinking": ...}`. The attempt without
+  thinking adds `reasoning_effort: none` and leaves `response_format`
+  out. Templates without a switch (gpt-oss renders `reasoning_effort`
+  verbatim as `Reasoning: <value>`) ignore both, so for them only the
+  wider budget can rescue a cut-off item.
   `<model>` is an id from the server's `/v1/models`: in router mode (the
   `llama` app's default) it selects and, on first use, loads that model,
   e.g. `llamacpp:ggml-org/Qwen3.8-27B-GGUF:Q8_0`; in single-model mode the
@@ -412,7 +420,7 @@ keep them whole, home guard),
 `provenance.py` (session callers, message provenance), `triggers.py`
 (segmentation, triggers, sampling), `projection.py`,
 `questions.py`, `lesson.py` (the structured lesson and its sampler schema),
-`drafter.py`, `backends/{base,http,rules,readout,llm,llamacpp,jev}.py`,
+`drafter.py`, `backends/{base,rules,readout,llm,jev}.py`,
 `verdict.py` (asking the questions, the write rule, reading stored
 verdicts), `pipeline.py` (import, candidates, draft, decide, live, purge),
 `labeling.py` (label definitions), `label_controller.py` (the labeling
@@ -421,7 +429,10 @@ workflow), `label_questions.py` (display wording and the guide),
 interface), `label_build.py` (building and caching the Go helper),
 `label_ui/` (the Go helper),
 `metrics.py`, `report.py`, `cli.py` (`judge_app`, registered
-on `mem` next to `spool`). Run directory:
+on `mem` next to `spool`). The drafter and the reasoning judge make
+their model calls through `src/agent_memory/model_call.py`, which sits
+outside this package because `mem graph resolve` uses it too. Run
+directory:
 `<home>/judge/<run>/{run.json, items.jsonl, projections/,
 drafts.jsonl, verdicts/<backend>.jsonl, labels.jsonl, report.md, live/<day>/}`,
 directories 0700 and files 0600. A file that commands write can have an
@@ -434,7 +445,8 @@ HTTP is standard library.
 
 `tests/test_judge.py`, `test_judge_pipeline.py`, `test_judge_verdict.py`,
 `test_judge_unanswered.py`, `test_judge_core_regressions.py`,
-`test_judge_store.py`, and `test_label_ui.py`; the Go helper's own tests
+`test_judge_store.py`, and `test_label_ui.py`; `test_model_call.py` for
+the model calls the judge and the drafter make; the Go helper's own tests
 sit beside its sources in `judge/label_ui/`. The test plan written for the
 first build is in
 [archive/judge-experiments.md](archive/judge-experiments.md#tests).
@@ -1088,3 +1100,55 @@ Admission keeps its files through the same code and adds its own rules;
 see [admission-spec.md](admission-spec.md). Regressions are in
 `tests/test_judge_store.py`, `test_judge_pipeline.py`, `test_label_ui.py`,
 and `test_admission_fit.py`.
+
+### Model calls, as built (2026-11-11)
+
+The reasoning judge, the drafter, and the entity resolver behind
+`mem graph resolve` each ask a model for a JSON object. Each had its own
+copy of what a model server is sent, how a model reply is read, when to
+ask again, and how the object is found in the text, and the copies had
+drifted. One module, `src/agent_memory/model_call.py`, now makes the call
+for all three. A caller hands it a model server (Ollama, llama-server, or
+OpenRouter) and says what to ask: the prompt, the token budget, the shape
+the reply is held to, the wider budget a cut-off reply may get, and
+whether a last attempt without thinking is allowed. The module sends the
+attempts, reads each model reply, sums latency and cost over every
+attempt, and returns the object or one of three failures: the server was
+unavailable, the last reply was cut off, or it held no JSON object. It
+sits outside `judge/` because loading the graph must not load the judge.
+
+`llm:` and `llamacpp:` are one judge asking two servers, and the three
+drafter kinds are one drafter. `judge/backends/http.py` and
+`judge/backends/llamacpp.py` are gone. `readout`, `jev`, and admission's
+embedder do not ask for a JSON object, so they call `endpoints.py`
+themselves and turn its errors into their own.
+
+Backend and drafter names, request bodies, recorded methods, and stored
+rows are unchanged. What changed:
+
+- The judge chose its next attempt from words in an error message. Any
+  failure whose text held "http" made the last attempt leave the thinking
+  switch out instead of saying off. A reply that quoted a link did that,
+  and so did any error carrying the server's URL; Ollama then let a
+  thinking model think again, the fault first fixed on 2026-11-06. A
+  missing model whose name held "think", or a transport reply that was
+  not JSON, bought a second request that could not succeed. What happened
+  now chooses the attempt, as "Backends" describes, and only Ollama's own
+  words in an HTTP 400 count as a refused switch.
+- A request refused over the thinking switch was not billed. Its latency
+  is now part of the answer's.
+- A llama.cpp draft that is cut off says how much thinking came before
+  it; the drafter had read OpenRouter's field name, so the count was
+  always missing. A local llama.cpp draft records no cost, where it
+  copied a `usage.cost` that llama-server does not report.
+- A hosted draft whose usage block cannot be read fails that item with an
+  error. It used to end the run with a traceback.
+- Errors say "thinking" where they said "reasoning" (`judge ran out of
+  tokens after N chars of thinking`), and a draft with no JSON is reported
+  as the drafter's, not the judge's. Error text quoted in earlier notes
+  is left as it was printed.
+
+`mem graph resolve` gained the judge's three attempts and keeps the
+merges of the blocks that worked; see "Entity resolution keeps what
+worked" in [phase-1-spec.md](phase-1-spec.md). Regressions are in
+`tests/test_model_call.py`, `test_judge.py`, and `test_graph.py`.

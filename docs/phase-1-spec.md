@@ -701,3 +701,31 @@ their own transactions.
   turns a failure into a tool error or a degraded result, as before.
 - What `recall`, `remember`, `review`, `cite`, `relate`, and `graph`
   return is unchanged.
+
+### Entity resolution keeps what worked (2026-11-11)
+
+`mem graph resolve` asks a local model to cluster one block of entities
+at a time: up to sixty names of one entity type (`--block-size`). It
+asked once per block, with 4,096 tokens and nothing said about thinking.
+A thinking model that spent the budget before the clusters closed raised
+an error, and the error discarded the merges already proposed from every
+other block.
+
+- Each block is now one model call through `model_call.py`, with the
+  reasoning judge's three attempts: the request as before; once more with
+  12,288 tokens when the reply is cut off; and a last time with thinking
+  off and the grammar dropped when there is still no JSON object. See
+  "Model calls, as built" in
+  [judge-experiment-spec.md](judge-experiment-spec.md).
+- A block that still fails does not cost the others. The command prints
+  the merges from the blocks that worked, records them when `--apply` is
+  given, then names each failed block (how many entities, their type,
+  the first and last name, and the reason) and exits 1. It prints
+  "proposes no merges" only when no block failed.
+- A model server that cannot be reached is asked once. The blocks after
+  it are not tried, and the output says how many.
+- `propose` returns a `Proposal` (merges, failed blocks, and the count of
+  blocks not tried) where it returned a list of merges. `parse_clusters`
+  takes the JSON object the model call found, not the reply's text.
+
+Regressions are in `tests/test_graph.py` and `tests/test_model_call.py`.

@@ -179,11 +179,10 @@ Proposed in the audit of 2026-11. None of these is approved.
 - Add CI.
 
 Modules that would gain from deepening, in the order the audit ranked
-them: the model call ladder (`endpoints.py`, the judge backends, the
-drafter, `graph/resolve.py`); one session driver for labeling and
-admission review; a ledger connection with two adapters; auto-approval in
-one place. The ledger session, ranked first, was deepened on 2026-11-11
-(`capture/session.py`).
+them: one session driver for labeling and admission review; a ledger
+connection with two adapters; auto-approval in one place. The two ranked
+above these were deepened on 2026-11-11: the ledger session
+(`capture/session.py`) and the model call (`model_call.py`).
 
 ## Open decisions
 

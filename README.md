@@ -282,6 +282,14 @@ Each run logs the relations it read as a retrieval and prints its id. A
 recorded merge names that retrieval, so you can see later what the proposal
 was drawn from.
 
+The model is asked about one block of entities at a time. If it returns
+no usable clusters for a block, the merges from the other blocks are still
+shown, and recorded with `--apply`. The command then names the block that
+failed and why, and exits 1. If a block keeps failing, a smaller
+`--block-size` gives the model less to cluster at once. If the model
+server cannot be reached, the remaining blocks are not tried and the
+output says how many.
+
 Nothing is rewritten in place:
 
 - Relations are ordinary `fact` memories, not separate graph tables.

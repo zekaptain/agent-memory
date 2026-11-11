@@ -94,7 +94,8 @@ All runtime paths below are under `src/agent_memory/`.
 | `config.py`, `db.py`, `migrations/` | Configuration, migrations, authorization, Quack, export | `test_config`, `test_schema`, `test_migrations`, `test_attribution_migrations`, `test_authorize`, `test_server` |
 | `lifecycle.py` | Shared append-only memory writes, correction proposals, bounded due work | `test_lifecycle` |
 | `audit.py` | Read-only `mem audit check` diagnostics, legacy replacement reconstruction | `test_audit_check` |
-| `endpoints.py` | Model HTTP calls and the opt-in check for sending data off-machine | `test_endpoints` |
+| `endpoints.py` | The HTTP transport to model servers and the opt-in check for sending data off-machine | `test_endpoints` |
+| `model_call.py` | A model call that must return a JSON object: its attempts, the three model servers, latency and cost over every attempt | `test_model_call` |
 | `adapters/`, `capture/` | Harness input to records, redaction, blobs, idempotent writes, spool/replay, capture identity, the session and event rows every writer shares, observed coverage, answer attribution | `test_adapters`, `test_capture`, `test_writer`, `test_spool`, `test_capture_identity`, `test_ledger_session`, `test_observed_capture`, `test_answer_bindings`, `test_audit_persistence` |
 | `mcp_server/` | Stdio tools, the recorded recall path and its query strategies, writes, reviews, citations | `test_mcp` |
 | `graph/` | Relation metadata, traversal SQL, graph recall strategies, entity merges, entity resolution | `test_graph` |
@@ -213,9 +214,14 @@ do not delete existing homes or runs to resolve a workflow mistake.
   comparison), with the relevant lesson visible. Test the rendered output
   and navigation, not only label serialization.
 - Model calls must handle timeouts, empty output, and token exhaustion
-  without losing finished items. Preserve bounded retries, retryability of
-  failed items, and latency/cost accounting across attempts. Repeating a
-  seeded request with the same insufficient budget is not a fix.
+  without losing finished items. A call that must return a JSON object
+  goes through `model_call.py`, which owns its attempts: the judge, the
+  drafter, and `mem graph resolve` hand it a model server and say what to
+  ask. Do not build a request or a further attempt beside it, and never
+  choose an attempt from the words of an error. Preserve the bound on
+  attempts, the ability to run a failed item again, and latency/cost
+  accounting across attempts. Repeating a seeded request with the same
+  insufficient budget is not a fix.
 - Prefer local backends. Hosted judge/drafter calls require explicit user
   permission and `AGENT_MEMORY_JUDGE_ALLOW_REMOTE=1`; redaction does not make
   session text public. Mock model HTTP in regression tests rather than
