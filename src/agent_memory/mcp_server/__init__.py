@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import sys
-from collections.abc import Sequence
 from typing import Any
 
 from mcp.server.mcpserver import MCPServer
@@ -196,7 +195,7 @@ def tools_from_env() -> MemoryTools:
     )
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def main() -> int:
     try:
         tools = tools_from_env()
     except ConfigError as exc:
