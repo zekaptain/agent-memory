@@ -16,10 +16,10 @@ from mcp.server.mcpserver.exceptions import ToolError as McpToolError
 
 from ..capture import blobs, identity, ids
 from ..capture.attribution import reconcile_answers
-from ..capture.observations import fingerprint, pending_observations
 from ..capture.pipeline import deliver, make_redactor
-from ..capture.record import Record, parse_ts
+from ..capture.record import SessionInfo, parse_ts
 from ..capture.redact import Redactor
+from ..capture.session import LedgerSession, Observed, UnknownAgent, event_row
 from ..capture.spool import Spool
 from ..config import Config, ConfigError
 from ..db import AgentMemoryError, MemoryClient, sql_literal
@@ -49,6 +49,7 @@ DEFAULT_LIMIT = 8
 MAX_LIMIT = 50
 DEFAULT_GRAPH_LIMIT = 25
 MAX_GRAPH_LIMIT = 100
+MCP = Observed("mem-mcp", "mcp", "mem_mcp_v1", ("non_mcp_activity_unobserved",))
 
 
 class ToolError(McpToolError, ValueError):
@@ -64,6 +65,7 @@ class MemoryTools:
         *,
         harness_session_id: str | None = None,
         project: str | None = None,
+        observed: Observed = MCP,
     ) -> None:
         self.cfg = cfg
         self.agent_id = agent_id
@@ -74,8 +76,20 @@ class MemoryTools:
             else os.environ,
         )
         self.own_session = self.session_link == "own"
-        self.session_id = ids.session_id(agent_id, self.harness_session_id)
         self.project = project or os.environ.get("AGENT_MEMORY_PROJECT") or _cwd_name()
+        # How an MCP process found its harness session. A command names its own.
+        link = (
+            {"own_session": self.own_session, "session_link": self.session_link}
+            if observed is MCP
+            else None
+        )
+        self.session = LedgerSession(
+            agent_id,
+            self.harness_session_id,
+            SessionInfo(cwd=_cwd(), project=self.project, metadata=link),
+            observed,
+        )
+        self.session_id = self.session.session_id
         self._client: MemoryClient | None = None
         self._session_ready = False
         self._redactor: Redactor | None = None
@@ -94,8 +108,12 @@ class MemoryTools:
             self._client = MemoryClient.from_config(self.cfg)
             self._vocab = {}
         if not self._session_ready:
-            self._ensure_session(self._client)
-            self._observe_mcp(self._client)
+            try:
+                self.session.open(self._client, self.redactor())
+            except UnknownAgent as exc:
+                raise ToolError(
+                    f"{exc}; set AGENT_MEMORY_AGENT, or --agent at the CLI, to a registered agent"
+                ) from None
             self._session_ready = True
             # Also covers CLI graph readers, which obtain a client directly.
             maintain_corrections(self._client)
@@ -107,64 +125,6 @@ class MemoryTools:
                 self._client.close()
         self._client = None
         self._session_ready = False
-
-    def _ensure_session(self, client: MemoryClient) -> None:
-        _, rows = client.query(
-            f"SELECT 1 FROM sessions WHERE session_id = {sql_literal(self.session_id)}"
-        )
-        if rows:
-            return
-        _, tier = client.query(
-            f"SELECT capture_tier FROM agents WHERE agent_id = {sql_literal(self.agent_id)}"
-        )
-        if not tier:
-            raise ToolError(
-                f"unknown agent {self.agent_id!r}; set AGENT_MEMORY_AGENT, "
-                "or --agent at the CLI, to a registered agent"
-            )
-        client.insert(
-            {
-                "sessions": [
-                    {
-                        "session_id": self.session_id,
-                        "agent_id": self.agent_id,
-                        "harness_session_id": self.harness_session_id,
-                        "scope": "global",
-                        "project": self.redactor().value(self.project)[0],
-                        "cwd": self.redactor().text(os.getcwd())[0],
-                        "capture_completeness": "partial",
-                        "started_at": datetime.now(UTC),
-                        "metadata": {
-                            "via": "mem-mcp",
-                            "own_session": self.own_session,
-                            "session_link": self.session_link,
-                        },
-                    }
-                ]
-            }
-        )
-
-    def _observe_mcp(self, client: MemoryClient) -> None:
-        record = Record(
-            agent_id=self.agent_id,
-            harness_session_id=self.harness_session_id,
-            kind="note",
-            source_key="mcp-connection",
-            ts=datetime.now(UTC),
-            observation={
-                "source_mode": "mcp",
-                "adapter_version": "mem_mcp_v1",
-                "source_fingerprint": fingerprint(["mcp", self.session_id]),
-                "exclusions": ["non_mcp_activity_unobserved"],
-            },
-        )
-        rows = pending_observations(client, [self.redactor().record(record)])
-        if rows:
-            try:
-                client.insert({"capture_observations": rows})
-            except duckdb.ConstraintException as exc:
-                if "Duplicate key" not in str(exc):
-                    raise
 
     def _vocabulary(self, client: MemoryClient, table: str, column: str) -> set[str]:
         if table not in self._vocab:
@@ -180,18 +140,16 @@ class MemoryTools:
     def _event(self, client: MemoryClient, kind: str, content: str | None, payload: Any) -> dict:
         content, content_count = self.redactor().value(content)
         payload, payload_count = self.redactor().value(payload)
-        return {
-            "event_id": client.new_ids()[0],
-            "session_id": self.session_id,
-            "seq": 0,
-            "kind": kind,
-            "role": "memory",
-            "content": content,
-            "content_hash": blobs.content_hash(content) if content else None,
-            "payload": payload,
-            "redactions": content_count + payload_count,
-            "ts": datetime.now(UTC),
-        }
+        return event_row(
+            self.cfg.blob_dir,
+            self.session_id,
+            client.new_ids()[0],
+            kind,
+            content,
+            payload,
+            ts=datetime.now(UTC),
+            redactions=content_count + payload_count,
+        )
 
     def _scopes(self, scopes: Sequence[str] | None) -> list[str]:
         values = (
@@ -415,7 +373,6 @@ class MemoryTools:
                         **({"explicit_answer_event_id": explicit} if explicit else {}),
                     },
                 )
-                placeholder["role"] = "assistant"
                 answer_event_id = placeholder["event_id"]
                 rows["events"] = [placeholder]
             else:
@@ -723,12 +680,9 @@ class MemoryTools:
         action: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         source_key = f"mcp:{uuid.uuid4()}"
-        record = Record(
-            agent_id=self.agent_id,
-            harness_session_id=self.harness_session_id,
-            kind=kind,
-            ts=datetime.now(UTC),
-            source_key=source_key,
+        record = self.session.record(
+            kind,
+            source_key,
             role="memory",
             content=content,
             payload={"queued": True, "memory": memory, "review": action},
@@ -766,8 +720,12 @@ def _ts(value: str | None) -> datetime | None:
         raise ToolError(f"bad timestamp {value!r}") from exc
 
 
-def _cwd_name() -> str | None:
+def _cwd() -> str | None:
     try:
-        return os.path.basename(os.getcwd()) or None
+        return os.getcwd()
     except OSError:
         return None
+
+
+def _cwd_name() -> str | None:
+    return os.path.basename(_cwd() or "") or None

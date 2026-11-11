@@ -47,6 +47,8 @@ def observation_rows(
                 and not rec.action
             ):
                 continue
+            # A queued tool write names its own observation. One spooled by an earlier
+            # version does not, and is recognised by the memory or action it carries.
             mode = "hook" if hook else "mcp" if rec.memory or rec.action else "record"
             observation = {
                 "source_mode": mode,
