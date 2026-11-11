@@ -288,15 +288,15 @@ Verified against the code in the audit of 2026-11 and still open.
 - The transcript import drops which Script call a nested tool call ran
   inside (`script_execution.outer_tool_use_id`), so the ledger cannot
   tell a nested call from a top-level one (`adapters/droid.py`).
-- An event captured through Droid's hooks never names its turn in the
+- An event captured through Droid's hooks names no turn in the
   attribution stored with it (`capture_attribution`). The import at
   `Stop` writes a turn's messages before Droid has written the outcome
   that names the turn, and no event is rewritten. Nothing reads the
   stored copy, and binding a reply to a citation uses the import's own
-  evidence, so no result is wrong. A person reading the event sees a
-  null turn and a turn marked not complete (`capture/writer.py`,
-  `adapters/droid.py`). See "What an event keeps of its message and
-  turn" in [phase-1-spec.md](phase-1-spec.md).
+  evidence, so no result is wrong. Since 2026-11-11 such an event says
+  nothing of its turn. Before, it held a null turn marked not complete
+  (`capture/writer.py`, `adapters/droid.py`). See "What an event keeps
+  of its message and turn" in [phase-1-spec.md](phase-1-spec.md).
 
 Reported in the same audit and not yet checked against the code: the
 hand-maintained `ALL_TABLES` list; lockdown happening after the listener
@@ -348,8 +348,10 @@ The same audit proposed removing the following. Each was looked at on
   method it calls. The declaration is what a harness is told, so it
   stays written out. A test fixes every tool's inputs, and each input
   is handed on by name.
-- The attribution stored with an event. It is described in
-  [phase-1-spec.md](phase-1-spec.md) and fixed by tests.
+- The attribution stored with an event. It holds only what the adapter
+  knows when the event is written, and what Droid sends: the reading of
+  fields no recorded transcript or hook payload carries was removed. It
+  is described in [phase-1-spec.md](phase-1-spec.md) and fixed by tests.
 - The key builders in `capture/identity.py` that return what they are
   given. They are the one place the rules for a key are stated
   ([ADR 0003](adr/0003-deterministic-capture-ids.md)).
@@ -378,13 +380,6 @@ The same audit proposed removing the following. Each was looked at on
   item's doing, so today only an unreachable model server stops one.
 - Are the `readout` and `jev` backends and the `actionable` question still
   wanted?
-- Should the attribution stored with an event go, or hold only what is
-  known when it is written? Through the hooks it never names a turn,
-  nothing reads it, and an event cannot be rewritten once the outcome
-  arrives.
-- May the Droid adapter stop reading a turn or a channel named on a
-  message, and `turn_id`, `channel`, and `final_message_id` in a hook
-  payload? No transcript or payload recorded from Droid carries one.
 - May a run be relabeled after a freeze? Should `--freeze` also ask for
   every backend's verdicts on the calibration items?
 - Do Phases 0.5, 3, and 5 stay on this roadmap?

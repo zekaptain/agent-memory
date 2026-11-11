@@ -135,12 +135,12 @@ Append-only `answer_bindings` connect placeholders to captured replies with
 evidence, method/version, and correction history. Effective links preserve
 the original placeholder and raw `context_links`.
 
-Explicit answer IDs take priority. Otherwise, the adapter preserves supplied
-message/turn/channel IDs; a captured cite result can identify its placeholder
-and the unique reply in that captured turn. No timestamp-nearest or
-next-assistant heuristic is allowed. Absent or ambiguous evidence leaves the
-placeholder unresolved. Arrival order, incremental imports, and retries
-must not change that rule.
+Explicit answer IDs take priority. Otherwise, the adapter preserves each
+message's ID and the turn its outcome names; a captured cite result can
+identify its placeholder and the unique reply in that captured turn. No
+timestamp-nearest or next-assistant heuristic is allowed. Absent or
+ambiguous evidence leaves the placeholder unresolved. Arrival order,
+incremental imports, and retries must not change that rule.
 
 `why_answer` reports both attribution and raw identities. Its retrieval item
 join is outer, so a cited zero-result FTS or graph retrieval produces an

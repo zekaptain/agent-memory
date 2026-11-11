@@ -556,13 +556,16 @@ available alongside effective metadata. Omitted thinking and attachment
 content are explicitly excluded. A previous import does not cover later
 activity. A transcript's `user` role still does not establish human authorship.
 
-The Droid adapter retains message/turn/channel identifiers and uses a
-completed captured turn to reconcile a cite result's placeholder with a
-unique reply. Explicit final-channel evidence can disambiguate a reply;
-timestamps and "the next assistant message" cannot. Incremental imports keep
-the full source boundary evidence needed for reconciliation. Repeated
-imports do not duplicate observations or bindings. New ambiguity appends a
-binding correction rather than rewriting the original link.
+The Droid adapter retains each message's id and the turn its outcome
+names, and uses a completed captured turn to reconcile a cite result's
+placeholder with a unique reply. Timestamps and "the next assistant
+message" cannot stand in for the turn. A channel named on a message
+could once choose among replies; Droid names none, and that reading was
+removed (see "What an event keeps of its message and turn" below).
+Incremental imports keep the full source boundary evidence needed for
+reconciliation. Repeated imports do not duplicate observations or
+bindings. New ambiguity appends a binding correction rather than
+rewriting the original link.
 
 Captured tool identity must identify the configured `agent-memory` MCP
 server, not an unrelated tool with a `cite` suffix. Override the default
@@ -1153,29 +1156,28 @@ Regressions are in `tests/test_hooks.py` and `tests/test_adapters.py`.
 ### What an event keeps of its message and turn (2026-11-11)
 
 The Droid adapter gives each record an attribution: the transcript
-message it was made from and, once something names it, its turn. An
+message it was made from and, once an outcome names it, its turn. An
 import reads the attributions of the whole transcript to find the reply
 a `cite` answered. The writer also stores each record's attribution
 with its event, in the payload under `capture_attribution`. Nothing
 reads the stored copy. It is kept for a person who asks why a reply
-was, or was not, bound to a citation. No test fixed what it holds: with
-the write taken out, all 1075 tests of that day passed.
+was, or was not, bound to a citation. No test fixed what it held: with
+the write taken out, all 1075 tests of that day passed. Tests fix it
+now.
 
 An event made from a transcript message holds these fields:
 
 | Field | What it says |
 |-------|--------------|
 | `message_id` | The id of the transcript entry. A tool call and a tool result hold the id of the message that carried them. |
-| `turn_id` | The turn the message is in, or null while nothing has named it. |
-| `turn_complete` | Whether that turn ended in a reply. False while `turn_id` is null. |
-| `turn_boundary` | `agent_turn_outcome` when the outcome that closed the turn named it. Absent otherwise. |
-| `channel` | The channel the entry names, or null. |
 | `has_tool_calls` | Whether the message held a tool call. |
+| `turn_id` | The turn the message is in. Absent until an outcome has named the turn. |
+| `turn_complete` | Whether that turn ended in a reply. Present with `turn_id` only. |
 
 An event made from any other entry holds none, with one exception: a
-compaction between a prompt and the outcome of its turn holds the three
-turn fields. A hook's event holds whichever of `message_id`, `turn_id`,
-`channel`, and `final_message_id` its payload carried.
+compaction between a prompt and the outcome of its turn holds the two
+turn fields. A hook's event holds the `message_id` its payload carried,
+or nothing.
 
 What Droid sends, counted on 2026-11-11:
 
@@ -1188,26 +1190,39 @@ What Droid sends, counted on 2026-11-11:
   `PreCompact`, `SessionEnd`, and a resumed `SessionStart` carry
   `message_id`.
 
-For Droid, then, only an outcome names a turn, `channel` is always
-null, and a hook's event holds a `message_id` or nothing. The adapter
-also reads a turn or a channel named on a message or in a hook payload,
-and that reading has met no real input.
+For Droid, then, only an outcome names a turn, and a hook payload names
+a message or nothing. The adapter reads no more than that. Until later
+the same day it also read a turn or a channel named on a message, and
+`turn_id`, `channel`, and `final_message_id` in a hook payload. That
+reading had met no real input and was removed, and with it the choice
+of a reply by its channel.
 
 The stored copy is what the adapter knew when the event was first
 written, and no event is rewritten. Droid writes a turn's outcome after
 its `Stop` hook has run, so the import at `Stop` writes the turn's
 messages before anything has named their turn. An event captured
-through the hooks therefore keeps a null `turn_id` and a false
-`turn_complete` for good, also once the outcome is in the ledger. A
-prompt the `UserPromptSubmit` hook wrote keeps only the hook's
-`message_id`. Read a null `turn_id` as "not known when this was
-written". The turn is stored only when the import that first writes a
-message also reads the outcome of its turn, as `mem ingest
---transcript` of a finished session does.
+through the hooks therefore names no turn, also once the outcome is in
+the ledger. A prompt the `UserPromptSubmit` hook wrote keeps only the
+hook's `message_id`. Read an event without a `turn_id` as "not known
+when this was written". The turn is stored only when the import that
+first writes a message also reads the outcome of its turn, as `mem
+ingest --transcript` of a finished session does.
+
+An event written before the removal can hold more: a null `turn_id`
+with a false `turn_complete` where the turn was not known, a `channel`
+that is always null, and a `turn_boundary` of `agent_turn_outcome`
+wherever a turn is named. That false `turn_complete` says nothing of
+the turn.
 
 Binding a reply to a citation is not affected. Each import works out
 its evidence from the whole transcript, where the outcome has named the
 turn, and stores it with the import's observation
-(`attribution_evidence`).
+(`attribution_evidence`). The removal left the rest of an import as it
+was: the 60 transcripts give the same records and the same observation
+before and after it, and synthetic turns that cite give the same
+evidence. The adapter version (`droid_transcript_v2`) and the
+attribution method (`captured_cite_turn_v1`) therefore kept their
+names, and a second import of a transcript adds no observation.
 
-Regressions are in `tests/test_cli_capture.py`.
+Regressions are in `tests/test_cli_capture.py` and
+`tests/test_adapters.py`.
