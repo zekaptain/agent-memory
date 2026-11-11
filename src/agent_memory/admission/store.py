@@ -19,6 +19,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
+from ..capture.pipeline import make_redactor
 from ..capture.redact import Redactor
 from ..config import Config
 from ..judge import store as run_files
@@ -35,10 +36,6 @@ def private_dir(path: Path) -> None:
     """Create a private leaf, refusing symlinks rather than changing their targets."""
     _refuse_link(path, "directories")
     run_files.private_dir(path)
-
-
-def redactor_for_config(cfg: Config) -> Redactor:
-    return Redactor([cfg.read_token()] if cfg.token_path.exists() else [])
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -146,12 +143,12 @@ class _DayStore(RunStore):
         super().create(params)
 
     def _write_run(self, data: Mapping[str, Any]) -> None:
-        clean, _ = redactor_for_config(self.cfg).value(dict(data))
+        clean, _ = make_redactor(self.cfg).value(dict(data))
         write_json(self.run_json, clean)
 
     def write_projection(self, item_id: str, text: str) -> Path:
         path = self._projection_path(item_id)
-        clean, _ = redactor_for_config(self.cfg).text(text)
+        clean, _ = make_redactor(self.cfg).text(text)
         _atomic_text(path, clean)
         return path
 
@@ -200,7 +197,7 @@ class AdmissionStore:
         state.update(fields)
         if state["mode"] not in ("shadow", "auto"):
             raise AdmissionError("invalid admission mode")
-        clean, _ = redactor_for_config(self.cfg).value(state)
+        clean, _ = make_redactor(self.cfg).value(state)
         write_json(self.state_path, clean)
         return clean
 
@@ -208,7 +205,7 @@ class AdmissionStore:
         return _read_json(self.approver_path)
 
     def write_approver(self, data: Mapping[str, Any]) -> None:
-        clean, _ = redactor_for_config(self.cfg).value(dict(data))
+        clean, _ = make_redactor(self.cfg).value(dict(data))
         write_json(self.approver_path, clean)
 
     def read_examples(self) -> list[dict[str, Any]]:

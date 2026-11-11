@@ -60,7 +60,7 @@ EVENT_BATCH = 25
 STOP_AFTER = 3
 
 
-def _quiet(_: str) -> None:
+def quiet(_: str) -> None:
     return None
 
 
@@ -158,7 +158,7 @@ def import_sessions(
     limit: int | None = None,
     project: str | None = None,
     since: datetime | None = None,
-    log: Log = _quiet,
+    log: Log = quiet,
 ) -> ImportSummary:
     """Write every transcript straight to the experiment ledger. Unchanged files are skipped."""
     ensure_experiment_home(cfg)
@@ -272,7 +272,7 @@ def build_candidates(
     store: RunStore | None = None,
     session_ids: Sequence[str] | None = None,
     exclude_item_ids: Sequence[str] = (),
-    log: Log = _quiet,
+    log: Log = quiet,
 ) -> CandidateSummary:
     """Segment turns, apply triggers, sample, project, and write items.jsonl."""
     ensure_experiment_home(cfg)
@@ -384,7 +384,7 @@ def draft_items(
     *,
     limit: int | None = None,
     store: RunStore | None = None,
-    log: Log = _quiet,
+    log: Log = quiet,
     warn: Log | None = None,
 ) -> DraftSummary:
     """One draft per item for this drafter; other drafters' rows are left alone. Resumable."""
@@ -485,7 +485,7 @@ def decide_items(
     limit: int | None = None,
     store: RunStore | None = None,
     record_events: bool = True,
-    log: Log = _quiet,
+    log: Log = quiet,
     warn: Log | None = None,
 ) -> DecideSummary:
     """Run each backend over every (item, draft) without a current verdict. The turn questions
@@ -641,7 +641,7 @@ def live_step(
     backends: Sequence[str],
     drafter_specs: Sequence[str] = (),
     day: str | None = None,
-    log: Log = _quiet,
+    log: Log = quiet,
     warn: Log | None = None,
 ) -> LiveSummary:
     """One day of the live week: import new sessions, judge their turns with frozen thresholds."""

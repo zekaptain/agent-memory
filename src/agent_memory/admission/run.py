@@ -14,6 +14,7 @@ from ..db import MemoryClient, sql_literal
 from ..judge.backends import make_backend
 from ..judge.backends.base import DecisionBackend, require_remote
 from ..judge.drafter import make_drafter
+from ..judge.pipeline import Log, quiet
 from ..judge.projection import PROJECTION_VERSION, project_candidate
 from ..judge.provenance import session_callers
 from ..judge.questions import QUESTIONS_VERSION
@@ -26,10 +27,6 @@ from .examples import example_for
 from .store import AdmissionStore, write_jsonl
 
 DEFAULT_DRAFTER = "ollama:gemma4:26b"
-
-
-def _quiet(_: str) -> None:
-    pass
 
 
 def _local_drafter(spec: str) -> Any:
@@ -107,7 +104,7 @@ def _discover(cfg: Config, store: AdmissionStore, day: RunStore, cutoff: str) ->
             )
 
 
-def _process(cfg: Config, store: AdmissionStore, day: RunStore, log: Callable[[str], None]) -> int:
+def _process(cfg: Config, store: AdmissionStore, day: RunStore, log: Log) -> int:
     run = day.read_run()
     model = run["approver"]
     drafter = _local_drafter(run["drafter"])
@@ -215,7 +212,7 @@ def run_day(
     day: str | None = None,
     drafter: str = DEFAULT_DRAFTER,
     backend: str | None = None,
-    log: Callable[[str], None] = _quiet,
+    log: Log = quiet,
 ) -> dict[str, Any]:
     """Finish older days first, then discover and process today's captured turns.
 

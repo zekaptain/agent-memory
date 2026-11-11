@@ -9,6 +9,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from ..capture.pipeline import make_redactor
 from ..config import Config
 from ..judge.drafter import draft_hash
 from ..judge.lesson import lesson_from_row, render_lesson
@@ -17,7 +18,7 @@ from ..judge.store import JudgeError, RunStore, read_json
 from ..judge.verdict import Verdict, derive_action
 from . import ADMISSION_VERSION, AdmissionError
 from .embed import DEFAULT_EMBEDDER, lesson_fields, make_embedder, validate_vector
-from .store import AdmissionStore, latest_examples, redactor_for_config, write_jsonl
+from .store import AdmissionStore, latest_examples, write_jsonl
 
 GATES = ("grounded", "faithful", "rule_supported", "generalizable", "enforced")
 
@@ -214,7 +215,7 @@ def import_labels(cfg: Config, source: Path, *, backend: str, embedder: str) -> 
             raise AdmissionError("imported admission items require a frozen split")
         pending.append((draft, item, verdict, entry))
     store = AdmissionStore(cfg)
-    redactor = redactor_for_config(cfg)
+    redactor = make_redactor(cfg)
     existing = store.read_examples()
     by_id = {row["id"]: row for row in existing}
     embed = None
