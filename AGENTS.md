@@ -148,9 +148,12 @@ Entry points are `mem` (`agent_memory.cli:main`) and `mem-mcp`
   compactions. A Droid hook payload carries no id for a tool call
   (checked against real payloads), so `PostToolUse` records nothing and
   `PreCompact` records a note. Do not make a hook write an event the
-  transcript also holds unless both carry the same harness id. A
-  hook-only event that a message can raise more than once is keyed on
-  the time the hook ran, not on `message_id`.
+  transcript also holds unless both carry the same harness id, as a
+  prompt's `message_id` and a new session's id are. A hook-only event is
+  keyed on `message_id` only when that id places it in the session (a
+  resume, a request to compact). One that a message can raise several
+  times, each saying something else, such as a notification, is keyed on
+  the time the hook ran.
 - Session and event rows come from `capture/session.py`, whoever writes
   them: the capture writer, the MCP tools, `mem graph`, `mem review`, and
   admission. A new writer opens a `LedgerSession` and builds its events

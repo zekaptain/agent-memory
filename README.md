@@ -145,8 +145,11 @@ A Droid hook does not carry the reply and does not name the tool call it
 reports. `mem event` therefore records nothing for `PostToolUse` and
 `Stop`. It records a prompt, a notification, the start and end of a
 session, a subagent's stop, and the request to compact (as a note; the
-compaction comes from the transcript). Vibe hooks name their tool calls,
-so those are recorded; Vibe transcript support is still pending.
+compaction comes from the transcript). Droid writes a turn's outcome
+just after `Stop` has run, so each import brings the outcome of the turn
+before it. Import once more after a session's last turn to bring the
+last one. Vibe hooks name their tool calls, so those are recorded; Vibe
+transcript support is still pending.
 
 For `mem event`, use `--keep-raw` to keep the full payload with the event,
 redacted like everything else, or `--record-pre-tool` to record pre-tool

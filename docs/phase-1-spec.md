@@ -104,9 +104,11 @@ Vibe tool hooks use the shared builders. A keyed Droid prompt uses the bare
 message ID. Without one, its hook uses `prompt:unkeyed:<ts>` and marks
 `payload.dedupe` as `"unkeyed"`; it makes no hook/transcript dedupe claim.
 Replies keep their entry IDs, thinking appends `#thinking`, and tool calls
-and results keep their tool-use IDs. A session marker and the note a
-`PreCompact` hook leaves are keyed on the message ID when the payload has
-one. Any other hook-only note is keyed on the time its hook ran.
+and results keep their tool-use IDs. The start of a new session is keyed
+on the session ID by its hook and by the transcript alike. Any other
+session marker, and the note a `PreCompact` hook leaves, are keyed on the
+message ID when the payload has one. Any other hook-only note is keyed on
+the time its hook ran.
 
 ### Idempotent insert
 
@@ -225,16 +227,18 @@ directly (Phase 2). `mem ingest --spool` is the whole integration.
 
 Common stdin fields across Droid and Vibe (`session_id`, `cwd`,
 `hook_event_name`, `transcript_path`) map to the `session` block.
-`capture.identity` owns the keys. A prompt's ID is shared with transcript
-import. A hook-only event uses the event name plus the message ID when
-that names one event (`SessionStart`, `SessionEnd`, `PreCompact`), and
-otherwise the time the hook ran.
-`SessionStart` also includes its source (startup/resume/clear/compact).
+`capture.identity` owns the keys. Two are shared with transcript import:
+a prompt's message ID, and the session ID for the start of a new session
+(`SessionStart` with `source` `startup`). A hook-only event uses the
+event name plus the message ID when Droid sends one that places the event
+in the session (`SessionStart` with any other source, `SessionEnd`,
+`PreCompact`), and otherwise the time the hook ran. Such a `SessionStart`
+key also includes its source (resume/clear/compact).
 Mapping:
 
 | hook event | kind | notes |
 |---|---|---|
-| SessionStart | `session_start` | payload `source` (startup/resume/clear/compact); the `sessions` row is created once |
+| SessionStart | `session_start` | payload `source` (startup/resume/clear/compact); a `startup` is the event the transcript's `session_start` entry records; the `sessions` row is created once |
 | SessionEnd | `session_end` | payload `reason` |
 | UserPromptSubmit | `user_msg` | content = prompt |
 | PreToolUse / pre_tool | skipped by default | `--record-pre-tool` records a note, for debugging |
@@ -860,8 +864,55 @@ compactions for one.
   `tool_call_id`, and it has no transcript import yet.
 
 No `UserPromptSubmit`, `Stop`, `SessionStart`, `SessionEnd`, or
-`SubagentStop` ran while the probe was recording, so those payloads are
-not checked here. See [roadmap.md](roadmap.md#known-defects).
+`SubagentStop` ran in that session while the probe was recording. The
+next section covers the first three.
 
 Regressions are in `tests/test_adapters.py`,
 `tests/test_capture_identity.py`, and `tests/test_cli_capture.py`.
+
+### What Droid's turn and session hooks carry (2026-11-11)
+
+The probe went on to record hooks from four more sessions in the Factory
+app, two of them new and two that the app reopened. With the first
+session that made 1,167 payloads when these counts were taken. Each row
+now also holds the ids and types of the last three transcript entries on
+disk when the hook ran.
+
+| hook | payloads | ids in the payload | the transcript when the hook runs |
+|---|---|---|---|
+| `UserPromptSubmit` | 4 | `message_id` | The prompt is not there yet. It is written afterwards, under that id. |
+| `Stop` | 3 | `message_id` | That id is the last entry: the reply (2), or a tool result when the turn ends on a tool call (1). The turn's `agent_turn_outcome` is written afterwards. |
+| `SessionStart`, `source` `startup` | 2 | none | The `session_start` entry is there, and its id is the session's id. |
+| `SessionStart`, `source` `resume` | 2 | `message_id` | That id is the session's last reply. |
+
+- The first entry of every local transcript (2,379 files) is a
+  `session_start` whose id is the session's id, which is also the name
+  of the file.
+- The app raised a `SessionStart` with `source` `resume` for each of two
+  idle sessions it reopened. No `SessionStart` followed any of the three
+  compactions.
+- The later payloads agree with the table in the section above. None of
+  978 `PreToolUse` and 171 `PostToolUse` payloads carries an id, and in
+  each of three sessions the n-th `PostToolUse` is the n-th top-level
+  call in the transcript, for all 171.
+
+The `SessionStart` hook of a new session was keyed on the time it ran,
+and the transcript's `session_start` entry on the session's id, so one
+start was two `session_start` events.
+
+- `SessionStart` with `source` `startup` is keyed on the session's id.
+  The hook and the import write one event, whichever comes first. A
+  `SessionStart` that names no source is keyed as before.
+- A resume stays keyed on its `message_id`. A session reopened twice
+  with nothing said in between is one `session_start` marker, not two.
+- `Stop` still records nothing. An import at `Stop` brings the reply,
+  which is on disk by then. It does not bring the turn's outcome, which
+  Droid writes after the hook has run. The outcome, and with it the
+  binding of a citation to the reply, arrives with the next import. See
+  [roadmap.md](roadmap.md#known-defects) for the last turn of a session.
+
+`SessionEnd` and `SubagentStop` did not run while the probe was
+recording, and neither did a `SessionStart` after `/clear`.
+
+Regressions are in `tests/test_adapters.py` and
+`tests/test_capture_identity.py`.

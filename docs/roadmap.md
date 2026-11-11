@@ -27,11 +27,12 @@ As of 2026-11-11.
 ## Next approved work
 
 The next approved work should finish verifying Droid capture end to end,
-then build and run the local usefulness experiment. The tool, compaction,
-and notification hooks were checked against real payloads on 2026-11-11;
-the turn and session hooks were not. Retrieval tuning and wider graph
-use follow measured failures. Parametric consolidation remains research
-until usefulness and withdrawal/backflow can be measured.
+then build and run the local usefulness experiment. Droid's hooks were
+checked against real payloads on 2026-11-11, all but `SessionEnd` and
+`SubagentStop`. No session has yet been captured through installed
+hooks. Retrieval tuning and wider graph use follow measured failures.
+Parametric consolidation remains research until usefulness and
+withdrawal/backflow can be measured.
 
 ## Phases
 
@@ -95,13 +96,16 @@ read-only view.
 
 ## Verified harness behavior
 
-Checked against the vendor documentation on 2026-10-25. Droid's tool,
-compaction, and notification hooks were checked against 650 real payloads
-on 2026-11-11: `PreToolUse`, `PostToolUse`, and `Notification` carry no
-`message_id` and no id for a tool call, `PreCompact` carries the
-`message_id` of the compaction's anchor message, and `PostToolUse` does
-not run for a call made inside a Script. See "What a Droid hook carries"
-in [phase-1-spec.md](phase-1-spec.md).
+Checked against the vendor documentation on 2026-10-25. Droid's hooks
+were checked against real payloads on 2026-11-11, all but `SessionEnd`
+and `SubagentStop`. `PreToolUse`, `PostToolUse`, and `Notification`
+carry no `message_id` and no id for a tool call. `PreCompact` carries
+the `message_id` of the compaction's anchor message. `PostToolUse` does
+not run for a call made inside a Script. `Stop` runs after the reply is
+written and before the turn's outcome is. The `SessionStart` of a new
+session carries no `message_id`; a resume carries that of the session's
+last reply. See "What a Droid hook carries" and "What Droid's turn and
+session hooks carry" in [phase-1-spec.md](phase-1-spec.md).
 
 | Harness | Events | Payload | Gaps for capture |
 |---------|--------|---------|------------------|
@@ -170,19 +174,26 @@ Verified against the code in the audit of 2026-11 and still open.
 - A memory that admission wrote and a human approves or retires with
   `mem review` gives the fitted approver no example. Only
   `mem admit review` records one (`review.py`).
-- Droid's `Stop`, `SessionStart`, `SessionEnd`, and `SubagentStop`
-  payloads have not been checked against real ones, and
-  `UserPromptSubmit` only once. Until `Stop` is checked it is not known
-  whether the reply is in the transcript when the `Stop` hook imports it.
-  `SessionStart` and `SessionEnd` are keyed on `message_id` when the
-  payload has one, which is right only if a message raises each at most
-  once (`adapters/droid.py`).
+- Droid's `SessionEnd` and `SubagentStop` payloads, and a `SessionStart`
+  after `/clear`, have not been checked against real ones. `SessionEnd`
+  is keyed on `message_id` when the payload has one, which is right only
+  if that id places the end of the session (`adapters/droid.py`).
 - A Droid turn that never reaches `Stop` (a crash, a killed session) is
-  in the ledger only after someone imports its transcript. Nothing
-  imports at `SessionEnd` or at the next `SessionStart`.
+  in the ledger only after someone imports its transcript. Droid also
+  writes a turn's outcome after its `Stop` hook has run, so an import at
+  `Stop` brings the outcome of the turn before and never its own. After
+  the last turn of a session nothing imports again, and without its
+  outcome the judge reads that turn as cut off when the session ended
+  (`closed_by` is `session_end`), not as completed.
+- `session_summary.started_at` is the time of the first record the
+  ledger received for a session. When that record is a hook that is not
+  the session's start (a prompt, or the resume of a session begun before
+  its hooks were installed), it is later than the start the transcript
+  records, which the view shows only inside `effective_metadata`
+  (migration 0003).
 - A hook with no id of its own is keyed on the time it ran, so a hook
-  command registered twice records its notifications and session markers
-  twice (`adapters/droid.py`).
+  command registered twice records each notification twice
+  (`adapters/droid.py`).
 - The transcript import drops which Script call a nested tool call ran
   inside (`script_execution.outer_tool_use_id`), so the ledger cannot
   tell a nested call from a top-level one (`adapters/droid.py`).
@@ -201,8 +212,9 @@ blinding; an egress error body in exception text; no CI configuration.
 Proposed in the audit of 2026-11. None of these is approved.
 
 - Finish capture: a hook installer that imports the transcript at `Stop`
-  and `SessionEnd`, the Vibe transcript adapter, and the rest of the
-  end-to-end check of Droid capture (the hooks not yet seen).
+  and once more after a session's last turn (at `SessionEnd`, or when
+  the session is next started or resumed), the Vibe transcript adapter,
+  and a session captured end to end through installed hooks.
 - Build `mem why` and `mem session` (Phase 3) as recorded reads, each a
   new strategy for the recall path.
 - Run the memory usefulness experiment.
