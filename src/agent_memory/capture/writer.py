@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import re
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from graphlib import CycleError, TopologicalSorter
@@ -20,25 +20,9 @@ from .attribution import reconcile_answers
 from .observations import pending_observations
 from .record import Record, SessionInfo, parse_ts
 from .redact import Redactor
+from .session import event_row, retrying, session_row
 
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
-_ROLE_FOR_KIND = {
-    "user_msg": "user",
-    "assistant_msg": "assistant",
-    "tool_call": "assistant",
-    "tool_result": "tool",
-    "memory_recall": "memory",
-    "memory_write": "memory",
-    "session_start": "harness",
-    "session_end": "harness",
-    "compaction": "harness",
-    "system_context": "harness",
-    "capture_error": "harness",
-}
-
-
-# How often a write is repeated after another capturer committed the same rows first.
-RACE_RETRIES = 3
 
 
 class WriterError(AgentMemoryError):
@@ -158,7 +142,7 @@ class Writer:
                 return
             part = [batch[index] for index in sorted(chunk)]
             try:
-                result.add(_retrying(lambda: self._write_once(part, groups, batch)))
+                result.add(retrying(lambda: self._write_once(part, groups, batch)))
             except Exception as exc:
                 if _ledger_unavailable(exc):
                     raise
@@ -179,7 +163,7 @@ class Writer:
         # step, even when the original capture committed before its connection failed.
         sessions = [ids.session_id(*key) for key in groups]
         try:
-            _retrying(lambda: reconcile_answers(self.client, sessions))
+            retrying(lambda: reconcile_answers(self.client, sessions))
         except Exception as exc:
             if _ledger_unavailable(exc):
                 raise
@@ -210,7 +194,7 @@ class Writer:
         }
         have_sessions = self._existing("sessions", "session_id", session_of.values())
         session_rows = [
-            self._session_row(sid, key[0], groups[key])
+            _session_row(key[0], groups[key])
             for key, sid in session_of.items()
             if sid not in have_sessions
         ]
@@ -359,53 +343,24 @@ class Writer:
 
     # Row builders
 
-    def _session_row(self, sid: str, agent_id: str, recs: Sequence[Record]) -> dict[str, Any]:
-        info = SessionInfo()
-        for rec in sorted(recs, key=lambda r: (r.kind != "session_start", r.ts)):
-            if rec.session:
-                info = _merge(info, rec.session)
-        started = info.started_at or min(r.ts for r in recs)
-        cwd = info.cwd
-        project = info.project or (Path(cwd).name if cwd else None)
-        return {
-            "session_id": sid,
-            "agent_id": agent_id,
-            "harness_session_id": recs[0].harness_session_id,
-            "harness_version": info.harness_version,
-            "model": info.model,
-            "scope": info.scope or "global",
-            "project": project,
-            "cwd": cwd,
-            "capture_completeness": "partial",
-            "started_at": started,
-            "metadata": info.metadata,
-        }
-
     def _event_row(self, eid: str, sid: str, rec: Record) -> dict[str, Any]:
-        content = rec.content
         payload = rec.payload
         if rec.attribution:
             payload = {**(payload or {}), "capture_attribution": rec.attribution}
         if self.keep_raw and rec.raw is not None:
             payload = {**(payload or {}), "raw": rec.raw}
-        stored = blobs.store(self.blob_dir, content)
-        return {
-            "event_id": eid,
-            "session_id": sid,
-            "seq": rec.seq,
-            "kind": rec.kind,
-            "role": rec.role or _ROLE_FOR_KIND.get(rec.kind),
-            "content": stored.content,
-            "content_hash": stored.content_hash,
-            "content_bytes": stored.content_bytes,
-            "truncated": stored.truncated,
-            "blob_ref": stored.blob_ref,
-            "payload": payload,
-            "parent_event_id": None,
-            "token_estimate": (stored.content_bytes or 0) // 4 if stored.content_bytes else None,
-            "redactions": rec.redactions,
-            "ts": rec.ts,
-        }
+        return event_row(
+            self.blob_dir,
+            sid,
+            eid,
+            rec.kind,
+            rec.content,
+            payload,
+            ts=rec.ts,
+            role=rec.role,
+            seq=rec.seq,
+            redactions=rec.redactions,
+        )
 
     def _memory_row(self, mid: str, sid: str, rec: Record) -> dict[str, Any]:
         spec = rec.memory or {}
@@ -431,22 +386,13 @@ class Writer:
         }
 
 
-def _retrying[T](action: Callable[[], T]) -> T:
-    """Repeat a write that lost a race. Another capturer can commit the same session or event
-    between our pre-read and our commit; reading again finds its rows and skips them."""
-    retries = RACE_RETRIES
-    while True:
-        try:
-            return action()
-        except duckdb.Error as exc:
-            # A conflict found at commit is a TransactionException; one found at insert is a
-            # ConstraintException that names a duplicate key.
-            lost_race = isinstance(exc, duckdb.TransactionException) or (
-                isinstance(exc, duckdb.ConstraintException) and "Duplicate key" in str(exc)
-            )
-            if not lost_race or not retries:
-                raise
-            retries -= 1
+def _session_row(agent_id: str, recs: Sequence[Record]) -> dict[str, Any]:
+    """The session row from everything the batch's records say about their session."""
+    info = SessionInfo()
+    for rec in sorted(recs, key=lambda r: (r.kind != "session_start", r.ts)):
+        if rec.session:
+            info = _merge(info, rec.session)
+    return session_row(agent_id, recs[0].harness_session_id, info, min(r.ts for r in recs))
 
 
 def _ledger_unavailable(exc: Exception) -> bool:
