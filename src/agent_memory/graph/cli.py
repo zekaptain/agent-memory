@@ -9,6 +9,7 @@ from typing import Annotated, Any
 import typer
 
 from .. import endpoints
+from ..capture.session import Observed
 from ..config import Config, load_config
 from ..mcp_server.tools import MemoryTools
 from .recall import relations_of
@@ -27,6 +28,8 @@ graph_app = typer.Typer(
     no_args_is_help=True,
 )
 
+COMMAND = Observed("mem graph", "record", "mem_cli_v1")
+
 SCOPES = Annotated[
     list[str] | None,
     typer.Option("--scope", help="Scope to read; repeatable. Default: global and --project."),
@@ -44,7 +47,13 @@ def _config(ctx: typer.Context) -> Config:
 
 def _tools(ctx: typer.Context, agent: str, project: str | None) -> MemoryTools:
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    return MemoryTools(_config(ctx), agent, harness_session_id=f"graph-{stamp}", project=project)
+    return MemoryTools(
+        _config(ctx),
+        agent,
+        harness_session_id=f"graph-{stamp}",
+        project=project,
+        observed=COMMAND,
+    )
 
 
 def _listing(tools: MemoryTools, scope: list[str] | None) -> dict[str, Any]:

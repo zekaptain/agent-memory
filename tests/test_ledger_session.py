@@ -11,6 +11,7 @@ from agent_memory.capture import blobs
 from agent_memory.capture.pipeline import deliver, make_redactor, replay_spool
 from agent_memory.capture.record import Record, SessionInfo, now
 from agent_memory.capture.session import LedgerSession, Observed, UnknownAgent
+from agent_memory.cli import main
 from agent_memory.db import MemoryClient, MemoryServer, sql_literal
 from agent_memory.mcp_server import MemoryTools
 
@@ -166,6 +167,31 @@ def test_a_recall_event_counts_its_content_like_any_other_event(live_cfg, live_c
         "SELECT role, content, content_bytes, truncated, token_estimate FROM events "
         f"WHERE event_id = {sql_literal(got['request_event_id'])}",
     ) == [("memory", "which package manager", 21, False, 5)]
+
+
+def test_a_mem_graph_command_is_recorded_as_a_command_not_as_mcp(
+    live_cfg, live_client, monkeypatch, capsys
+):
+    """`mem graph` runs through the MCP tools' code, and its session used to say so: via
+    mem-mcp, observed in mode mcp."""
+    for var in ("AGENT_MEMORY_HOME", "AGENT_MEMORY_HOST", "AGENT_MEMORY_PORT"):
+        monkeypatch.delenv(var, raising=False)
+    base = ["--home", str(live_cfg.home), "--port", str(live_cfg.port), "graph"]
+    assert main([*base, "entities", "--scope", "command-session"]) == 0
+    capsys.readouterr()
+    [(sid,)] = q(
+        live_client,
+        "SELECT session_id::VARCHAR FROM sessions "
+        "WHERE agent_id = 'human' AND harness_session_id LIKE 'graph-%'",
+    )
+    assert session_shape(live_client, sid)[5] == {"via": "mem graph"}
+    assert observations(live_client, sid) == [
+        ("record", "mem_cli_v1", ["no_complete_capture_evidence"])
+    ]
+    assert q(
+        live_client,
+        f"SELECT coverage_source_mode FROM session_summary WHERE session_id = {sql_literal(sid)}",
+    ) == [("record",)]
 
 
 # The session module itself
