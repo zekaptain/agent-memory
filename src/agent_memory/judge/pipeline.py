@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import random
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from contextlib import ExitStack
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -29,7 +30,14 @@ from .labeling import LABELS_VERSION
 from .projection import PROJECTION_VERSION, drafter_rendering, project_candidate
 from .provenance import PROVENANCE_VERSION, session_callers
 from .questions import DEFAULT_THRESHOLDS, QUESTIONS_VERSION, thresholds_from_run
-from .store import JudgeError, RunStore, ensure_experiment_home, imports_log, utc_now_iso
+from .store import (
+    JudgeError,
+    RunStore,
+    ensure_experiment_home,
+    imports_log,
+    sole_writer,
+    utc_now_iso,
+)
 from .triggers import (
     CALLER_KINDS,
     STRATUM_PRIORITY,
@@ -117,9 +125,9 @@ def import_sessions(
     ensure_experiment_home(cfg)
     summary = ImportSummary()
     paths = iter_transcripts(sessions_dir, project=project, since=since)
-    seen = {(row["path"], row["mtime"]) for row in RunStore.read_jsonl(imports_log(cfg))}
     adapter = DroidAdapter()
-    with MemoryClient.from_config(cfg) as client:
+    with MemoryClient.from_config(cfg) as client, sole_writer(imports_log(cfg)):
+        seen = {(row["path"], row["mtime"]) for row in RunStore.read_jsonl(imports_log(cfg))}
         writer = Writer(client, cfg.blob_dir, make_redactor(cfg))
         for path in paths:
             if limit is not None and summary.files >= limit:
@@ -230,8 +238,7 @@ def build_candidates(
     """Segment turns, apply triggers, sample, project, and write items.jsonl."""
     ensure_experiment_home(cfg)
     store = store or RunStore(cfg, run_id)
-    if store.exists() and store.items_path.exists():
-        raise JudgeError(f"run {run_id!r} already has items; use a new run id or purge it")
+    _require_no_items(store)
     redactor = make_redactor(cfg)
     excluded = set(exclude_item_ids)
     with MemoryClient.from_config(cfg) as client:
@@ -270,24 +277,27 @@ def build_candidates(
         splits = assign_splits(chosen, seed=seed)
         items = []
         redactions = 0
-        for index, cand in enumerate(chosen, start=1):
-            projection = project_candidate(client, cand, redactor, cfg.blob_dir)
-            store.write_projection(cand.item_id, projection.text)
-            redactions += projection.redactions
-            items.append(
-                {
-                    **cand.to_dict(),
-                    "split": splits[cand.item_id],
-                    "projection_version": PROJECTION_VERSION,
-                    "projection_hash": projection.hash,
-                    "projection_chars": len(projection.text),
-                    "redactions": projection.redactions,
-                    "sidecar": projection.sidecar,
-                }
-            )
-            if index % 25 == 0:
-                log(f"projected {index}/{len(chosen)}")
-    store.write_items(items)
+        with sole_writer(store.items_path):
+            # Asked again now that no other command can be building this run's items.
+            _require_no_items(store)
+            for index, cand in enumerate(chosen, start=1):
+                projection = project_candidate(client, cand, redactor, cfg.blob_dir)
+                store.write_projection(cand.item_id, projection.text)
+                redactions += projection.redactions
+                items.append(
+                    {
+                        **cand.to_dict(),
+                        "split": splits[cand.item_id],
+                        "projection_version": PROJECTION_VERSION,
+                        "projection_hash": projection.hash,
+                        "projection_chars": len(projection.text),
+                        "redactions": projection.redactions,
+                        "sidecar": projection.sidecar,
+                    }
+                )
+                if index % 25 == 0:
+                    log(f"projected {index}/{len(chosen)}")
+            store.write_items(items)
     return CandidateSummary(
         pool=_count(pool),
         chosen=_count(chosen),
@@ -297,6 +307,11 @@ def build_candidates(
         chosen_callers=_count_values(c.caller for c in chosen),
         harness_turns=harness_turns,
     )
+
+
+def _require_no_items(store: RunStore) -> None:
+    if store.has_items():
+        raise JudgeError(f"run {store.run_id!r} already has items; use a new run id or purge it")
 
 
 def _count(candidates: Sequence[Candidate]) -> dict[str, int]:
@@ -339,49 +354,50 @@ def draft_items(
     store = store or RunStore(cfg, run_id)
     run = store.read_run()
     require_current_questions(run)
-    existing = store.drafts()
-    versions = {str(row.get("drafter_version") or "drafter_v2") for row in existing}
-    incompatible = sorted(versions - {DRAFTER_VERSION})
-    if incompatible:
-        raise JudgeError(
-            f"run {run_id} holds {', '.join(incompatible)} drafts; {DRAFTER_VERSION} arms "
-            "cannot be mixed in. Start a new run."
-        )
-    drafter = make_drafter(drafter_spec)
-    done = {row["item_id"] for row in existing if row.get("drafter") == drafter.name}
-    todo = [row for row in store.items() if row["item_id"] not in done]
-    if limit is not None:
-        todo = todo[:limit]
-    summary = DraftSummary()
-    snapshot = ""
-    for index, item in enumerate(todo, start=1):
-        state = drafter_rendering(store.read_projection(item["item_id"]))
-        try:
-            draft = drafter.draft(item["item_id"], state)
-        except JudgeError as exc:
-            # A drafter that has never produced anything in this run is probably
-            # misconfigured; once it has, a bad item is skipped and the next run retries it.
-            if not done and summary.written == 0:
-                raise
-            summary.failed += 1
-            warn(f"draft {index}/{len(todo)} failed, skipped (rerun to retry): {exc}")
-            continue
-        store.add_draft(draft.to_dict())
-        summary.written += 1
-        summary.declined += draft.declined
-        snapshot = draft.model_snapshot or snapshot
-        what = "declined" if draft.declined else "drafted"
-        log(f"{what} {index}/{len(todo)} ({draft.latency_ms / 1000:.1f}s)")
-    drafters = dict(run.get("drafters") or {})
-    previous = drafters.get(drafter.name) or {}
-    drafters[drafter.name] = {
-        "drafter_version": DRAFTER_VERSION,
-        "model_snapshot": snapshot or previous.get("model_snapshot", ""),
-        "drafts": len(done) + summary.written,
-        "declined": int(previous.get("declined", 0)) + summary.declined,
-        "drafted_at": utc_now_iso(),
-    }
-    store.update_run(drafter=drafter.name, drafter_version=DRAFTER_VERSION, drafters=drafters)
+    with sole_writer(store.drafts_path):
+        existing = store.drafts()
+        versions = {str(row.get("drafter_version") or "drafter_v2") for row in existing}
+        incompatible = sorted(versions - {DRAFTER_VERSION})
+        if incompatible:
+            raise JudgeError(
+                f"run {run_id} holds {', '.join(incompatible)} drafts; {DRAFTER_VERSION} arms "
+                "cannot be mixed in. Start a new run."
+            )
+        drafter = make_drafter(drafter_spec)
+        done = {row["item_id"] for row in existing if row.get("drafter") == drafter.name}
+        todo = [row for row in store.items() if row["item_id"] not in done]
+        if limit is not None:
+            todo = todo[:limit]
+        summary = DraftSummary()
+        snapshot = ""
+        for index, item in enumerate(todo, start=1):
+            state = drafter_rendering(store.read_projection(item["item_id"]))
+            try:
+                draft = drafter.draft(item["item_id"], state)
+            except JudgeError as exc:
+                # A drafter that has never produced anything in this run is probably
+                # misconfigured; once it has, a bad item is skipped and the next run retries it.
+                if not done and summary.written == 0:
+                    raise
+                summary.failed += 1
+                warn(f"draft {index}/{len(todo)} failed, skipped (rerun to retry): {exc}")
+                continue
+            store.add_draft(draft.to_dict())
+            summary.written += 1
+            summary.declined += draft.declined
+            snapshot = draft.model_snapshot or snapshot
+            what = "declined" if draft.declined else "drafted"
+            log(f"{what} {index}/{len(todo)} ({draft.latency_ms / 1000:.1f}s)")
+        drafters = dict(run.get("drafters") or {})
+        previous = drafters.get(drafter.name) or {}
+        drafters[drafter.name] = {
+            "drafter_version": DRAFTER_VERSION,
+            "model_snapshot": snapshot or previous.get("model_snapshot", ""),
+            "drafts": len(done) + summary.written,
+            "declined": int(previous.get("declined", 0)) + summary.declined,
+            "drafted_at": utc_now_iso(),
+        }
+        store.update_run(drafter=drafter.name, drafter_version=DRAFTER_VERSION, drafters=drafters)
     return summary
 
 
@@ -430,89 +446,97 @@ def decide_items(
     if record_events:
         require_judge_agent(cfg)
     expected = expected_verdicts(items, drafts)
+    # A backend named twice is run once. Every verdict file this command will write is held
+    # before any model is called, so a second command is refused before it costs anything.
+    backends = list({b.name: b for b in map(make_backend, backend_specs)}.values())
     written: dict[str, int] = {}
-    for spec in backend_specs:
-        backend = make_backend(spec)
-        thresholds = thresholds_from_run(run, backend.name)
-        existing = store.verdicts(backend.name)
-        # A verdict is final unless its item has since gained a draft or a new projection, in
-        # which case it is superseded and judged again.
-        kept = [
-            v
-            for v in existing
-            if (v["item_id"], v.get("drafter")) in expected
-            and (v["projection_hash"], v.get("draft_hash"))
-            == expected[(v["item_id"], v.get("drafter"))]
-        ]
-        if len(kept) != len(existing):
-            store.replace_verdicts(backend.name, kept)
-        done = {(v["item_id"], v.get("drafter")) for v in kept}
-        turns: dict[str, TurnAnswers] = {}
-        for v in kept:
-            carried = Verdict(v).turn_answers()
-            if carried is not None and v["item_id"] not in turns:
-                turns[v["item_id"]] = carried
-        pending_items = {key[0] for key in expected if key not in done}
-        todo = [i for i in items if i["item_id"] in pending_items]
-        if limit is not None:
-            todo = todo[:limit]
-        pending_records: list[Record] = []
-        count = 0
-        failed = 0
-        for index, item in enumerate(todo, start=1):
-            state = store.read_projection(item["item_id"])
-            waiting: list[Mapping[str, Any] | None] = [
-                d
-                for d in drafts.get(item["item_id"]) or []
-                if (item["item_id"], d.get("drafter")) not in done
+    with ExitStack() as held:
+        for backend in backends:
+            held.enter_context(sole_writer(store.verdicts_path(backend.name)))
+        for backend in backends:
+            thresholds = thresholds_from_run(run, backend.name)
+            existing = store.verdicts(backend.name)
+            # A verdict is final unless its item has since gained a draft or a new projection, in
+            # which case it is superseded and judged again.
+            kept = [
+                v
+                for v in existing
+                if (v["item_id"], v.get("drafter")) in expected
+                and (v["projection_hash"], v.get("draft_hash"))
+                == expected[(v["item_id"], v.get("drafter"))]
             ]
-            if not drafts.get(item["item_id"]):
-                waiting = [None]
-            turn = turns.get(item["item_id"])
-            try:
-                if turn is None:
-                    turn = ask_turn(backend, item, state)
-            except JudgeError as exc:
-                # A backend that has never produced a verdict in this run is probably
-                # misconfigured, so fail fast. Once it has, a bad item is skipped and the
-                # next decide picks it up again.
-                if not kept and count == 0:
-                    raise
-                failed += 1
-                warn(f"{backend.name}: item {item['item_id']} failed: {exc}")
-                continue
-            for draft in waiting:
+            if len(kept) != len(existing):
+                store.replace_verdicts(backend.name, kept)
+            done = {(v["item_id"], v.get("drafter")) for v in kept}
+            turns: dict[str, TurnAnswers] = {}
+            for v in kept:
+                carried = Verdict(v).turn_answers()
+                if carried is not None and v["item_id"] not in turns:
+                    turns[v["item_id"]] = carried
+            pending_items = {key[0] for key in expected if key not in done}
+            todo = [i for i in items if i["item_id"] in pending_items]
+            if limit is not None:
+                todo = todo[:limit]
+            pending_records: list[Record] = []
+            count = 0
+            failed = 0
+            for index, item in enumerate(todo, start=1):
+                state = store.read_projection(item["item_id"])
+                waiting: list[Mapping[str, Any] | None] = [
+                    d
+                    for d in drafts.get(item["item_id"]) or []
+                    if (item["item_id"], d.get("drafter")) not in done
+                ]
+                if not drafts.get(item["item_id"]):
+                    waiting = [None]
+                turn = turns.get(item["item_id"])
                 try:
-                    verdict = judge(
-                        backend, item, state, draft, thresholds, run_id=run_id, turn=turn
-                    )
+                    if turn is None:
+                        turn = ask_turn(backend, item, state)
                 except JudgeError as exc:
+                    # A backend that has never produced a verdict in this run is probably
+                    # misconfigured, so fail fast. Once it has, a bad item is skipped and the
+                    # next decide picks it up again.
                     if not kept and count == 0:
                         raise
                     failed += 1
-                    who = f" draft {draft.get('drafter')}" if draft else ""
-                    warn(f"{backend.name}: item {item['item_id']}{who} failed: {exc}")
+                    warn(f"{backend.name}: item {item['item_id']} failed: {exc}")
                     continue
-                store.add_verdict(backend.name, verdict.row)
-                count += 1
-                # Later drafts of this item copy these answers instead of paying again.
-                turn = verdict.turn_answers() or replace(turn, reused=True)
-                turns[item["item_id"]] = turn
-                if record_events:
-                    pending_records.append(verdict.decision_record(item, run["created_at"]))
-                    if len(pending_records) >= EVENT_BATCH:
-                        _record(cfg, pending_records, warn)
-                        pending_records = []
-                who = f" [{draft.get('drafter')}]" if draft else ""
-                log(
-                    f"{backend.name} {index}/{len(todo)}{who}: {verdict.recorded.action} "
-                    f"({verdict.latency_ms / 1000:.1f}s)"
+                for draft in waiting:
+                    try:
+                        verdict = judge(
+                            backend, item, state, draft, thresholds, run_id=run_id, turn=turn
+                        )
+                    except JudgeError as exc:
+                        if not kept and count == 0:
+                            raise
+                        failed += 1
+                        who = f" draft {draft.get('drafter')}" if draft else ""
+                        warn(f"{backend.name}: item {item['item_id']}{who} failed: {exc}")
+                        continue
+                    store.add_verdict(backend.name, verdict.row)
+                    count += 1
+                    # Later drafts of this item copy these answers instead of paying again.
+                    turn = verdict.turn_answers() or replace(turn, reused=True)
+                    turns[item["item_id"]] = turn
+                    if record_events:
+                        pending_records.append(verdict.decision_record(item, run["created_at"]))
+                        if len(pending_records) >= EVENT_BATCH:
+                            _record(cfg, pending_records, warn)
+                            pending_records = []
+                    who = f" [{draft.get('drafter')}]" if draft else ""
+                    log(
+                        f"{backend.name} {index}/{len(todo)}{who}: {verdict.recorded.action} "
+                        f"({verdict.latency_ms / 1000:.1f}s)"
+                    )
+            if pending_records:
+                _record(cfg, pending_records, warn)
+            if failed:
+                warn(
+                    f"{backend.name}: {failed} verdict(s) failed and were not written; "
+                    "rerun to retry"
                 )
-        if pending_records:
-            _record(cfg, pending_records, warn)
-        if failed:
-            warn(f"{backend.name}: {failed} verdict(s) failed and were not written; rerun to retry")
-        written[backend.name] = count
+            written[backend.name] = count
     return written
 
 

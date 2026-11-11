@@ -13,6 +13,8 @@ How those files are kept whole is decided here and nowhere else:
 - A file that grows (drafts, verdicts, the imports log) gets one row at a time. A killed
   command can leave its last row cut off: reading leaves that row out, and the next append
   removes it, since the command that resumes writes the row again.
+- One command at a time adds rows to a file (`sole_writer`). A second one is refused at
+  once, because two appenders cut each other's rows and do the same work twice.
 - run.json is changed by commands that run side by side, so each change reads the file,
   merges, and writes it back under a lock.
 """
@@ -106,15 +108,32 @@ def _lock_path(path: Path) -> Path:
 
 
 @contextmanager
-def lock(path: Path) -> Iterator[None]:
-    """Hold the lock file `path` until the block ends, waiting for another holder first."""
+def lock(path: Path, *, wait: bool = True) -> Iterator[bool]:
+    """Hold the lock file `path` until the block ends. With `wait` off, the block runs at
+    once and is told False when another holder has the lock."""
     private_dir(path.parent)
     fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
-        yield
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | (0 if wait else fcntl.LOCK_NB))
+        except BlockingIOError:
+            yield False
+            return
+        yield True
     finally:
         os.close(fd)
+
+
+@contextmanager
+def sole_writer(path: Path) -> Iterator[None]:
+    """Be the one command adding rows to `path` until the block ends. A second command that
+    asks while the first is at work is refused at once, not queued behind it."""
+    with lock(_lock_path(path), wait=False) as held:
+        if not held:
+            raise JudgeError(
+                f"another command is writing {path}; wait for it to finish, then run this one again"
+            )
+        yield
 
 
 def _mend_tail(path: Path) -> None:

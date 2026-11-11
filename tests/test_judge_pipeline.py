@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 import shutil
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from functools import partial
 
 import pytest
 
 from agent_memory.adapters.droid import DroidAdapter
 from agent_memory.cli import main
+from agent_memory.judge import pipeline
 from agent_memory.judge.drafter import Draft
 from agent_memory.judge.lesson import Claim, Lesson
 from agent_memory.judge.pipeline import (
@@ -18,7 +23,7 @@ from agent_memory.judge.pipeline import (
     import_sessions,
     purge_run,
 )
-from agent_memory.judge.store import JudgeError, RunStore
+from agent_memory.judge.store import JudgeError, RunStore, imports_log, sole_writer
 from tests.conftest import FIXTURES
 
 
@@ -290,3 +295,41 @@ def test_import_writes_what_the_ledger_accepts_and_retries_the_file(
     second = import_sessions(live_cfg, tmp_path)
     assert (second.files, second.skipped_files, second.inserted) == (1, 0, 0)
     assert second.errors == []
+
+
+def test_a_second_candidates_for_one_run_is_refused_at_once(live_cfg, sessions_dir, monkeypatch):
+    """Two commands used to project the same turns and each write the run's items."""
+    import_sessions(live_cfg, sessions_dir)
+    started, release = threading.Event(), threading.Event()
+    real = pipeline.project_candidate
+    calls = itertools.count()
+
+    def held(*args, **kwargs):
+        if next(calls) == 0:
+            started.set()
+            assert release.wait(30)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline, "project_candidate", held)
+    build = partial(build_candidates, live_cfg, "t-two-builders", n=4, seed=1)
+    with ThreadPoolExecutor(1) as pool:
+        first = pool.submit(build)
+        assert started.wait(30)
+        try:
+            with pytest.raises(JudgeError, match="another command is writing"):
+                build()
+        finally:
+            release.set()
+        built = first.result(60).items
+    assert built == len(RunStore(live_cfg, "t-two-builders").items()) > 0
+    with pytest.raises(JudgeError, match="already has items"):
+        build()
+
+
+def test_a_second_import_into_one_home_is_refused_at_once(live_cfg, sessions_dir):
+    with (
+        sole_writer(imports_log(live_cfg)),
+        pytest.raises(JudgeError, match="another command is writing"),
+    ):
+        import_sessions(live_cfg, sessions_dir)
+    assert import_sessions(live_cfg, sessions_dir).errors == []

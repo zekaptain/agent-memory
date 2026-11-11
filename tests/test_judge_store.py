@@ -1,15 +1,18 @@
 """Crash recovery for run files, including human labels and verdict rewrites."""
 
+import itertools
 import os
 import stat
+import threading
 from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 
 import pytest
 
 from agent_memory.judge import pipeline
 from agent_memory.judge.report import build_report
-from agent_memory.judge.store import JudgeError, RunStore
-from tests.test_judge import synthetic_run
+from agent_memory.judge.store import JudgeError, RunStore, sole_writer
+from tests.test_judge import structured_draft, synthetic_run
 
 
 @pytest.mark.parametrize("tail", [b'{"private":', b'{"private":"\xe2\x82'])
@@ -92,6 +95,76 @@ def test_jsonl_rewrite_and_append(tmp_path):
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
 
+def _hold_first_call(monkeypatch, name):
+    """Make the first call of `pipeline.<name>` wait until released, which is the moment a
+    second command arrives while the first is still at work."""
+    started, release = threading.Event(), threading.Event()
+    real = getattr(pipeline, name)
+    calls = itertools.count()
+
+    def held(*args, **kwargs):
+        if next(calls) == 0:
+            started.set()
+            assert release.wait(30)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline, name, held)
+    return started, release
+
+
+def test_a_second_decide_for_one_backend_is_refused_at_once(tmp_path, monkeypatch):
+    """Two commands used to judge the same items and append to one file, each cutting off
+    what it took for the other's torn last row."""
+    store = synthetic_run(tmp_path, n=3)
+    path = store.verdicts_path("rules")
+    path.unlink()
+    started, release = _hold_first_call(monkeypatch, "ask_turn")
+    decide = partial(
+        pipeline.decide_items, store.cfg, store.run_id, ["rules"], store=store, record_events=False
+    )
+    with ThreadPoolExecutor(1) as pool:
+        first = pool.submit(decide)
+        assert started.wait(30)
+        try:
+            with pytest.raises(JudgeError, match="another command is writing"):
+                decide()
+        finally:
+            release.set()
+        assert first.result(30) == {"rules": 3}
+    judged = [row["item_id"] for row in store.read_jsonl(path)]
+    assert judged == [item["item_id"] for item in store.read_jsonl(store.items_path)]
+
+
+def test_a_second_draft_on_one_run_is_refused_at_once(tmp_path, monkeypatch):
+    store = synthetic_run(tmp_path, n=2)
+    store.drafts_path.unlink()
+    started, release = threading.Event(), threading.Event()
+
+    class Drafter:
+        def __init__(self, name):
+            self.name = name
+
+        def draft(self, item_id, state):
+            if self.name == "ollama:first":
+                started.set()
+                assert release.wait(30)
+            return structured_draft(item_id, drafter=self.name)
+
+    monkeypatch.setattr(pipeline, "make_drafter", Drafter)
+    draft = partial(pipeline.draft_items, store.cfg, store.run_id, store=store)
+    with ThreadPoolExecutor(1) as pool:
+        first = pool.submit(draft, "ollama:first")
+        assert started.wait(30)
+        try:
+            # Another drafter writes the same file, so it is refused as well.
+            with pytest.raises(JudgeError, match="another command is writing"):
+                draft("ollama:second")
+        finally:
+            release.set()
+        assert first.result(30).written == 2
+    assert [row["drafter"] for row in store.read_jsonl(store.drafts_path)] == ["ollama:first"] * 2
+
+
 def test_updates_of_a_run_made_at_once_all_land(tmp_path):
     store = synthetic_run(tmp_path, n=1)
     with ThreadPoolExecutor(8) as pool:
@@ -126,6 +199,22 @@ def test_a_rewrite_reaches_the_disk_before_it_replaces_the_file(tmp_path, monkey
     RunStore.write_jsonl(tmp_path / "labels.jsonl", [{"item_id": "a"}])
     assert order == ["fsync", "replace"]
     assert [path.name for path in tmp_path.iterdir()] == ["labels.jsonl"]
+
+
+def test_sole_writer_holds_one_file_and_lets_go_of_it(tmp_path):
+    drafts, verdicts = tmp_path / "drafts.jsonl", tmp_path / "verdicts" / "rules.jsonl"
+    with sole_writer(drafts):
+        with sole_writer(verdicts):  # Another file, so another command may write it.
+            pass
+        with (
+            pytest.raises(JudgeError, match="another command is writing") as error,
+            sole_writer(drafts),
+        ):
+            pass
+        assert str(drafts) in str(error.value)
+    with sole_writer(drafts):
+        pass
+    assert not drafts.exists()  # Holding a file does not create it.
 
 
 def test_a_label_that_names_no_item_is_reported(tmp_path):
