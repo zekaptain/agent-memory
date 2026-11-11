@@ -291,7 +291,7 @@ Nothing is rewritten in place:
   between the two merged names is retired.
 - Unmatched names stay unchanged. Correct a bad merge by superseding again.
 
-See [PLAN.md](PLAN.md#data-model) for storage details.
+See the [architecture](docs/architecture.md#data-model) for storage details.
 
 ## Asking why
 
@@ -555,10 +555,18 @@ Applied migrations are checksummed and must not be edited.
 
 ## Further reading
 
-- [PLAN.md](PLAN.md): architecture, DuckDB behavior, and roadmap.
+- [Architecture](docs/architecture.md): runtime, data model, security
+  model, and DuckDB behavior.
+- [Roadmap](docs/roadmap.md): planned work, known defects, and open
+  decisions.
+- [Glossary](GLOSSARY.md): the project's terms.
+- [Decision records](docs/adr/): choices that are hard to reverse, with
+  their reasons.
 - [Capture spec](docs/phase-1-spec.md): payloads, adapters, spool, and MCP tools.
 - [Judge how-to](docs/judge-how-to.md): step-by-step experiment commands.
-- [Judge experiment spec](docs/judge-experiment-spec.md): design and historical runs.
+- [Judge experiment spec](docs/judge-experiment-spec.md): the design for new
+  runs. The [logs of earlier runs](docs/archive/judge-experiments.md) are
+  archived.
 - [Admission spec](docs/admission-spec.md): calibration, the fitted approver,
   human review, and safeguards.
 - [Contract hardening](docs/logic-hardening-spec.md): lifecycle, coverage,

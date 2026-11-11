@@ -7,7 +7,9 @@ DuckDB 2.0 and served over Quack. Preserve the ability to answer: what was an
 agent shown, where did it come from, and what did the agent actually use?
 Provenance matters as much as retrieval quality.
 
-Start with `README.md` for usage and `PLAN.md` for architecture and roadmap.
+Start with `README.md` for usage, `docs/architecture.md` for the design,
+`docs/roadmap.md` for planned work, known defects, and open decisions, and
+`GLOSSARY.md` for the project's terms.
 Storage and capture (Phases 0 and 1), the relation graph, the judge
 experiment, production admission, and the lifecycle, coverage, and
 attribution hardening are implemented. Do not confuse planned harness
@@ -18,9 +20,11 @@ harness roster includes MCP-only use and future hook work.
 Read the relevant spec before changing a subsystem:
 
 - `docs/phase-1-spec.md`: capture, spool, adapters, and MCP tools.
-- `docs/judge-experiment-spec.md`: judge design, historical runs, exp3, and
-  "As built" notes. Earlier sections describe older versions; check the
-  later amendments and current code before implementing.
+- `docs/judge-experiment-spec.md`: the judge design for new runs and its
+  dated "As built" notes. The logs of exp1 to exp4 are in
+  `docs/archive/judge-experiments.md`, and the definitions only stored
+  runs still use are in `docs/archive/judge-earlier-versions.md`. Check
+  the later amendments and current code before implementing.
 - `docs/admission-spec.md`: production admission, fitted approver, human
   review, and calibration/held-out safeguards.
 - `docs/logic-hardening-spec.md`: lifecycle, coverage, attribution,
@@ -32,6 +36,10 @@ Read the relevant spec before changing a subsystem:
   implemented functionality or authorization to add its proposed migration.
 - `docs/agent-memory-literature-review.md` and `docs/paper/`: research
   grounding, separate from the runtime's feature contract.
+- `docs/adr/`: decisions that are hard to reverse and would surprise a
+  reader. Read the relevant one before undoing what it records.
+- `docs/archive/`: superseded design text and experiment logs, kept for
+  the record. Nothing there is a contract.
 
 ## Development commands
 
@@ -209,6 +217,10 @@ CLI, MCP, capture, or judge path. When adding MCP tools, update registration
 assertions and usage docs too; graph work previously exposed this gap.
 
 Update the relevant spec's implemented/as-built notes when behavior changes.
+Use the terms in `GLOSSARY.md`, and update it when a term changes. Add a
+record under `docs/adr/` only for a decision that is hard to reverse,
+surprising without context, and the result of a real trade-off. A defect
+you find and do not fix goes into `docs/roadmap.md`.
 Existing commit messages use Conventional Commits, for example
 `fix(judge): ...` and `test(graph): ...`; explain the failure and why the
 change fixes it in the body when useful.
