@@ -1,8 +1,11 @@
 # Phase 1 spec: capture path (1a) and in-session tools (1b)
 
 Status: approved and implemented, 2026-10-25 (see "As built" at the end).
-Earlier design examples below are historical. Migration 0001 is immutable;
-later contract changes use new migrations and the hardening spec.
+The parts of the original design that later changes replaced, the test
+plan, and the review questions are kept in
+[archive/phase-1-original-design.md](archive/phase-1-original-design.md).
+Migration 0001 is immutable; later contract changes use new migrations and
+the hardening spec.
 
 ## Goal
 
@@ -76,7 +79,7 @@ Rules:
   `tool_result` points at its `tool_call`).
 - `seq` is the harness's own counter when it has one (Droid transcripts have
   `seq`), otherwise 0. Audits order by `(ts, recorded_at)` as already noted
-  in `PLAN.md`.
+  in [architecture.md](architecture.md).
 - `payload` is stored as `VARIANT`. Adapters put structured fields here and a
   readable rendering in `content`.
 
@@ -102,24 +105,13 @@ existing keys.
 
 ### Idempotent insert
 
-Rows are staged in temp tables as today, then inserted with an anti-join:
-
-```sql
-INSERT INTO mem.main.events (cols...)
-SELECT cols... FROM stage_events_1 s
-WHERE NOT EXISTS (SELECT 1 FROM mem.main.events e WHERE e.event_id = s.event_id)
-```
-
-`sessions` the same way on `session_id`. Everything for one input goes in one
-`BEGIN ... COMMIT` so a partial write is impossible. Rows are inserted in
-dependency order (sessions, then events with no parent, then events with a
-parent) because foreign keys are checked at insert time.
-
-First implementation step: a probe that confirms the anti-join runs correctly
-through the attached Quack catalog (it should push the filter server-side).
-If it does not, the fallback is one `SELECT event_id FROM mem.main.events
-WHERE session_id = ?` before the insert and client-side filtering, with a
-single retry on a primary-key violation.
+The writer first reads which of the incoming session and event ids the
+ledger already holds, in batches of at most 500, and inserts only the rest
+in one transaction. A write that loses a race with another capturer is read
+again and retried up to three times. See "As built" for the probe that
+forced the pre-read and for parent ordering, and "Capture delivery
+(2026-11-10)" for the retry. The anti-join designed first is in
+[archive/phase-1-original-design.md](archive/phase-1-original-design.md#idempotent-insert).
 
 ### Redaction
 
@@ -158,9 +150,10 @@ Layout: `spool/<agent_id>/<harness_session_id>.jsonl`, appended with
 - `mem event` tries the server first with a short deadline (default 2 s,
   `AGENT_MEMORY_DEADLINE`). When the ledger is unavailable or too slow it
   appends the records to the spool and exits 0, printing one line to stderr.
-- `mem ingest --spool` walks the spool, replays each file in line order
-  inside one transaction per file, then moves the file to
-  `spool/done/<agent_id>/<harness_session_id>.<ts>.jsonl`. `--purge-done
+- `mem ingest --spool` claims every pending file by moving it to
+  `spool/replaying/<agent_id>/`, writes the claimed records as one batch so
+  that a record can refer to one in another file, then moves each file to
+  `spool/done/<agent_id>/<harness_session_id>.<ts>.<ns>.jsonl`. `--purge-done
   <days>` deletes old done files; nothing is deleted by default.
 - A line that fails to parse, or a record the ledger rejects, is recorded as
   a `capture_error` event (content: the reason, payload: the raw line
@@ -207,7 +200,8 @@ compaction, and notes. `capture.identity` gives hook and transcript prompts
 the same bare message ID and tools the same tool-use ID. The former
 `UserPromptSubmit:` prefix caused duplicate prompts even when the harness
 IDs matched. Live comparison of hook `message_id` and transcript entry `id`
-is recorded in [PLAN.md](../PLAN.md), separately from the synthetic tests.
+is recorded in [archive/plan-history.md](archive/plan-history.md),
+separately from the synthetic tests.
 
 **Vibe**: `~/.vibe/logs/session/` exists locally but holds no transcript yet.
 The adapter ships as a stub that raises `UnsupportedTranscript` with the path,
@@ -247,16 +241,18 @@ harness events are never silently lost.
 ### CLI shapes
 
 ```
-mem event  --harness droid|vibe [--spool-only] [--keep-raw]
+mem event  --harness droid|vibe [--spool-only] [--keep-raw] [--record-pre-tool]
 mem ingest --harness droid --transcript PATH [--since-key KEY] [--include-thinking]
+           [--keep-raw] [--spool-only]
 mem ingest --spool [--purge-done DAYS]
 mem spool  status            # files, lines, oldest record per agent: pending and rejected
 mem spool  retry             # return rejected records to the spool
 ```
 
 `--since-key` lets a hook pass the last message id it knows about so
-re-ingesting a long transcript each turn stays cheap; without it the anti-join
-makes re-ingest correct but slower.
+re-ingesting a long transcript each turn stays cheap; without it the
+writer's check for ids the ledger already holds makes re-ingest correct but
+slower.
 
 ## 1b. In-session tools (`mem-mcp`)
 
@@ -272,45 +268,46 @@ the harness id, since MCP gives no reliable caller identity) plus
 otherwise the server derives one from its own start time and marks the
 session `partial`).
 
-Every tool call writes an event in the caller's session first
-(`memory_recall` or `memory_write`), then does its work, in one transaction.
+`recall` writes a `memory_recall` event in the caller's session, and
+`remember` and `review` write a `memory_write` event. A recall reads first
+and then writes its event, its retrieval, and the retrieval's items in one
+transaction (see "Transactions" under "As built").
 The event is the hook that `why_answer` and `context_links` attach to.
 
 Tools (names and schemas; all return structured content plus a short text
 summary):
 
 **`recall(query: str, scopes: list[str] = ["global", <project>], limit: int = 8, types: list[str] | None = None)`**
-1. Insert `events(kind='memory_recall', content=query)`.
-2. Run the ranking query server-side through `CONNECT` (FTS lives on the
-   server):
-   ```sql
-   WITH hits AS (
-     SELECT memory_id, fts_main_memories.match_bm25(memory_id, <query literal>) AS bm25
-     FROM memories)
-   SELECT m.*, h.bm25,
-          h.bm25 * (0.6 + 0.4 * m.importance) * (0.5 + 0.5 * m.confidence)
-            * CASE WHEN m.scope = 'global' THEN 1.0 ELSE 1.1 END AS score
-   FROM active_memories m JOIN hits h USING (memory_id)
-   WHERE h.bm25 IS NOT NULL AND m.scope IN (<scope literals>)
-   ORDER BY score DESC LIMIT <limit>
-   ```
-   The query text is the one place user content enters SQL text. It goes
-   through `sql_literal` and the server's policy strips literals before the
-   keyword check, so a crafted query cannot change the statement class.
+1. Redact the query, then normalise it for FTS (lowercase, punctuation
+   removed).
+2. Read at most 50 candidates on the server (FTS lives there), ordered by
+   bm25 and then newest first, from `active_memories` in the requested
+   scopes. The query text is the one place user content enters SQL text. It
+   goes through `sql_literal` and the server's policy strips literals before
+   the keyword check, so a crafted query cannot change the statement class.
    Tests cover quotes, semicolons, comments, and `UPDATE` inside the query.
-3. Insert `retrievals` (strategy `fts_bm25_v1`, `sql_used`, `params`,
-   `candidates`, `returned`, `latency_ms`, `request_event_id`) and one
-   `retrieval_items` row per hit with `score_components`
-   (`{"bm25", "importance", "confidence", "scope_boost"}`), `injected = true`,
-   and `status_at_recall` from `memory_status`.
-4. Return `retrieval_id` and the items (`memory_id`, `type`, `key`, `content`,
-   `confidence`, `created_at`, `score`). The agent is told to pass
+3. Score the candidates in Python as `bm25 * (0.6 + 0.4 * importance) *
+   (0.5 + 0.5 * confidence) * scope_boost`, where `scope_boost` is 1.0 for
+   `global` and 1.1 for any other scope. Keep the best `limit`; equal
+   scores go newest first.
+4. In one transaction insert `events(kind='memory_recall')`, `retrievals`
+   (strategy `fts_bm25_v1`, `sql_used`, `params`, `candidates`, `returned`,
+   `latency_ms`, `request_event_id`) and one `retrieval_items` row per hit
+   with `score_components` (`{"bm25", "importance", "confidence",
+   "scope_boost"}`), `injected = true`, and `status_at_recall` from
+   `memory_status`.
+5. Return `retrieval_id` and the items. The agent is told to pass
    `retrieval_id` to `cite`.
+
+The statement itself is in `mcp_server/ranking.py`; see "Recall SQL" under
+"As built" and "One recall path and its strategies (2026-11-11)". The
+single SQL statement designed first is in
+[archive/phase-1-original-design.md](archive/phase-1-original-design.md#server).
 
 Empty-query recall (`query=""`) returns the newest active memories in scope
 by `importance`, strategy `recent_v1`, for session-start context.
 
-**`remember(content: str, type: str, scope: str = <project>, key: str | None, confidence: float = 0.7, importance: float = 0.5, trust_level: "user"|"agent"|"tool" = "agent", supersedes: str | None, source_event_ids: list[str] = [], valid_from, expires_at)`**
+**`remember(content: str, type: str, scope: str = <project>, key: str | None, confidence: float = 0.7, importance: float = 0.5, trust_level: "user"|"agent"|"tool" = "agent", supersedes: str | None, source_event_ids: list[str] = [], valid_from, expires_at, valid_to)`**
 1. Insert `events(kind='memory_write')` with the request as payload.
 2. Insert `memories` (`memory_id = uuidv7()`, `content_hash = sha256`,
    `created_by_session`). Content is redacted with the same rules as capture.
@@ -347,7 +344,8 @@ records kept under `spool/failed/` (`spool_rejected_lines`). Lets a harness
 surface outages and rejected records to the user.
 
 `relate` and `graph` were added after Phase 1 with the relation graph; see
-`README.md` and the "Relation graph" paragraph in `PLAN.md`.
+`README.md` and the "Relation graph" paragraph in
+[architecture.md](architecture.md).
 
 Error handling: when the server is unreachable, `recall` returns an empty
 result with `degraded: true` and the reason; `remember`/`review` write a
@@ -364,17 +362,13 @@ questions about the user, the project's history, or past decisions; pass
 `retrieval_id` to `cite`. `review` says: use `retire` when a memory is wrong,
 `flag_contradiction` when two conflict.
 
-## Changes to migration 0001
+## Migration 0001
 
-Still unapplied, so edited in place rather than a 0002:
-- `events.payload` keeps the raw hook or transcript entry under
-  `payload.raw` only when `--keep-raw` is set; the default keeps the mapped
-  fields only (size).
-- Add `memory_recall`/`memory_write` to the `why_answer` chain if not already
-  included: `why_answer` should also list the `memory_recall` event's
-  `content` (the query) so an answer shows what was asked of memory.
-- Index: `CREATE INDEX events_session_ts ON events(session_id, ts)` and
-  `memories_scope_hash ON memories(scope, content_hash)` for the dedupe check.
+Migration 0001 is applied and immutable. The edits planned for it while it
+was still unapplied are in
+[archive/phase-1-original-design.md](archive/phase-1-original-design.md#changes-to-migration-0001);
+"As built" says which of them it gained. Every later schema change is a new
+migration.
 
 ## Package layout
 
@@ -388,6 +382,9 @@ src/agent_memory/
     blobs.py       # write_blob(), threshold constants
     writer.py      # records -> staged rows -> idempotent insert, or spool
     spool.py       # append, iterate, mark done/failed, status
+    pipeline.py    # deliver to the ledger or the spool; replay the spool
+    observations.py  # observed capture boundaries (added with hardening)
+    attribution.py   # answer attribution from captured tool results
   adapters/
     __init__.py    # registry: {"droid": DroidAdapter, "vibe": VibeAdapter}
     base.py        # Adapter protocol
@@ -395,66 +392,27 @@ src/agent_memory/
     vibe.py
   mcp_server/
     __init__.py    # MCPServer construction, console script entry
+    __main__.py    # python -m agent_memory.mcp_server
     tools.py       # recall/remember/cite/review/status
     recall.py      # run a strategy and record the retrieval (added later)
     ranking.py     # SQL builders for fts_bm25_v1 and recent_v1
+  graph/           # added after Phase 1 with the relation graph
+    model.py       # relations as fact memories with normalized keys
+    sql.py         # SQL builders for the graph
+    recall.py      # graph_hop_v1 and graph_relations_v1 strategies
+    resolve.py     # entity resolution with a local model
+    cli.py         # mem graph
   cli.py           # + event, ingest, spool
 ```
 
 `pyproject.toml`: add `mcp>=2,<3`; scripts `mem` (existing) and `mem-mcp`.
 
-## Tests
+## Tests and review questions
 
-All with the real Quack server fixture from Phase 0.
-
-1a:
-- ids: stable across runs, differ by agent/session/kind/key.
-- redact: fixture-driven positives and negatives per rule; count matches.
-- blobs: threshold, idempotent write, `content_hash` of the full text.
-- writer: idempotent replay (insert twice, row counts unchanged); dependency
-  order with parented events in one batch; a rejected record and its
-  dependents set aside while the rest lands; two writers racing on a new
-  session.
-- spool: append during simulated outage (server stopped), replay after
-  restart, done/failed layout, `capture_error` for a bad line, redaction on
-  replay.
-- Droid adapter: a sanitised fixture transcript covering every row of the
-  mapping table, including thinking on/off, document parts, compaction, and
-  outcome; `--since-key` skips earlier entries.
-- hook adapter: one fixture payload per hook event; unknown event becomes
-  `note`.
-- CLI: `mem event` and `mem ingest` exit codes and stderr with server up and
-  down.
-
-1b:
-- Each tool through an in-process MCP client (`mcp` 2.x client session over
-  stdio) against the Quack fixture: recall writes `events`, `retrievals`,
-  `retrieval_items` with correct `status_at_recall`; quarantined and retired
-  memories never returned; `remember` dedupe path; `cite` with and without
-  `answer_event_id`; `review` flips status; `why_answer` returns the full
-  chain for a recall-cite pair.
-- Adversarial recall queries (`'; UPDATE ...`, `--`, `/* */`, unicode
-  quotes) are stored verbatim in `retrievals.query_text` and never change the
-  statement class.
-- Degraded mode: server stopped mid-session, `recall` returns `degraded`,
-  `remember` queues to the spool, replay creates the memory.
-
-Checks before calling Phase 1 done: ruff, pyrefly, pytest, `mem smoke`, and a
-manual run: `mem ingest --harness droid --transcript` on this session's own
-transcript, then `mem sql "SELECT * FROM session_summary"`.
-
-## Open questions for review
-
-1. Thinking blocks default off. They are the most direct "why" signal but
-   also the most sensitive. Flip the default?
-2. Blob threshold 16 KiB / inline 4 KiB. Tool results from `Execute` often
-   exceed this; is the inline prefix enough for audits, given the blob is
-   always one path away?
-3. `recall` scoring weights are a first guess; Phase 4 will tune them with
-   real data. Fine to ship as `fts_bm25_v1` and keep the strategy name in
-   every retrieval row so later changes are distinguishable?
-4. `AGENT_MEMORY_AGENT` is self-reported by the MCP config. Per-harness
-   tokens (Phase 3) are the real fix; acceptable for now?
+The Phase 1 test plan and the four questions put to review are in
+[archive/phase-1-original-design.md](archive/phase-1-original-design.md#tests).
+The tests are `tests/test_capture.py`, `test_writer.py`, `test_spool.py`,
+`test_adapters.py`, `test_cli_capture.py`, and `test_mcp.py`.
 
 ## As built (2026-10-25)
 
