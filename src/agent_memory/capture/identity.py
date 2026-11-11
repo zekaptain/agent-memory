@@ -31,6 +31,10 @@ def tool_result_key(tool_use_id: str) -> str:
     return str(tool_use_id)
 
 
+def session_start_key(id: str) -> str:
+    return id
+
+
 def session_marker_key(event: str, source: str | None, id: str) -> str:
     return f"{event}:{source}:{id}" if source else note_key(event, id)
 

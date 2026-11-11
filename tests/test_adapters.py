@@ -169,6 +169,17 @@ def test_droid_session_start_hook():
     }
 
 
+def test_droid_startup_hook_is_the_start_the_transcript_records():
+    # A session starts once, and the transcript's first entry names that start by the
+    # session's id. The hook says the same thing, so it says it under the same key.
+    (r,) = DroidAdapter().from_hook(hook("SessionStart", source="startup"))
+    assert (r.kind, r.source_key) == ("session_start", "abc-123")
+    assert r.payload == {"hook": "SessionStart", "source": "startup", "permission_mode": "default"}
+    # A start that does not say what kind it is cannot be taken for the first.
+    (unsaid,) = DroidAdapter().from_hook(hook("SessionStart", message_id="m0"))
+    assert unsaid.source_key == "SessionStart:startup:m0"
+
+
 def test_droid_prompt_hook():
     (r,) = DroidAdapter().from_hook(hook("UserPromptSubmit", prompt="hi there", message_id="m1"))
     assert (r.kind, r.content, r.source_key) == ("user_msg", "hi there", "m1")

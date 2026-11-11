@@ -123,6 +123,45 @@ def test_a_compaction_is_one_event_when_a_hook_announced_it(
     )[1] == [("note", "auto")]
 
 
+def test_a_session_start_is_one_event_when_a_hook_and_the_transcript_report_it(
+    live_cfg, live_client, tmp_path, monkeypatch
+):
+    path = tmp_path / f"{tmp_path.name}.jsonl"
+    # Droid names a session's start by the session's own id: in the hook's session_id and
+    # in the first entry of the transcript, which is on disk before the hook runs.
+    entries = [
+        {"type": "session_start", "id": path.stem, "timestamp": "2026-01-01T00:00:00Z"},
+        {
+            "type": "message",
+            "id": "reply",
+            "timestamp": "2026-01-01T00:01:00Z",
+            "message": {"role": "assistant", "content": "Synthetic reply."},
+        },
+    ]
+    path.write_text("\n".join(json.dumps(entry) for entry in entries) + "\n")
+    sid = ids.session_id("factory-droid", path.stem)
+
+    def starts():
+        return live_client.query(
+            f"SELECT count(*) FROM events WHERE session_id = {sql_literal(sid)} "
+            "AND kind = 'session_start'"
+        )[1]
+
+    monkeypatch.setattr(
+        sys, "stdin", io.StringIO(json.dumps(droid_hook(path, "SessionStart", source="startup")))
+    )
+    assert run(live_cfg, "event", "--harness", "droid") == 0
+    assert run(live_cfg, "ingest", "--harness", "droid", "--transcript", str(path)) == 0
+    assert starts() == [(1,)]
+    # Coming back to the session is something else that happened, once however often the
+    # harness says so before anything new is said.
+    resumed = droid_hook(path, "SessionStart", source="resume", message_id="reply")
+    for _ in range(2):
+        monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(resumed)))
+        assert run(live_cfg, "event", "--harness", "droid") == 0
+    assert starts() == [(2,)]
+
+
 @pytest.mark.parametrize("import_first", [False, True])
 def test_own_mcp_session_binds_captured_reply_and_cleans_audit(
     live_cfg, live_client, tmp_path, monkeypatch, capsys, import_first
@@ -206,6 +245,7 @@ def test_identity_builders_preserve_existing_keys_and_hashes():
     assert identity.thinking_key("message-1") == "message-1#thinking"
     assert identity.tool_call_key("tool-1") == "tool-1"
     assert identity.tool_result_key("tool-1") == "tool-1"
+    assert identity.session_start_key("session-1") == "session-1"
     assert identity.session_marker_key("SessionStart", "resume", "m1") == "SessionStart:resume:m1"
     assert identity.session_marker_key("SessionEnd", None, "m1") == "SessionEnd:m1"
     assert identity.note_key("Notification", "m1") == "Notification:m1"

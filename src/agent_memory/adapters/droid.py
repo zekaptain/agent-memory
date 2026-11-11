@@ -33,10 +33,12 @@ _HOOK_KINDS = {
     "PostToolUse": None,
 }
 
-# Events keyed on the message id Droid sends with them, when it sends one: each happens at
-# most once for a message. Any other event is told from the next by when its hook ran,
-# because one message can raise several notifications.
-_ONCE_PER_MESSAGE = frozenset({"SessionStart", "SessionEnd", "PreCompact"})
+# Events keyed on the message id Droid sends with them, when it sends one. The id names
+# where in the session the event falls: the message a compaction follows, the reply a
+# session is resumed after. Raised again at the same place the event says nothing new, and
+# it is recorded once. Any other event is told from the next by when its hook ran, because
+# one message can raise several notifications that each say something else.
+_KEYED_ON_MESSAGE = frozenset({"SessionStart", "SessionEnd", "PreCompact"})
 
 _ASSISTANT_META = ("modelId", "apiProvider", "reasoningEffort", "compactionSummaryId")
 
@@ -73,7 +75,7 @@ class DroidAdapter:
                 if payload.get(key) is not None
             },
         }
-        named = payload.get("message_id") if event in _ONCE_PER_MESSAGE else None
+        named = payload.get("message_id") if event in _KEYED_ON_MESSAGE else None
         key_tail = str(named or ts.isoformat())
         kind = _HOOK_KINDS.get(event, "note")
 
@@ -91,8 +93,15 @@ class DroidAdapter:
             return []
         source_key = identity.note_key(event, key_tail)
         if event == "SessionStart":
-            source_key = identity.session_marker_key(
-                event, str(payload.get("source") or "startup"), key_tail
+            # A new session's start is the transcript's first entry too, and Droid gives that
+            # entry the session's id. Any other start (resume, clear, compact) is the hook's
+            # alone.
+            source_key = (
+                identity.session_start_key(str(hsid))
+                if payload.get("source") == "startup"
+                else identity.session_marker_key(
+                    event, str(payload.get("source") or "startup"), key_tail
+                )
             )
             session = SessionInfo(
                 cwd=session.cwd,
@@ -191,7 +200,9 @@ class DroidAdapter:
                         Record(
                             **base,
                             kind="session_start",
-                            source_key=str(entry.get("id") or "session_start"),
+                            source_key=identity.session_start_key(
+                                str(entry.get("id") or "session_start")
+                            ),
                             content=entry.get("title"),
                             payload={"source": "transcript"},
                             session=SessionInfo(
