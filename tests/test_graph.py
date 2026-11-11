@@ -416,6 +416,34 @@ def test_merge_entity_supersedes_rewrites_and_retires_as_history(tools, live_cli
         tools.merge_entity("a", "b", "  ")
 
 
+@pytest.mark.parametrize(
+    ("subject", "predicate", "obj"),
+    [("PG", "is short for", "PostgreSQL"), ("PostgreSQL", "is also called", "PG")],
+)
+def test_merge_entity_retires_a_relation_that_links_the_two_names(
+    tools, live_client, subject, predicate, obj
+):
+    scope = f"links-{subject.lower()}"  # The module shares one ledger; each case needs its own.
+    link = tools.relate(subject, predicate, obj, "DATABASE", "DATABASE", scope=scope)
+    other = tools.relate("PG", "backs", "billing-svc", "DATABASE", "SERVICE", scope=scope)
+
+    result = tools.merge_entity("PG", "PostgreSQL", "same database", scopes=[scope])
+
+    assert not result["degraded"]
+    assert result["retired"] == [{"memory_id": link["memory_id"], "into": None}]
+    assert [s["memory_id"] for s in result["superseded"]] == [other["memory_id"]]
+    assert q(
+        live_client,
+        "SELECT ms.status, a.action, a.related_memory_id, a.event_id::VARCHAR "
+        "FROM memory_status ms JOIN memory_actions a USING (memory_id) "
+        f"WHERE memory_id = {sql_literal(link['memory_id'])}",
+    ) == [("retired", "retire", None, result["event_id"])]
+    # The alias is no longer a node of its own beside the canonical name.
+    assert [i["key"] for i in tools.graph("PostgreSQL", hops=2, scopes=[scope])["items"]] == [
+        "postgresql|backs|billing-svc"
+    ]
+
+
 def _merged_content(tools, live_client, alias, canonical, **relation):
     note = tools.relate(**relation)
     (renamed,) = tools.merge_entity(alias, canonical, "same entity")["superseded"]

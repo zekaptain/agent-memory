@@ -281,7 +281,8 @@ Nothing is rewritten in place:
 - Relations are ordinary `fact` memories, not separate graph tables.
   Repeating the same triple in the same scope confirms it.
 - A merge accepts relations under the canonical name, preserving aliases
-  and sources even when the canonical relation already exists.
+  and sources even when the canonical relation already exists. A relation
+  between the two merged names is retired.
 - Unmatched names stay unchanged. Correct a bad merge by superseding again.
 
 See [PLAN.md](PLAN.md#data-model) for storage details.

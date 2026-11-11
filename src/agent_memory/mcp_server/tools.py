@@ -730,8 +730,9 @@ class MemoryTools:
     ) -> dict[str, Any]:
         """Entity resolution as append-only history: every active relation that mentions
         `alias` is superseded by the same relation with `canonical` in its place, or retired
-        when that relation already exists. Nothing is rewritten; the alias stays in the
-        new rows' metadata and the old rows stay readable."""
+        when that relation already exists. A relation between `alias` and `canonical` is
+        retired too, since the merge makes them one entity. Nothing is rewritten; the alias
+        stays in the new rows' metadata and the old rows stay readable."""
         redact = self.redactor()
         alias = redact.text(alias or "")[0]
         canonical = redact.text(canonical or "")[0]
@@ -751,14 +752,20 @@ class MemoryTools:
             client = self._client_or_raise()
             maintain_corrections(client)
             _, rows = client.query(relations_sql(scopes, [alias_norm]))
-            old: list[tuple[dict[str, Any], Relation, Relation]] = []
+            old: list[tuple[dict[str, Any], Relation, Relation | None]] = []
             for row in rows:
                 record = dict(zip(GRAPH_ROW, row, strict=True))
                 relation = Relation.from_metadata(json.loads(record["metadata"]))
-                if relation is not None:
-                    old.append(
-                        (record, relation, relation.renamed(alias_norm, canonical, canonical_type))
-                    )
+                if relation is None:
+                    continue
+                ends = {relation.subject_norm, relation.object_norm}
+                # Renamed, a relation between the two names would point an entity at itself.
+                renamed = (
+                    None
+                    if ends == {alias_norm, canonical_norm}
+                    else relation.renamed(alias_norm, canonical, canonical_type)
+                )
+                old.append((record, relation, renamed))
             summary: dict[str, Any] = {
                 "degraded": False,
                 "alias": alias,
@@ -789,8 +796,27 @@ class MemoryTools:
                 },
             )
             plan = LifecyclePlan(client)
+
+            def retire(mid: str, into: str | None) -> None:
+                plan.review(
+                    {
+                        "action_id": stable_id(event["event_id"], f"merge-retire:{mid}"),
+                        "memory_id": mid,
+                        "action": "retire",
+                        "actor": actor,
+                        "session_id": self.session_id,
+                        "event_id": event["event_id"],
+                        "related_memory_id": into,
+                        "reason": reason,
+                    }
+                )
+                summary["retired"].append({"memory_id": mid, "into": into})
+
             for record, relation, renamed in old:
                 mid = record["memory_id"]
+                if renamed is None:
+                    retire(mid, None)
+                    continue
                 content = redact.text(_rename_in_text(record["content"], relation, renamed))[0]
                 target, duplicate = plan.remember(
                     {
@@ -819,19 +845,7 @@ class MemoryTools:
                     ],
                 )
                 if duplicate:
-                    plan.review(
-                        {
-                            "action_id": stable_id(event["event_id"], f"merge-retire:{mid}"),
-                            "memory_id": mid,
-                            "action": "retire",
-                            "actor": actor,
-                            "session_id": self.session_id,
-                            "event_id": event["event_id"],
-                            "related_memory_id": target,
-                            "reason": reason,
-                        }
-                    )
-                    summary["retired"].append({"memory_id": mid, "into": target})
+                    retire(mid, target)
                 else:
                     summary["superseded"].append(
                         {

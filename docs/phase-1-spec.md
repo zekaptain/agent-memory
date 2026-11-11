@@ -665,3 +665,8 @@ Follow-ups the same day:
   and inside longer names, and a backslash in the canonical name failed
   the tool call. The alias is now replaced only where it stands alone as
   a name, and the canonical name is inserted as written.
+- A relation between the alias and the canonical name, in either
+  direction, stopped the merge with an internal error, because renamed it
+  would connect an entity to itself. The merge now retires that relation
+  and lists it under `retired` with `into` empty. The merge event still
+  records both names.
