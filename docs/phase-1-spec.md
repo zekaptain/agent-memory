@@ -239,7 +239,7 @@ Mapping:
 | hook event | kind | notes |
 |---|---|---|
 | SessionStart | `session_start` | payload `source` (startup/resume/clear/compact); a `startup` is the event the transcript's `session_start` entry records; the `sessions` row is created once |
-| SessionEnd | `session_end` | payload `reason` |
+| SessionEnd | `session_end` | payload `reason` and the `message_id` of the session's last message. Droid ends a session left idle, so a session can end more than once |
 | UserPromptSubmit | `user_msg` | content = prompt |
 | PreToolUse / pre_tool | skipped by default | `--record-pre-tool` records a note, for debugging |
 | PostToolUse (Droid) | none | the payload names no call; the transcript records the call and its result |
@@ -836,8 +836,9 @@ called through Script, and compared them with that session's transcript.
   is the n-th top-level call in the transcript, for all 93.
 - Content does not identify a call. Of the session's 5,198 calls, 524
   have the same name and input as another.
-- Parsing that transcript (36 MB, 10,671 records) takes 0.17 s, so an
-  import at every `Stop` is affordable.
+- Parsing that transcript (36 MB, 10,671 records) takes 0.17 s. Writing
+  it takes much longer: see [roadmap.md](roadmap.md#known-defects) for
+  what the import of a session that long does.
 
 A `PostToolUse` hook was recorded as a `tool_call` and a `tool_result`
 keyed on the time the hook ran, because the `tool_use_id` the adapter
@@ -865,7 +866,7 @@ compactions for one.
 
 No `UserPromptSubmit`, `Stop`, `SessionStart`, `SessionEnd`, or
 `SubagentStop` ran in that session while the probe was recording. The
-next section covers the first three.
+next two sections cover all of them but `SubagentStop`.
 
 Regressions are in `tests/test_adapters.py`,
 `tests/test_capture_identity.py`, and `tests/test_cli_capture.py`.
@@ -911,8 +912,56 @@ start was two `session_start` events.
   binding of a citation to the reply, arrives with the next import. See
   [roadmap.md](roadmap.md#known-defects) for the last turn of a session.
 
-`SessionEnd` and `SubagentStop` did not run while the probe was
-recording, and neither did a `SessionStart` after `/clear`.
+`SessionEnd` ran later the same day and has the next section.
+`SubagentStop` did not run while the probe was recording, and neither
+did a `SessionStart` after `/clear`.
 
 Regressions are in `tests/test_adapters.py` and
 `tests/test_capture_identity.py`.
+
+### When a Droid session ends, and what its transcript says of hooks (2026-11-11)
+
+The probe recorded three `SessionEnd` payloads, one from each of three
+sessions, which brought it to 1,513 payloads.
+
+| hook | payloads | ids in the payload | the transcript when the hook runs |
+|---|---|---|---|
+| `SessionEnd` | 3 | `message_id` | That id is the session's last message: the reply (2), or a tool result when the last turn ended on a tool call (1). The outcome of the last turn is there. |
+
+- Each ran 30 minutes after its session was last used, with `reason`
+  `other`: twice after the app reopened a session and nothing was said
+  in it, once after a spec handoff took the work to a new session. The
+  payload also has `message_count` and `session_duration_ms`.
+- An end is therefore not final. Droid ends a session that sits idle,
+  and a resume starts it again.
+- The `SessionStart` of the session the handoff created names the one it
+  came from as `previous_session_id`, which stays in the event's payload.
+- The adapter needed no change. `SessionEnd` is a `session_end` keyed on
+  its `message_id`. A session that ends twice with nothing said in
+  between has one `session_end`, at the time of the first, as a session
+  resumed twice has one marker. `session_summary.ended_at` is the latest
+  `session_end`, and events can follow it.
+- By `SessionEnd` the outcome of the last turn is on disk, so an import
+  then brings what the import at the last `Stop` could not.
+
+With a hook registered, Droid also writes an entry to the transcript for
+every hook command it runs: a `message` with role `user`, visibility
+`user_only`, and no content. It holds the event's name, the command, its
+exit code, what it printed on stdout and stderr, and when it started and
+ended. Each of the 1,513 payloads has one.
+
+- The entry names what the payload does not. For `PreToolUse` and
+  `PostToolUse` it has the id of the tool call (`hookToolCallId`), and
+  for all 1,485 that id is a call in the same transcript. For an event
+  whose payload has a `message_id`, the entry's `hookParentId` is that
+  id.
+- The import records nothing for these entries. The one for a `Stop`
+  hook falls between a reply and the outcome of its turn and does not
+  separate the two.
+- What a hook command prints is kept in the session's transcript, so a
+  hook that has nothing wrong to report should print nothing.
+- A hook costs a process and a transcript entry each time it runs.
+  `mem event` takes about 0.3 s, which a `PreToolUse` or `PostToolUse`
+  hook that records nothing would spend on every tool call.
+
+Regressions are in `tests/test_adapters.py`.

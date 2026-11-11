@@ -28,9 +28,9 @@ As of 2026-11-11.
 
 The next approved work should finish verifying Droid capture end to end,
 then build and run the local usefulness experiment. Droid's hooks were
-checked against real payloads on 2026-11-11, all but `SessionEnd` and
-`SubagentStop`. No session has yet been captured through installed
-hooks. Retrieval tuning and wider graph use follow measured failures.
+checked against real payloads on 2026-11-11, all but `SubagentStop`. No
+session has yet been captured through installed hooks. Retrieval tuning
+and wider graph use follow measured failures.
 Parametric consolidation remains research until usefulness and
 withdrawal/backflow can be measured.
 
@@ -97,15 +97,19 @@ read-only view.
 ## Verified harness behavior
 
 Checked against the vendor documentation on 2026-10-25. Droid's hooks
-were checked against real payloads on 2026-11-11, all but `SessionEnd`
-and `SubagentStop`. `PreToolUse`, `PostToolUse`, and `Notification`
-carry no `message_id` and no id for a tool call. `PreCompact` carries
-the `message_id` of the compaction's anchor message. `PostToolUse` does
-not run for a call made inside a Script. `Stop` runs after the reply is
+were checked against real payloads on 2026-11-11, all but
+`SubagentStop`. `PreToolUse`, `PostToolUse`, and `Notification` carry no
+`message_id` and no id for a tool call. `PreCompact` carries the
+`message_id` of the compaction's anchor message. `PostToolUse` does not
+run for a call made inside a Script. `Stop` runs after the reply is
 written and before the turn's outcome is. The `SessionStart` of a new
 session carries no `message_id`; a resume carries that of the session's
-last reply. See "What a Droid hook carries" and "What Droid's turn and
-session hooks carry" in [phase-1-spec.md](phase-1-spec.md).
+last reply. `SessionEnd` carries that of the session's last message and
+runs 30 minutes after a session was last used, so a session can end
+more than once. Droid writes an entry to the transcript for every hook
+command it runs. See "What a Droid hook carries", "What Droid's turn and
+session hooks carry", and "When a Droid session ends, and what its
+transcript says of hooks" in [phase-1-spec.md](phase-1-spec.md).
 
 | Harness | Events | Payload | Gaps for capture |
 |---------|--------|---------|------------------|
@@ -174,17 +178,29 @@ Verified against the code in the audit of 2026-11 and still open.
 - A memory that admission wrote and a human approves or retires with
   `mem review` gives the fitted approver no example. Only
   `mem admit review` records one (`review.py`).
-- Droid's `SessionEnd` and `SubagentStop` payloads, and a `SessionStart`
-  after `/clear`, have not been checked against real ones. `SessionEnd`
-  is keyed on `message_id` when the payload has one, which is right only
-  if that id places the end of the session (`adapters/droid.py`).
+- Droid's `SubagentStop` payload, and a `SessionStart` after `/clear`,
+  have not been checked against real ones (`adapters/droid.py`).
 - A Droid turn that never reaches `Stop` (a crash, a killed session) is
   in the ledger only after someone imports its transcript. Droid also
   writes a turn's outcome after its `Stop` hook has run, so an import at
   `Stop` brings the outcome of the turn before and never its own. After
   the last turn of a session nothing imports again, and without its
   outcome the judge reads that turn as cut off when the session ended
-  (`closed_by` is `session_end`), not as completed.
+  (`closed_by` is `session_end`), not as completed. The outcome is on
+  disk by `SessionEnd`, where no import is run yet.
+- `mem ingest --transcript` waits for the ledger no longer than a hook
+  does, 2 s. The import of a long session takes longer: 8 s for one of
+  11,217 records, and 4 s when the ledger already holds every one of
+  them, nearly all of it spent redacting records that are then skipped.
+  The command gives up on a write that is under way and puts the whole
+  transcript in the spool, 35 MB for that session, each time it runs.
+  In a `Stop` hook that is every turn (`cli.py`, `capture/pipeline.py`,
+  `capture/writer.py`).
+- `mem ingest` is not made to run as a hook, and the README tells its
+  reader to run it in one. It prints its summary on stdout, and it exits
+  2 for a transcript that is not there, a `--since-key` the transcript
+  does not hold, and a harness it does not know. Droid reads exit 2 from
+  a `Stop` hook as an instruction not to stop (`cli.py`).
 - `session_summary.started_at` is the time of the first record the
   ledger received for a session. When that record is a hook that is not
   the session's start (a prompt, or the resume of a session begun before
