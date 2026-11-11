@@ -16,7 +16,7 @@ import typer
 from . import __version__, audit
 from .adapters import HARNESS_NAMES, UnsupportedTranscript, get_adapter
 from .admission.cli import admit_app
-from .capture.pipeline import Delivery, deliver, replay_spool
+from .capture.pipeline import IMPORT_DEADLINE, Delivery, deliver, replay_spool
 from .capture.spool import Spool
 from .config import Config, ConfigError, load_config
 from .db import (
@@ -419,7 +419,7 @@ def ingest(
     if not records:
         print(f"{transcript.name}: nothing new to record")
         return
-    delivery = deliver(cfg, records, spool_only=spool_only)
+    delivery = deliver(cfg, records, spool_only=spool_only, deadline=IMPORT_DEADLINE)
     _report_delivery(delivery, transcript.name)
 
 

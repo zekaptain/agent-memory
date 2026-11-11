@@ -18,7 +18,11 @@ from .redact import Redactor, redactor_for
 from .spool import Spool, SpoolFile
 from .writer import Rejection, Writer, WriteResult
 
+# How long a hook waits for the ledger before it spools what it has.
 DEFAULT_DEADLINE = 2.0
+# How long the write of a transcript may take. The first import of a long session takes
+# seconds, and giving up on it would put the whole transcript in the spool.
+IMPORT_DEADLINE = 300.0
 
 
 def deadline_from_env() -> float:

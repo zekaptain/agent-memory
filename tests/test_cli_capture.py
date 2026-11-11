@@ -5,6 +5,8 @@ from __future__ import annotations
 import io
 import json
 import threading
+import time
+from pathlib import Path
 
 import pytest
 
@@ -12,6 +14,7 @@ from agent_memory.adapters.droid import DroidAdapter
 from agent_memory.capture import ids
 from agent_memory.capture.record import Record, now
 from agent_memory.capture.spool import Spool
+from agent_memory.capture.writer import Writer
 from agent_memory.cli import main
 from agent_memory.db import MemoryClient, MemoryServer, sql_literal
 from tests.conftest import FIXTURES
@@ -135,6 +138,62 @@ def test_event_exits_1_when_nothing_could_be_kept(down_mem, monkeypatch):
 def test_event_with_nothing_to_record(live_mem, monkeypatch):
     feed(monkeypatch, {**HOOK, "hook_event_name": "Stop"})
     assert live_mem("event", "--harness", "droid") == (0, "", "")
+
+
+def turn(n: int, *, outcome: bool = True) -> list[dict]:
+    """The entries Droid writes for a turn: the prompt, the reply, and then its outcome."""
+    entries: list[dict] = [
+        {
+            "type": "message",
+            "id": f"p{n}",
+            "timestamp": f"2026-11-11T10:{n:02d}:01Z",
+            "message": {"role": "user", "content": [{"type": "text", "text": f"Prompt {n}."}]},
+        },
+        {
+            "type": "message",
+            "id": f"r{n}",
+            "timestamp": f"2026-11-11T10:{n:02d}:02Z",
+            "message": {"role": "assistant", "content": [{"type": "text", "text": f"Reply {n}."}]},
+        },
+    ]
+    if outcome:
+        entries.append(
+            {
+                "type": "agent_turn_outcome",
+                "turnId": f"p{n}",
+                "reason": "completed",
+                "resultKind": "text",
+            }
+        )
+    return entries
+
+
+def write_transcript(path: Path, *turns: list[dict]) -> Path:
+    # Droid gives a session's first entry no timestamp.
+    entries: list[dict] = [{"type": "session_start", "id": path.stem, "title": "Synthetic"}]
+    for entries_of_turn in turns:
+        entries.extend(entries_of_turn)
+    path.write_text("".join(json.dumps(entry) + "\n" for entry in entries))
+    return path
+
+
+def test_ingest_waits_for_a_write_that_is_under_way(live_mem, live_client, tmp_path, monkeypatch):
+    # A hook gives the ledger two seconds. The import of a long session takes longer, and
+    # giving up on it puts the whole transcript in the spool.
+    monkeypatch.setenv("AGENT_MEMORY_DEADLINE", "0.01")
+    write = Writer.write
+
+    def slow_write(self, records):
+        time.sleep(0.3)
+        return write(self, records)
+
+    monkeypatch.setattr(Writer, "write", slow_write)
+    path = write_transcript(tmp_path / f"{tmp_path.name}.jsonl", turn(1))
+    code, out, err = live_mem("ingest", "--harness", "droid", "--transcript", str(path))
+    assert code == 0, err
+    assert "4 event(s)" in out
+    assert "spooled" not in out + err
+    assert not Spool(live_mem.home / "spool").path_for("factory-droid", path.stem).exists()
 
 
 def test_event_records_compaction_instructions_that_are_not_text(
