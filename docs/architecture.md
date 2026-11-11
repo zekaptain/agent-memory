@@ -21,7 +21,7 @@ experiment](judge-experiment-spec.md), and [admission](admission-spec.md).
 
 | Harness          | Tier | Integration           | Capture                                                     |
 |------------------|------|-----------------------|-------------------------------------------------------------|
-| Factory Droid    | A    | `hooks.json` + MCP    | Prompts, notifications, and session boundaries from hooks in real time; replies, tool calls, and compactions from the transcript file hooks point at, imported at the end of each turn. |
+| Factory Droid    | A    | `hooks.json` + MCP    | Prompts, notifications, and session boundaries from hooks in real time; replies, tool calls, and compactions from the transcript file hooks point at, imported by the same hook command when a turn or the session ends. |
 | Mistral Vibe     | A    | `hooks.toml` + MCP    | Tool hooks in real time; prompts and replies from the transcript file. No session or compaction hooks. |
 | oh-my-pi (omp)   | A    | TypeScript hooks + MCP | Complete: every message, turn, tool, and compaction event, in process. |
 | Amp              | B    | plugin API + MCP      | Complete per turn (`agent.end` carries every message); no compaction or session-end events. Threads also live server-side. |
@@ -57,8 +57,8 @@ flowchart LR
 - Clients attach with `ATTACH 'quack:localhost:9494' AS mem (TOKEN ...)` and
   run statements on the server. Many clients can write at once; each
   transaction is atomic across tables. Two kinds of client: harness hooks
-  call the `mem` CLI directly (`mem event`, `mem ingest`; cold start to answer
-  is about 110 ms, well inside Droid's 60 s default hook timeout), and
+  call the `mem` CLI directly (`mem event`; a hook takes 0.4 to 0.6 s from
+  start to exit, of Droid's 60 s default hook timeout), and
   `mem-mcp` exposes recall, remember, cite, review, relate, graph, and status
   to the agent mid-session. Both fall back to `spool/` when the server is
   unreachable.
@@ -81,11 +81,16 @@ when the server is down. `mem event --harness droid` takes one hook
 payload on stdin; `mem ingest --transcript` imports a Droid session file
 (every entry type mapped; thinking opt-in). For Droid the transcript is the
 record of replies, tool calls, and compactions: a Droid hook names no tool
-call, so `mem event` records none. `mem ingest --spool` replays, and
+call, so `mem event` records none from a payload. At `Stop` and
+`SessionEnd` it imports what the session's transcript has gained since the
+last import, so one hook command does all of capture. `mem hooks install`
+writes that command into Droid's hooks file and leaves every other hook
+there as it is. `mem ingest --spool` replays, and
 `mem serve` drains the spool at startup. A record the ledger rejects, or a
 spool line it cannot read, becomes a `capture_error` event and is kept under
-`spool/failed/` while the rest of its batch is written. A real 1000-event
-transcript imports in about 0.8 s and re-imports in 50 ms. No other
+`spool/failed/` while the rest of its batch is written. A real transcript
+of 999 events imports in about 1.0 s and imports again in 0.65 s; either
+command takes 0.3 s to start. No other
 harness has an adapter (see [roadmap.md](roadmap.md#phases)).
 
 ## In-session tools

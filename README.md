@@ -9,11 +9,12 @@ The ledger keeps a history instead of overwriting records. Use it to find:
 - Where that information came from.
 - Which memories the agent declared it used in its answer.
 
-Storage, capture commands, MCP tools, the relation graph, judge experiments,
-and admission are implemented. Automatic hook installation is still planned.
+Storage, capture, a hook installer for Factory Droid, MCP tools, the
+relation graph, judge experiments, and admission are implemented.
 
 Start with the [quick start](#quick-start), then
-[import a session](#import-a-droid-session) or
+[wire capture into Droid's hooks](#wire-capture-into-hooks),
+[import a session](#import-a-droid-session), or
 [connect your agent through MCP](#connect-your-agent-through-mcp).
 For experiments, use the [judge how-to](docs/judge-how-to.md).
 
@@ -67,14 +68,17 @@ To run a full end-to-end check without using your database, run
 
 ### Optional: install commands for use outside this repository
 
-Hook scripts, MCP clients, and the login service need `mem` and `mem-mcp`
-on their `PATH`:
+MCP clients and the login service need `mem` and `mem-mcp` on their
+`PATH`:
 
 ```sh
 uv tool install --editable .
 ```
 
-After installation, you can use `mem` instead of `uv run mem`.
+After installation, you can use `mem` instead of `uv run mem`. Hooks do
+not need the `PATH`: `mem hooks install` writes the full path of the
+`mem` it runs from. Run it from the installed `mem` if the hooks should
+not depend on this checkout's `.venv`.
 
 ## Choose a home and port
 
@@ -104,7 +108,7 @@ Add `--help` to any command to see its options, for example
 
 | Harness | Capture available now |
 |---|---|
-| Factory Droid | Hook payloads and transcript import. |
+| Factory Droid | Hooks, written by `mem hooks install`, and transcript import. |
 | Mistral Vibe, oh-my-pi, and Amp | MCP tools only; no capture adapter yet. |
 | JetBrains Junie | MCP tools only, recorded as partial capture. |
 
@@ -120,39 +124,73 @@ uv run mem sql "SELECT * FROM session_summary"
 ```
 
 - Reimporting the same transcript does not duplicate events.
-- `--since-key MESSAGE_ID` skips entries already known to a hook.
+- `--since-key MESSAGE_ID` imports only what follows that entry.
 - `--include-thinking` also imports thinking blocks.
+
+Use this for a session from before the hooks were installed. With the
+hooks in place a session is imported as it goes, without its thinking
+blocks; `--include-thinking` on its transcript adds them.
 
 ### Wire capture into hooks
 
-Hook installation is not automatic. After installing the commands on your
-`PATH`, use these patterns in your Droid hook scripts:
+`mem hooks install` writes capture into Droid's hooks file,
+`~/.factory/hooks.json`. Initialize the home and start the server first
+(see the [quick start](#quick-start)). Without a server, a hook keeps
+what it records in the spool.
 
 ```sh
-# Read the hook's JSON payload from stdin.
-mem event --harness droid
-
-# In a Stop hook, import the turn from the transcript: the assistant's
-# reply, every tool call and its result, and any compaction.
-# Read TRANSCRIPT_PATH from the hook payload before calling this.
-mem ingest --harness droid --transcript "$TRANSCRIPT_PATH"
+uv run mem hooks install
+uv run mem hooks status
 ```
 
-For Droid the transcript is the record of replies, tool calls, and
-compactions, so the import in the `Stop` hook is required, not optional.
-A Droid hook does not carry the reply and does not name the tool call it
-reports. `mem event` therefore records nothing for `PostToolUse` and
-`Stop`. It records a prompt, a notification, the start and end of a
-session, a subagent's stop, and the request to compact (as a note; the
-compaction comes from the transcript). Droid writes a turn's outcome
-just after `Stop` has run, so each import brings the outcome of the turn
-before it. Import once more after a session's last turn to bring the
-last one.
+`install` adds one hook at each of seven hook events: `SessionStart`,
+`SessionEnd`, `UserPromptSubmit`, `PreCompact`, `SubagentStop`,
+`Notification`, and `Stop`. Each runs the same command, `mem event
+--harness droid`, written with the full path of `mem` and the home and
+port in use, because a hook runs with Droid's environment and not your
+shell's. To change the home, the port, or a flag, run `install` again:
 
-For `mem event`, use `--keep-raw` to keep the full payload with the event,
-redacted like everything else, or `--record-pre-tool` to record pre-tool
-hooks as well. A payload kept this way stays with its record while the
-record waits in the spool.
+```sh
+uv run mem --home "$HOME/.agent-memory" --port 9494 hooks install --keep-raw
+```
+
+- Every other hook in the file stays as it is. `install` replaces only a
+  hook whose whole command is `mem ... event ...`. One that runs
+  `mem event` inside a longer command is left alone and reported, because
+  capture then runs twice at that hook event.
+- The file is rewritten as indented JSON. Its hooks and their order are
+  kept; its line layout is not.
+- `mem hooks status` shows each hook event as installed, missing, or
+  different from what `install` would write. It exits 1 unless all are
+  installed. `mem hooks uninstall` takes mem's hooks out again.
+- `--file PATH` names another hooks file, such as a project's
+  `.factory/hooks.json`. `--mem PATH` names the `mem` a hook runs.
+- `install` changes nothing in a file that is not in Droid's format. It
+  also refuses to create `hooks.json` while `settings.json` beside it
+  holds hooks, because Droid reads those only when there is no
+  `hooks.json`.
+- A Droid session that is already running may use the change at once or
+  keep the hooks it started with. `/hooks` in Droid shows the hooks a
+  session runs.
+
+For Droid the transcript is the record of replies, tool calls, and
+compactions. A Droid hook does not carry the reply and does not name the
+tool call it reports. The hooks therefore record a prompt, a
+notification, the start and end of a session, a subagent's stop, and the
+request to compact (as a note; the compaction comes from the
+transcript). At `Stop` and `SessionEnd`, `mem event` also imports what
+the transcript has gained since its last import. No hook is installed at
+`PostToolUse`, where there is nothing to record.
+
+Droid writes a turn's outcome just after `Stop` has run. That outcome
+arrives with the next turn's `Stop`, or with `SessionEnd`, which the
+Droid app raises 30 minutes after a session was last used.
+
+`--keep-raw` keeps the full payload with each event, redacted like
+everything else. A payload kept this way stays with its record while the
+record waits in the spool. `--record-pre-tool` also installs a hook at
+`PreToolUse` and records a note for each tool call. That costs one
+process per call and is meant for debugging.
 See the [capture spec](docs/phase-1-spec.md) for payload and adapter details.
 
 `mem event` is made to run as a hook. It prints nothing on stdout, because a

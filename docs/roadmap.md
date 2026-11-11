@@ -15,7 +15,7 @@ As of 2026-11-11.
 | Phase 0.5: trial of ai-memory | Not started | below |
 | Phase 1a: capture path | Done | [phase-1-spec.md](phase-1-spec.md) |
 | Phase 1b: in-session tools | Done | [phase-1-spec.md](phase-1-spec.md) |
-| Phase 2: harness adapters | Droid hooks and transcript import are built and checked against real payloads. Vibe, omp, and Amp have no adapter; one for Vibe, written from its documentation, was removed on 2026-11-11. Hook installation is manual. | below |
+| Phase 2: harness adapters | Droid hooks and transcript import are built and checked against real payloads. Vibe, omp, and Amp have no adapter; one for Vibe, written from its documentation, was removed on 2026-11-11. `mem hooks install` writes Droid's hooks; no session in a running Droid has been captured through them yet. | below |
 | Phase 3: audit tooling | Not started. `mem audit check` exists, but as a preflight for migrations, not as the commands below. | below |
 | Phase 4: memory quality | Partly built: the relation graph's first step and lesson admission (migration 0007). | below, [admission-spec.md](admission-spec.md) |
 | Phase 5: Markdown projection | Not started | below |
@@ -28,9 +28,11 @@ As of 2026-11-11.
 
 The next approved work should finish verifying Droid capture end to end,
 then build and run the local usefulness experiment. Droid's hooks were
-checked against real payloads on 2026-11-11, all but `SubagentStop`. No
-session has yet been captured through installed hooks. Retrieval tuning
-and wider graph use follow measured failures.
+checked against real payloads on 2026-11-11, all but `SubagentStop`.
+`mem hooks install` and the hooks it writes were run against a copy of a
+real hooks file and a real transcript. No session in a running Droid has
+yet been captured through installed hooks. Retrieval tuning and wider
+graph use follow measured failures.
 Parametric consolidation remains research until usefulness and
 withdrawal/backflow can be measured.
 
@@ -52,12 +54,14 @@ harness exposes (see "Verified harness behavior" below):
   `mem event`, which records what the transcript lacks or holds only
   later: prompts, notifications, and session boundaries for Droid, and tool
   calls and results for Vibe. Neither harness hands the assistant's reply
-  to a hook, and a Droid hook does not name the tool call it reports. A
-  turn-end hook (`Stop` for Droid, `post_agent` for Vibe) therefore runs
-  `mem ingest --transcript <path>`, which brings in replies, Droid's tool
+  to a hook, and a Droid hook does not name the tool call it reports. The
+  transcript is therefore imported at the turn-end hook event (`Stop` for
+  Droid, `post_agent` for Vibe), which brings in replies, Droid's tool
   calls and compactions, and merges entries a hook already recorded by
-  their id. Vibe has no session or prompt hooks at all, so its session and
-  user rows also come from the transcript. Only the Droid half is built.
+  their id. For Droid, `mem event` does that import itself, at `Stop` and
+  at `SessionEnd`, and `mem hooks install` writes the hooks. Vibe has no
+  session or prompt hooks at all, so its session and user rows also come
+  from the transcript. Only the Droid half is built.
   What is said of Vibe here and in the table below comes from its
   documentation, not from a payload it sent.
 - *In-process extension + spool* (omp, Amp). A TypeScript module subscribes to
@@ -138,9 +142,13 @@ session carries no `message_id`; a resume carries that of the session's
 last reply. `SessionEnd` carries that of the session's last message and
 runs 30 minutes after a session was last used, so a session can end
 more than once. Droid writes an entry to the transcript for every hook
-command it runs. See "What a Droid hook carries", "What Droid's turn and
-session hooks carry", and "When a Droid session ends, and what its
-transcript says of hooks" in [phase-1-spec.md](phase-1-spec.md).
+command it runs. A session that was running when `hooks.json` changed
+ran the new hooks ten seconds later, where Droid's documentation says a
+session reads its hooks when it starts (seen once, in the Factory app).
+See "What a Droid hook carries", "What Droid's turn and session hooks
+carry", "When a Droid session ends, and what its transcript says of
+hooks", and "`mem hooks` writes capture into Droid's hooks file" in
+[phase-1-spec.md](phase-1-spec.md).
 
 | Harness | Events | Payload | Gaps for capture |
 |---------|--------|---------|------------------|
@@ -171,8 +179,9 @@ transcript says of hooks" in [phase-1-spec.md](phase-1-spec.md).
 - The server caches results for clients (`quack_result_ttl` 3600 s,
   `quack_cache_max_rows` 100 000). Watch memory if many clients poll.
 - The writer's event lookup is bounded by the incoming batch and its parent
-  references, not session history. Full transcript reimports still parse
-  their input; `--since-key` avoids rebuilding records for earlier entries.
+  references, not session history. Every import parses the whole
+  transcript. A hook, and `mem ingest --since-key`, hand the writer only
+  the entries after an earlier import.
 - The `generic_assignment` redaction rule is deliberately broad (`token =
   ...`, `password: ...`) and does hit code and config text in tool calls. The
   count lands in `events.redactions`; loosen the rule only with new fixture
@@ -211,36 +220,64 @@ Verified against the code in the audit of 2026-11 and still open.
   `mem admit review` records one (`review.py`).
 - Droid's `SubagentStop` payload, and a `SessionStart` after `/clear`,
   have not been checked against real ones (`adapters/droid.py`).
+- No session in a running Droid has been captured through installed
+  hooks. `mem hooks install` and the hooks it writes were run against a
+  copy of a real hooks file, with payloads written by hand (`hooks.py`).
 - A Droid turn that never reaches `Stop` (a crash, a killed session) is
-  in the ledger only after someone imports its transcript. Droid also
-  writes a turn's outcome after its `Stop` hook has run, so an import at
-  `Stop` brings the outcome of the turn before and never its own. After
-  the last turn of a session nothing imports again, and without its
-  outcome the judge reads that turn as cut off when the session ended
-  (`closed_by` is `session_end`), not as completed. The outcome is on
-  disk by `SessionEnd`, where no import is run yet.
-- `mem ingest --transcript` waits for the ledger no longer than a hook
-  does, 2 s. The import of a long session takes longer: 8 s for one of
-  11,217 records, and 4 s when the ledger already holds every one of
-  them, nearly all of it spent redacting records that are then skipped.
-  The command gives up on a write that is under way and puts the whole
-  transcript in the spool, 35 MB for that session, each time it runs.
-  In a `Stop` hook that is every turn (`cli.py`, `capture/pipeline.py`,
-  `capture/writer.py`).
-- `mem ingest` is not made to run as a hook, and the README tells its
-  reader to run it in one. It prints its summary on stdout, and it exits
-  2 for a transcript that is not there, a `--since-key` the transcript
-  does not hold, and a harness it does not know. Droid reads exit 2 from
-  a `Stop` hook as an instruction not to stop (`cli.py`).
+  in the ledger only after the session's next `Stop` or `SessionEnd`, or
+  after someone imports its transcript. Droid writes a turn's outcome
+  after its `Stop` hook has run, so the outcome of a session's last turn
+  arrives at `SessionEnd`, 30 minutes after the session was last used.
+  Until then, and for good if `SessionEnd` never runs, the judge reads
+  that turn as cut off when the session ended (`closed_by` is
+  `session_end`), not as completed. Not checked: whether quitting Droid
+  raises `SessionEnd`.
+- The first import of a long session runs inside its `Stop` hook and
+  takes seconds: 8.75 s for a transcript of 41.9 MB, and at that rate
+  about 17 s for the largest local one, 79 MB. Droid's hook timeout is
+  60 s. Not checked: what Droid shows while a hook runs that long, and
+  what a hook killed at the timeout leaves behind.
+- A whole-file import of a transcript the ledger already holds redacts
+  every record before the writer finds it present: 4 s for 11,217
+  records. A hook avoids that by reading on from the last import.
+  `mem ingest --transcript` without `--since-key` does not, and neither
+  does a hook whose transcript no longer matches its last import
+  (`capture/writer.py`).
+- After an outage the first `Stop` reads the whole transcript into the
+  spool, once: 4.6 s and 37 MB for a transcript of 41.9 MB. The spool
+  does not know what the ledger already holds (`capture/pipeline.py`).
+- `mem audit check` warns about every Droid session captured through
+  the hooks. Each import lists what it leaves out, so
+  `capture_exclusions` and `capture_transcript_partial` always apply,
+  and a hook's event later than the last transcript entry, such as the
+  `session_end`, raises `capture_coverage_gap`. No Droid session can
+  read as fully covered (`audit.py`, `adapters/droid.py`).
 - `session_summary.started_at` is the time of the first record the
   ledger received for a session. When that record is a hook that is not
   the session's start (a prompt, or the resume of a session begun before
   its hooks were installed), it is later than the start the transcript
   records, which the view shows only inside `effective_metadata`
-  (migration 0003).
+  (migration 0003). Every session that is running when the hooks are
+  installed will show it: one whose first record was a prompt hook at
+  16:19 has a transcript that starts at 14:12.
 - A hook with no id of its own is keyed on the time it ran, so a hook
-  command registered twice records each notification twice
-  (`adapters/droid.py`).
+  command that runs twice records each notification twice.
+  `mem hooks install` leaves one hook of its own at each hook event. A
+  hook that runs `mem event` inside a longer command is only reported
+  (`adapters/droid.py`, `hooks.py`).
+- `mem event` takes 0.3 s to start, and about half of that loads the
+  `mcp` library, which capture does not use: the CLI imports it with the
+  graph and review commands (`cli.py`, `mcp_server/tools.py`). A hook
+  runs at every prompt, notification, and turn end.
+- A hook that spools prints one line on stderr, and Droid keeps what a
+  hook prints in the transcript. During an outage each hook adds that
+  line to the session's transcript (`cli.py`).
+- The command a hook runs names the home and the port. It does not
+  carry `AGENT_MEMORY_HOST` or `AGENT_MEMORY_DEADLINE`, which a hook
+  sees only if Droid's environment has them (`hooks.py`).
+- The hooks import a transcript without its thinking blocks, and
+  `mem hooks install` has no flag to ask for them. `mem ingest
+  --include-thinking` adds them by hand.
 - The transcript import drops which Script call a nested tool call ran
   inside (`script_execution.outer_tool_use_id`), so the ledger cannot
   tell a nested call from a top-level one (`adapters/droid.py`).
@@ -258,10 +295,12 @@ blinding; an egress error body in exception text; no CI configuration.
 
 Proposed in the audit of 2026-11. None of these is approved.
 
-- Finish capture: a hook installer that imports the transcript at `Stop`
-  and once more after a session's last turn (at `SessionEnd`, or when
-  the session is next started or resumed), and a session captured end to
-  end through installed hooks.
+- Finish capture: a session captured end to end through hooks installed
+  in a running Droid, with `SubagentStop` and a `SessionStart` after
+  `/clear` checked against real payloads. The installer and the import
+  at `Stop` and `SessionEnd` were built on 2026-11-11.
+- Keep `mem event` from loading what capture does not use, which would
+  about halve a hook's start-up.
 - An adapter for Ori's runtime, as the second harness (see "One harness
   with an adapter" under Phase 2).
 - Build `mem why` and `mem session` (Phase 3) as recorded reads, each a
@@ -289,6 +328,10 @@ above these were deepened on 2026-11-11: the ledger session
   answers today.
 - Should a refused approval leave a row in the ledger? Today one the
   tool refuses leaves none.
+- Should `session_summary.started_at` take the start the transcript
+  records? That needs a new view, in migration 0008.
+- Should a Droid session captured from start to end be able to read as
+  fully covered, and what would have to be true of it?
 - Should timeouts in a row stop a judge command? A timeout can be the
   item's doing, so today only an unreachable model server stops one.
 - Are the `readout` and `jev` backends and the `actionable` question still

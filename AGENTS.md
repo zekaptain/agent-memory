@@ -95,6 +95,7 @@ All runtime paths below are under `src/agent_memory/`.
 | `lifecycle.py` | Shared append-only memory writes, correction proposals, bounded due work | `test_lifecycle` |
 | `audit.py` | Read-only `mem audit check` diagnostics, legacy replacement reconstruction | `test_audit_check` |
 | `review.py` | `mem review`: the memories that wait for a human, and the human's approval or retirement of one | `test_review` |
+| `hooks.py` | `mem hooks`: mem's capture command in Droid's hooks file, written, checked, and taken out, with every other hook left as it is | `test_hooks` |
 | `endpoints.py` | The HTTP transport to model servers and the opt-in check for sending data off-machine | `test_endpoints` |
 | `model_call.py` | A model call that must return a JSON object: its attempts, the three model servers, latency and cost over every attempt | `test_model_call` |
 | `adapters/`, `capture/` | Harness input to records, redaction, blobs, idempotent writes, spool/replay, capture identity, the session and event rows every writer shares, observed coverage, answer attribution | `test_adapters`, `test_capture`, `test_writer`, `test_spool`, `test_capture_identity`, `test_ledger_session`, `test_observed_capture`, `test_answer_bindings`, `test_audit_persistence` |
@@ -154,6 +155,19 @@ Entry points are `mem` (`agent_memory.cli:main`) and `mem-mcp`
   resume, a request to compact). One that a message can raise several
   times, each saying something else, such as a notification, is keyed on
   the time the hook ran.
+- One hook command does all of Droid's capture. `mem event` records the
+  hook's own event and, at the hook events the adapter names
+  (`transcript_due`: `Stop` and `SessionEnd`), imports what the
+  transcript has gained since its last import. Do not give a hook a
+  second command to run: `mem ingest` prints on stdout and can exit 2.
+  The hook events to install at come from the adapter
+  (`DroidAdapter.hook_events`); do not list them a second time.
+- Droid's hooks file is its user's. `mem hooks` changes only a hook
+  whose whole command is `mem ... event ...`. Every other hook stays as
+  it is and where it is, also one that runs `mem event` inside a longer
+  command. The file is written in one step, and one that is not in
+  Droid's format is refused. Test `mem hooks` with `--file` in a
+  temporary directory, never against `~/.factory/hooks.json`.
 - Write an adapter from payloads and transcripts recorded from the
   harness itself, never from its documentation alone. Droid's real
   payloads contradicted the hook mapping written from its documentation,
