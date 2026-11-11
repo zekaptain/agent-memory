@@ -10,8 +10,9 @@ from typing import Any
 
 import pytest
 
+from agent_memory import endpoints
 from agent_memory.judge import pipeline, report
-from agent_memory.judge.backends import JudgeInput, http
+from agent_memory.judge.backends import JudgeInput
 from agent_memory.judge.backends.base import answer_from_probabilities
 from agent_memory.judge.backends.jev import parse_answers
 from agent_memory.judge.backends.llm import LlmJudgeBackend, answers_from_judge_json
@@ -64,7 +65,7 @@ def reply_with(monkeypatch, spoiled: dict[str, Any]) -> list[str]:
                 data[qid] = spoiled[qid]
         return {"model": "synthetic", "message": {"content": json.dumps(data)}}, 20.0
 
-    monkeypatch.setattr(http, "post_json", post)
+    monkeypatch.setattr(endpoints, "post_json", post)
     return prompts
 
 
@@ -271,7 +272,7 @@ def test_readout_samples_that_name_no_option_are_no_answer(monkeypatch):
     def post(url, body, **kwargs):
         return {"model": "m", "message": {"content": "I cannot say."}}, 5.0
 
-    monkeypatch.setattr(http, "post_json", post)
+    monkeypatch.setattr(endpoints, "post_json", post)
     inp = JudgeInput(item_id="i", state="S", facts={}, flags=())
     answer = ReadoutBackend("m", samples=4).decide(inp, [BY_ID["generalizable"]])["generalizable"]
     assert answer.method == "sampling:4_missing"

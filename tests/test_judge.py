@@ -701,7 +701,7 @@ def test_jev_refuses_without_opt_in_and_key(monkeypatch):
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     calls = []
     monkeypatch.setattr(
-        judge_http, "post_json", lambda *a, **k: calls.append(a) or (JEV_RESPONSE, 1.0)
+        endpoints, "post_json", lambda *a, **k: calls.append(a) or (JEV_RESPONSE, 1.0)
     )
     inp = JudgeInput(item_id="i", state="S", facts={}, flags=())
     with pytest.raises(JudgeError, match=REMOTE_ENV):
@@ -733,7 +733,7 @@ def test_llm_judge_truncated_json_is_judge_error_and_falls_back_without_thinking
             return {"message": {"content": cut}, "done_reason": "length"}, 100.0
         return {"message": {"content": good}, "done_reason": "stop", "model": "m:1"}, 10.0
 
-    monkeypatch.setattr(judge_http, "post_json", post)
+    monkeypatch.setattr(endpoints, "post_json", post)
     inp = JudgeInput(item_id="i", state="S", facts={}, flags=())
     answers = LlmJudgeBackend("m").decide(inp, [BY_ID["failed"]])
     # Cut off while thinking: once more with room, then without thinking. The last retry must
@@ -758,7 +758,7 @@ def test_llm_judge_truncated_json_is_judge_error_and_falls_back_without_thinking
             }, 100.0
         return {"message": {"content": good}, "done_reason": "stop"}, 10.0
 
-    monkeypatch.setattr(judge_http, "post_json", all_thinking)
+    monkeypatch.setattr(endpoints, "post_json", all_thinking)
     answers = LlmJudgeBackend("m").decide(inp, [BY_ID["failed"]])
     assert [c.get("think", "absent") for c in calls] == [True, True, False]
     assert answers["failed"].method == "llm_json_nothink"
@@ -771,10 +771,10 @@ def test_llm_judge_truncated_json_is_judge_error_and_falls_back_without_thinking
     def rejects_flag(url, body, **k):
         calls.append(dict(body))
         if "think" in body:
-            raise JudgeError(f'{url}: HTTP 400: json: unknown field "think"')
+            raise endpoints.HttpStatusError(f'{url}: HTTP 400: json: unknown field "think"', 400)
         return {"message": {"content": good}, "done_reason": "stop"}, 10.0
 
-    monkeypatch.setattr(judge_http, "post_json", rejects_flag)
+    monkeypatch.setattr(endpoints, "post_json", rejects_flag)
     answers = LlmJudgeBackend("m").decide(inp, [BY_ID["failed"]])
     assert [c.get("think", "absent") for c in calls] == [True, "absent"]
     assert answers["failed"].method == "llm_json_nothink"
@@ -782,7 +782,7 @@ def test_llm_judge_truncated_json_is_judge_error_and_falls_back_without_thinking
     # Without thinking there is nothing to fall back to; the error surfaces for the caller.
     calls.clear()
     monkeypatch.setattr(
-        judge_http,
+        endpoints,
         "post_json",
         lambda u, b, **k: calls.append(dict(b)) or ({"message": {"content": ""}}, 1.0),
     )
@@ -813,7 +813,7 @@ def test_llamacpp_judge_speaks_openai_chat_and_falls_back_without_thinking(monke
             "choices": [{"finish_reason": "stop", "message": {"content": f"Sure: {good}"}}],
         }, 10.0
 
-    monkeypatch.setattr(judge_http, "post_json", post)
+    monkeypatch.setattr(endpoints, "post_json", post)
     inp = JudgeInput(item_id="i", state="S", facts={}, flags=())
     backend = LlamaCppJudgeBackend("gemma-4-26b", host="http://llama.test:8080")
     assert backend.name == "llamacpp:gemma-4-26b"
@@ -852,7 +852,7 @@ def test_llamacpp_judge_speaks_openai_chat_and_falls_back_without_thinking(monke
     # With thinking off from the start there is one call and nothing to fall back to.
     calls.clear()
     monkeypatch.setattr(
-        judge_http,
+        endpoints,
         "post_json",
         lambda u, b, **k: calls.append((u, dict(b))) or ({"choices": [{"message": {}}]}, 1.0),
     )
@@ -866,16 +866,16 @@ def test_llamacpp_judge_speaks_openai_chat_and_falls_back_without_thinking(monke
 
     def loading(u, b, **k):
         calls.append((u, dict(b)))
-        raise JudgeError(f"{u}: HTTP 503: Loading model")
+        raise endpoints.HttpStatusError(f"{u}: HTTP 503: Loading model", 503)
 
-    monkeypatch.setattr(judge_http, "post_json", loading)
+    monkeypatch.setattr(endpoints, "post_json", loading)
     with pytest.raises(JudgeError, match="Loading model"):
         LlamaCppJudgeBackend("m").decide(inp, [BY_ID["failed"]])
     assert len(calls) == 1
 
     # The response's model field is missing: the configured name stands in as the snapshot.
     monkeypatch.setattr(
-        judge_http,
+        endpoints,
         "post_json",
         lambda u, b, **k: ({"choices": [{"message": {"content": good}}]}, 4.0),
     )
@@ -887,11 +887,13 @@ def test_llamacpp_judge_speaks_openai_chat_and_falls_back_without_thinking(monke
     gets: list[str] = []
 
     def not_found(u, b, **k):
-        raise JudgeError(f'{u}: HTTP 400: {{"error":{{"message":"model \'typo\' not found"}}}}')
+        raise endpoints.HttpStatusError(
+            f'{u}: HTTP 400: {{"error":{{"message":"model \'typo\' not found"}}}}', 400
+        )
 
-    monkeypatch.setattr(judge_http, "post_json", not_found)
+    monkeypatch.setattr(endpoints, "post_json", not_found)
     monkeypatch.setattr(
-        judge_http,
+        endpoints,
         "get_json",
         lambda u, **k: gets.append(u) or {"data": [{"id": "org/b:Q8_0"}, {"id": "org/a:Q4"}]},
     )
@@ -902,7 +904,7 @@ def test_llamacpp_judge_speaks_openai_chat_and_falls_back_without_thinking(monke
     assert gets == ["http://r:9931/v1/models"]
     # If the listing itself fails, the original error stands.
     monkeypatch.setattr(
-        judge_http, "get_json", lambda u, **k: (_ for _ in ()).throw(JudgeError("down"))
+        endpoints, "get_json", lambda u, **k: (_ for _ in ()).throw(endpoints.EgressError("down"))
     )
     with pytest.raises(JudgeError) as excinfo:
         LlamaCppJudgeBackend("typo").decide(inp, [BY_ID["failed"]])
@@ -934,7 +936,7 @@ def test_judge_cut_off_while_thinking_gets_room_before_losing_thinking(monkeypat
             "choices": [{"finish_reason": "stop", "message": message}],
         }, 200.0
 
-    monkeypatch.setattr(judge_http, "post_json", gpt_oss)
+    monkeypatch.setattr(endpoints, "post_json", gpt_oss)
     inp = JudgeInput(item_id="i", state="S", facts={}, flags=())
     answers = LlamaCppJudgeBackend("ggml-org/gpt-oss-20b-GGUF:MXFP4").decide(inp, [BY_ID["failed"]])
     assert [b["max_tokens"] for b in bodies] == [MAX_JUDGE_TOKENS, RETRY_JUDGE_TOKENS]
@@ -957,7 +959,7 @@ def test_judge_cut_off_while_thinking_gets_room_before_losing_thinking(monkeypat
         message = {"content": "", "reasoning_content": "again? " * 2832}
         return {"choices": [{"finish_reason": "length", "message": message}]}, 50.0
 
-    monkeypatch.setattr(judge_http, "post_json", loops)
+    monkeypatch.setattr(endpoints, "post_json", loops)
     with pytest.raises(JudgeError, match=r"after 19824 chars of reasoning; JSON incomplete: ''"):
         LlamaCppJudgeBackend("m").decide(inp, [BY_ID["failed"]])
     assert [b["max_tokens"] for b in bodies] == [
@@ -983,7 +985,7 @@ def test_judge_cut_off_while_thinking_gets_room_before_losing_thinking(monkeypat
             "model": "g",
         }, 200.0
 
-    monkeypatch.setattr(judge_http, "post_json", ollama)
+    monkeypatch.setattr(endpoints, "post_json", ollama)
     answers = LlmJudgeBackend("g").decide(inp, [BY_ID["failed"]])
     assert [b["options"]["num_predict"] for b in bodies] == [MAX_JUDGE_TOKENS, RETRY_JUDGE_TOKENS]
     assert [b["think"] for b in bodies] == [True, True]
@@ -1085,7 +1087,7 @@ def test_readout_logprobs_and_sampling_fallback(monkeypatch):
             ({"model": "m-1", "message": {"content": "B", "logprobs": entries}}, 10.0),
         ]
     )
-    monkeypatch.setattr(judge_http, "post_json", lambda url, body, **k: next(responses))
+    monkeypatch.setattr(endpoints, "post_json", lambda url, body, **k: next(responses))
     backend = ReadoutBackend("m", samples=4)
     answers = backend.decide(
         JudgeInput(item_id="i", state="S", facts={}, flags=()), [BY_ID["failed"]]
@@ -1103,7 +1105,7 @@ def test_readout_logprobs_and_sampling_fallback(monkeypatch):
         letter = "A" if body["options"]["temperature"] == 0 else "B"
         return {"model": "m-1", "message": {"content": letter}}, 5.0
 
-    monkeypatch.setattr(judge_http, "post_json", no_logprobs)
+    monkeypatch.setattr(endpoints, "post_json", no_logprobs)
     answers = backend.decide(
         JudgeInput(item_id="i", state="S", facts={}, flags=()), [BY_ID["failed"]]
     )
@@ -1198,7 +1200,7 @@ def test_drafter_parsing_and_spec(monkeypatch):
             "usage": {"cost": 0.0012},
         }, 55.0
 
-    monkeypatch.setattr(judge_http, "post_json", fake_post)
+    monkeypatch.setattr(endpoints, "post_json", fake_post)
     draft = local.draft("i1", "[1] REQUEST: x\n[2] TOOL RESULT (ok): 3 passed")
     assert (draft.lesson, draft.cited, draft.declined) == (
         "Rule: Run the tests before claiming done.\nKind: project_fact\nClaims:\n"
@@ -1283,7 +1285,7 @@ def test_drafter_retries_a_cut_off_draft_with_more_room(monkeypatch):
             "usage": {"cost": 0.001 if cut else 0.002},
         }, 100.0
 
-    monkeypatch.setattr(judge_http, "post_json", openai_post)
+    monkeypatch.setattr(endpoints, "post_json", openai_post)
     local = make_drafter("llamacpp:m")
     draft = local.draft("i1", "[4] TOOL RESULT: shellcheck ok")
     assert draft.rule == "Check the script with ShellCheck before running it."
@@ -1303,7 +1305,7 @@ def test_drafter_retries_a_cut_off_draft_with_more_room(monkeypatch):
             ]
         }, 10.0
 
-    monkeypatch.setattr(judge_http, "post_json", always_cut)
+    monkeypatch.setattr(endpoints, "post_json", always_cut)
     with pytest.raises(JudgeError, match=r"drafter ran out of tokens after 300 chars of reasoning"):
         local.draft("i2", "state")
 
@@ -1319,7 +1321,7 @@ def test_drafter_retries_a_cut_off_draft_with_more_room(monkeypatch):
             "done_reason": "length" if cut else "stop",
         }, 50.0
 
-    monkeypatch.setattr(judge_http, "post_json", ollama_post)
+    monkeypatch.setattr(endpoints, "post_json", ollama_post)
     draft = OllamaDrafter("m").draft("i3", "state")
     assert draft.cited == [4]
     assert [b["num_predict"] for b in bodies] == [MAX_DRAFT_TOKENS, RETRY_DRAFT_TOKENS]
@@ -1489,10 +1491,10 @@ def test_openrouter_schema_fallback_once_and_validates_reply(monkeypatch, code):
     def post(url, body, **kwargs):
         bodies.append(copy.deepcopy(body))
         if len(bodies) == 1:
-            raise judge_http.HttpStatusError("schema unsupported", code, latency_ms=7.0)
+            raise endpoints.HttpStatusError("schema unsupported", code, latency_ms=7.0)
         return {"choices": [{"message": {"content": json.dumps(lesson_reply())}}]}, 20.0
 
-    monkeypatch.setattr(judge_http, "post_json", post)
+    monkeypatch.setattr(endpoints, "post_json", post)
     draft = make_drafter("openrouter:m").draft("i", "state")
     assert bodies[0]["response_format"] == {
         "type": "json_schema",
@@ -1513,10 +1515,10 @@ def test_openrouter_schema_fallback_once_and_validates_reply(monkeypatch, code):
     def rejected(url, body, **kwargs):
         bodies.append(copy.deepcopy(body))
         if body["response_format"]["type"] == "json_schema":
-            raise judge_http.HttpStatusError("unsupported", code)
+            raise endpoints.HttpStatusError("unsupported", code)
         return {"choices": [{"message": {"content": '{"lesson":"PRIVATE_INVALID"}'}}]}, 10.0
 
-    monkeypatch.setattr(judge_http, "post_json", rejected)
+    monkeypatch.setattr(endpoints, "post_json", rejected)
     with pytest.raises(JudgeError, match="drafter reply rejected") as error:
         make_drafter("openrouter:m").draft("i", "state")
     assert "PRIVATE_INVALID" not in str(error.value)
@@ -1541,9 +1543,9 @@ def test_schema_fallback_does_not_swallow_server_or_repeated_errors(monkeypatch,
 
     def post(*args, **kwargs):
         calls.append(1)
-        raise judge_http.HttpStatusError("rejected", code)
+        raise endpoints.HttpStatusError("rejected", code)
 
-    monkeypatch.setattr(judge_http, "post_json", post)
+    monkeypatch.setattr(endpoints, "post_json", post)
     with pytest.raises(judge_http.HttpStatusError) as error:
         make_drafter(spec).draft("i", "state")
     assert error.value.code == code
@@ -1997,13 +1999,13 @@ def test_drafter_caps_output_and_draft_items_skips_bad_items(tmp_path, monkeypat
     def fake_post(url, body, **kwargs):
         bodies.append(body)
         if len(bodies) == 2:
-            raise JudgeError("http://x: timed out after 300s")
+            raise endpoints.EgressError("http://x: timed out after 300s")
         return {
             "model": "m",
             "message": {"content": json.dumps(lesson_reply("Run tests first.", cited=(1,)))},
         }, 12.0
 
-    monkeypatch.setattr(judge_http, "post_json", fake_post)
+    monkeypatch.setattr(endpoints, "post_json", fake_post)
     cfg = Config(home=tmp_path / "exp")
     logs: list[str] = []
     warnings: list[str] = []
@@ -2045,7 +2047,7 @@ def test_drafter_caps_output_and_draft_items_skips_bad_items(tmp_path, monkeypat
             "usage": {"cost": 0.001},
         }, 20.0
 
-    monkeypatch.setattr(judge_http, "post_json", fake_openai)
+    monkeypatch.setattr(endpoints, "post_json", fake_openai)
     logs.clear()
     assert pipeline.draft_items(cfg, "syn", "llamacpp:x", store=store, log=logs.append).written == 4
     by_item = store.drafts_by_item()
@@ -2069,7 +2071,7 @@ def test_drafter_caps_output_and_draft_items_skips_bad_items(tmp_path, monkeypat
     others = [r for r in store.read_jsonl(store.drafts_path) if r["drafter"] != "ollama:m"]
     store.write_jsonl(store.drafts_path, others + rows[:-1])
     monkeypatch.setattr(
-        judge_http, "post_json", lambda *a, **k: (_ for _ in ()).throw(JudgeError("down"))
+        endpoints, "post_json", lambda *a, **k: (_ for _ in ()).throw(endpoints.EgressError("down"))
     )
     logs.clear()
     # Without a warn channel the problem still reaches the one channel there is.

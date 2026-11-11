@@ -10,8 +10,8 @@ from dataclasses import replace
 
 import pytest
 
+from agent_memory import endpoints
 from agent_memory.judge import pipeline, report
-from agent_memory.judge.backends import http
 from agent_memory.judge.backends.llm import LlmJudgeBackend
 from agent_memory.judge.backends.rules import RulesBackend
 from agent_memory.judge.drafter import Draft
@@ -80,7 +80,7 @@ def test_true_claims_do_not_justify_an_unsupported_rule(monkeypatch, support, cu
             data[key] = {"answer": value, "probability": probability}
         return {"model": "synthetic", "message": {"content": json.dumps(data)}}, 20.0
 
-    monkeypatch.setattr(http, "post_json", post)
+    monkeypatch.setattr(endpoints, "post_json", post)
     item = {
         "item_id": "i",
         "facts": {},
