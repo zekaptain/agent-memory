@@ -8,6 +8,7 @@ from collections.abc import Sequence
 from ..db import sql_literal
 
 GRAPH_STRATEGY = "graph_hop_v1"
+LISTING_STRATEGY = "graph_relations_v1"
 MAX_HOPS = 3
 EDGE_CAP = 200
 

@@ -153,7 +153,8 @@ is the normalized triple `subject|predicate|object` and whose `metadata.graph`
 holds the display names, entity types, and aliases merged into either end.
 `mem-mcp` records them with `relate` and walks them with `graph`, a recursive
 CTE over `active_memories` logged as strategy `graph_hop_v1`. Entity resolution
-(`mem graph resolve`) proposes clusters with a local Ollama model and records
+(`mem graph resolve`) reads the relations as a `graph_relations_v1` retrieval,
+proposes clusters with a local Ollama model and records
 each merge as a superseding row or a `retire` action, so the graph has the same
 provenance, status derivation, and `why_answer` coverage as every other memory.
 This is the first step of the knowledge-graph layer from Anthropic's cookbook,

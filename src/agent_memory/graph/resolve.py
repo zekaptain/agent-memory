@@ -18,7 +18,6 @@ from typing import Any, Protocol
 from .. import endpoints
 from ..db import AgentMemoryError
 from .model import Relation, normalize_entity
-from .sql import ROW
 
 DEFAULT_MODEL = "qwen3:8b"
 BLOCK_SIZE = 60
@@ -54,17 +53,6 @@ class Merge:
     alias: str
     canonical: str
     entity_type: str | None
-
-
-def relations_from_rows(rows: Sequence[tuple]) -> list[Relation]:
-    """Relations from graph SQL rows (see sql.ROW); rows without graph metadata are skipped."""
-    out = []
-    for row in rows:
-        record = dict(zip(ROW, row, strict=True))
-        relation = Relation.from_metadata(json.loads(record["metadata"]))
-        if relation is not None:
-            out.append(relation)
-    return out
 
 
 def collect_entities(relations: Sequence[Relation]) -> list[Entity]:

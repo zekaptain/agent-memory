@@ -326,6 +326,69 @@ def test_graph_walks_hops_logs_the_retrieval_and_misses_unresolved_aliases(tools
         tools.graph("   ")
 
 
+def test_listing_every_relation_is_a_recorded_recall(tools, live_client):
+    first = tools.relate("Ada", "wrote", "the parser", "PERSON", "MODULE", scope="listing")
+    second = tools.relate("the parser", "feeds", "the planner", "MODULE", "MODULE", scope="listing")
+    tools.relate("x-lib", "wraps", "y-lib", trust_level="tool", scope="listing")  # quarantined
+
+    listed = tools.relations(scopes=["listing"])
+    assert not listed["degraded"]
+    assert listed["strategy"] == "graph_relations_v1"
+    assert listed["candidates"] == 2
+    assert [i["memory_id"] for i in listed["items"]] == [first["memory_id"], second["memory_id"]]
+    assert listed["items"][0]["triple"] == "(Ada) --[wrote]--> (the parser)"
+    assert "status" not in listed["items"][0]
+
+    wanted = sql_literal(listed["retrieval_id"])
+    assert q(
+        live_client,
+        "SELECT strategy, query_text, scopes, candidates, returned, session_id::VARCHAR "
+        f"FROM retrievals WHERE retrieval_id = {wanted}",
+    ) == [("graph_relations_v1", None, ["listing"], 2, 2, tools.session_id)]
+    # A listing does not rank, so its items carry no score.
+    assert q(
+        live_client,
+        "SELECT rank, memory_id::VARCHAR, score, injected, status_at_recall "
+        f"FROM retrieval_items WHERE retrieval_id = {wanted} ORDER BY rank",
+    ) == [
+        (1, first["memory_id"], None, True, "active"),
+        (2, second["memory_id"], None, True, "active"),
+    ]
+    assert q(
+        live_client,
+        "SELECT kind, content FROM events "
+        f"WHERE event_id = {sql_literal(listed['request_event_id'])}",
+    ) == [("memory_recall", None)]
+
+    nothing = tools.relations(scopes=["listing-nothing"])
+    assert nothing["items"] == []
+    assert nothing["retrieval_id"] is not None  # misses are logged too
+
+
+def test_a_merge_names_the_recall_it_was_proposed_from(tools, live_client):
+    tools.relate("Kat", "maintains", "the indexer", scope="named")
+    listed = tools.relations(scopes=["named"])
+    with pytest.raises(ToolError, match="retrieval_id"):
+        tools.merge_entity("Kat", "Katherine", "same person", ["named"], retrieval_id="latest")
+
+    named = tools.merge_entity(
+        "Kat", "Katherine", "same person", ["named"], retrieval_id=listed["retrieval_id"]
+    )
+    plain = tools.merge_entity("Katherine", "Katherine Wu", "full name", ["named"])
+    payloads = [
+        json.loads(
+            q(
+                live_client,
+                "SELECT payload::JSON::VARCHAR FROM events "
+                f"WHERE event_id = {sql_literal(result['event_id'])}",
+            )[0][0]
+        )["merge"]
+        for result in (named, plain)
+    ]
+    assert payloads[0]["retrieval_id"] == listed["retrieval_id"]
+    assert "retrieval_id" not in payloads[1]
+
+
 def test_merge_entity_supersedes_rewrites_and_retires_as_history(tools, live_client):
     ids = _seed(tools)
     recall = tools.recall("anything")
@@ -550,3 +613,70 @@ def test_mem_graph_cli_entities_show_and_resolve(live_cfg, monkeypatch, capsys):
     code, out = mem("entities", "--scope", "nothing-here")
     assert code == 0
     assert "no relations" in out
+
+
+def test_mem_graph_entities_and_resolve_record_what_they_read(
+    live_cfg, live_client, monkeypatch, capsys
+):
+    for var in ("AGENT_MEMORY_HOME", "AGENT_MEMORY_HOST", "AGENT_MEMORY_PORT"):
+        monkeypatch.delenv(var, raising=False)
+    seed = MemoryTools(live_cfg, "oh-my-pi", harness_session_id="recorded-seed", project="recorded")
+    try:
+        owns = seed.relate("Bo Li", "owns", "search-svc", "PERSON", "SERVICE")["memory_id"]
+        reviews = seed.relate("B. Li", "reviews", "search-svc", "PERSON", "SERVICE")["memory_id"]
+    finally:
+        seed.close()
+
+    def mem(*args: str) -> tuple[int, str]:
+        code = main(["--home", str(live_cfg.home), "--port", str(live_cfg.port), "graph", *args])
+        return code, capsys.readouterr().out
+
+    def listings() -> list[tuple]:
+        return q(
+            live_client,
+            "SELECT r.retrieval_id::VARCHAR, r.returned, s.agent_id FROM retrievals r "
+            "JOIN sessions s USING (session_id) WHERE r.strategy = 'graph_relations_v1' "
+            "AND list_contains(r.scopes, 'recorded') ORDER BY r.created_at",
+        )
+
+    code, out = mem("entities", "--scope", "recorded")
+    assert code == 0
+    assert listings() == [(listings()[0][0], 2, "human")]
+    assert f"3 entities; retrieval {listings()[0][0]}" in out
+
+    def post(url, body, **_):
+        cluster = {"canonical": "Bo Li", "aliases": ["Bo Li", "B. Li"]}
+        return {"message": {"content": json.dumps({"clusters": [cluster]})}}, 1.0
+
+    monkeypatch.setattr(endpoints, "post_json", post)
+    code, out = mem("resolve", "--scope", "recorded", "--model", "stub")
+    assert code == 0
+    assert len(listings()) == 2
+    assert f"proposed from 2 relations; retrieval {listings()[-1][0]}" in out
+
+    code, out = mem("resolve", "--scope", "recorded", "--model", "stub", "--apply")
+    assert code == 0
+    assert "merged 'B. Li' into 'Bo Li': 1 superseded, 0 retired" in out
+    assert len(listings()) == 3
+    shown_to_the_model = listings()[-1][0]
+    # The merge says which recall it was proposed from, and that recall says what was read.
+    assert q(
+        live_client,
+        "SELECT json_extract_string(payload::JSON, '$.merge.retrieval_id') FROM events "
+        "WHERE kind = 'memory_write' "
+        "AND json_extract_string(payload::JSON, '$.merge.alias') = 'B. Li'",
+    ) == [(shown_to_the_model,)]
+    assert q(
+        live_client,
+        "SELECT memory_id::VARCHAR, status_at_recall FROM retrieval_items "
+        f"WHERE retrieval_id = {sql_literal(shown_to_the_model)} ORDER BY rank",
+    ) == [(owns, "active"), (reviews, "active")]
+
+    code, out = mem("entities", "--scope", "recorded-nothing")
+    assert code == 0
+    assert "no relations" in out
+    assert q(
+        live_client,
+        "SELECT returned FROM retrievals WHERE strategy = 'graph_relations_v1' "
+        "AND list_contains(scopes, 'recorded-nothing')",
+    ) == [(0,)]

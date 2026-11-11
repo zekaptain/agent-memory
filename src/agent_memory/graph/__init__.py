@@ -6,7 +6,7 @@ provenance, status derivation, and `why_answer` for free. The graph is reconstru
 """
 
 from .model import GRAPH_VERSION, Relation, normalize_entity, normalize_predicate
-from .recall import RelationWalk
+from .recall import RelationListing, RelationWalk
 from .sql import GRAPH_STRATEGY, MAX_HOPS, hop_sql, relations_sql
 
 __all__ = [
@@ -14,6 +14,7 @@ __all__ = [
     "GRAPH_VERSION",
     "MAX_HOPS",
     "Relation",
+    "RelationListing",
     "RelationWalk",
     "hop_sql",
     "normalize_entity",

@@ -24,7 +24,14 @@ from ..capture.redact import Redactor
 from ..capture.spool import Spool
 from ..config import Config, ConfigError
 from ..db import AgentMemoryError, MemoryClient, sql_literal
-from ..graph import MAX_HOPS, Relation, RelationWalk, normalize_entity, relations_sql
+from ..graph import (
+    MAX_HOPS,
+    Relation,
+    RelationListing,
+    RelationWalk,
+    normalize_entity,
+    relations_sql,
+)
 from ..graph.sql import ROW as GRAPH_ROW
 from ..graph.sql import sources_sql
 from ..lifecycle import (
@@ -616,6 +623,22 @@ class MemoryTools:
             "relied on) to cite.",
         }
 
+    def relations(self, scopes: Sequence[str] | None = None) -> dict[str, Any]:
+        """Every active relation in the scopes, oldest first. Not offered to agents as a
+        tool: `mem graph` reads the whole graph through it, so that read is recorded like
+        any other recall."""
+        got = self._recall(RelationListing(self._scopes(scopes)), None)
+        if got.reason is not None:
+            return {"degraded": True, "reason": got.reason, "retrieval_id": None, "items": []}
+        return {
+            "degraded": False,
+            "retrieval_id": got.retrieval_id,
+            "request_event_id": got.request_event_id,
+            "strategy": got.strategy,
+            "candidates": got.candidates,
+            "items": got.items,
+        }
+
     def merge_entity(
         self,
         alias: str,
@@ -624,12 +647,16 @@ class MemoryTools:
         scopes: Sequence[str] | None = None,
         canonical_type: str | None = None,
         actor: str | None = None,
+        retrieval_id: str | None = None,
     ) -> dict[str, Any]:
         """Entity resolution as append-only history: every active relation that mentions
         `alias` is superseded by the same relation with `canonical` in its place, or retired
         when that relation already exists. A relation between `alias` and `canonical` is
         retired too, since the merge makes them one entity. Nothing is rewritten; the alias
-        stays in the new rows' metadata and the old rows stay readable."""
+        stays in the new rows' metadata and the old rows stay readable.
+
+        `retrieval_id` names the recall the merge was proposed from, so the merge event
+        says what its proposer was shown."""
         redact = self.redactor()
         alias = redact.text(alias or "")[0]
         canonical = redact.text(canonical or "")[0]
@@ -643,6 +670,8 @@ class MemoryTools:
             raise ToolError("alias and canonical normalize to the same entity")
         if not (reason or "").strip():
             raise ToolError("reason is required")
+        if retrieval_id is not None:
+            retrieval_id = _uuid(retrieval_id, "retrieval_id")
         scopes = self._scopes(scopes)
         actor = redact.text(actor or self.agent_id)[0]
         try:
@@ -689,6 +718,7 @@ class MemoryTools:
                         "reason": reason,
                         "actor": actor,
                         "scopes": scopes,
+                        **({"retrieval_id": retrieval_id} if retrieval_id else {}),
                     }
                 },
             )

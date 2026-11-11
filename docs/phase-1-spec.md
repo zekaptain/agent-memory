@@ -395,6 +395,7 @@ src/agent_memory/
   mcp_server/
     __init__.py    # MCPServer construction, console script entry
     tools.py       # recall/remember/cite/review/status
+    recall.py      # run a strategy and record the retrieval (added later)
     ranking.py     # SQL builders for fts_bm25_v1 and recent_v1
   cli.py           # + event, ingest, spool
 ```
@@ -670,3 +671,34 @@ Follow-ups the same day:
   would connect an entity to itself. The merge now retires that relation
   and lists it under `retired` with `into` empty. The merge event still
   records both names.
+
+### One recall path and its strategies (2026-11-11)
+
+`recall` and `graph` each repeated the read, the ranking and the write of
+the event, the retrieval and its items, and two `mem graph` commands read
+relations with no retrieval at all.
+
+- `run_recall` in `mcp_server/recall.py` is the one place that reads
+  memories on an agent's behalf. It runs a strategy, then writes the
+  `memory_recall` event, the retrieval and one item per memory returned in
+  one transaction. `MemoryTools` turns an unreachable ledger into a
+  degraded result, as before.
+- A strategy supplies its name, its SQL, the parameters and request payload
+  to store, and how rows become items. There are four: `TextMatch`
+  (`fts_bm25_v1`) and `Recent` (`recent_v1`) in `mcp_server/ranking.py`,
+  and `RelationWalk` (`graph_hop_v1`) and `RelationListing`
+  (`graph_relations_v1`) in `graph/recall.py`. A new way of choosing
+  memories is a new strategy, never a read beside `run_recall`.
+- What `recall` and `graph` return and store is unchanged.
+- `mem graph entities` and `mem graph resolve` now read through
+  `MemoryTools.relations`, which records a `graph_relations_v1` retrieval
+  with one item per relation read, oldest first and without a score,
+  because a listing does not rank. A listing of an empty scope is recorded
+  as a miss. `relations` is not an MCP tool.
+- Both commands print the retrieval's id. Each merge that
+  `mem graph resolve --apply` records carries that id as
+  `merge.retrieval_id` in its event, so a merge can be traced to what was
+  read for its proposal. The model itself is given the entity names and up
+  to three sentences per entity drawn from those relations, narrowed by
+  `--entity-type` when it is given; the retrieval lists every relation
+  read, not only the ones that reached the prompt.

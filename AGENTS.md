@@ -88,8 +88,8 @@ All runtime paths below are under `src/agent_memory/`.
 | `audit.py` | Read-only `mem audit check` diagnostics, legacy replacement reconstruction | `test_audit_check` |
 | `endpoints.py` | Model HTTP calls and the opt-in check for sending data off-machine | `test_endpoints` |
 | `adapters/`, `capture/` | Harness input to records, redaction, blobs, idempotent writes, spool/replay, capture identity, observed coverage, answer attribution | `test_adapters`, `test_capture`, `test_writer`, `test_spool`, `test_capture_identity`, `test_observed_capture`, `test_answer_bindings`, `test_audit_persistence` |
-| `mcp_server/` | Stdio tools, recall ranking, writes, reviews, citations | `test_mcp` |
-| `graph/` | Relation metadata, traversal SQL, entity resolution | `test_graph` |
+| `mcp_server/` | Stdio tools, the recorded recall path and its query strategies, writes, reviews, citations | `test_mcp` |
+| `graph/` | Relation metadata, traversal SQL, graph recall strategies, entity resolution | `test_graph` |
 | `judge/` | Import, provenance, candidates, projection, draft, decide, label (including the Go helper in `label_ui/`), report | `test_judge`, `test_judge_pipeline`, `test_judge_verdict`, `test_judge_unanswered`, `test_judge_core_regressions`, `test_judge_store`, `test_judge_admission`, `test_label_ui` |
 | `admission/` | Production lesson admission, fitting and blinded review | `test_admission`, `test_admission_fit` |
 | `cli.py`, `smoke.py` | Typer entry point and end-to-end check | `test_cli`, `test_cli_capture` |
@@ -129,9 +129,13 @@ Entry points are `mem` (`agent_memory.cli:main`) and `mem-mcp`
   event` runs as a hook, so it prints nothing on stdout and never exits 2.
   Add regression coverage for replay, partial failures, and parent/result
   linkage.
-- Tool-derived memories start quarantined. Recall and graph traversal use
-  active memories and record retrieval provenance, including misses.
-  Preserve `retrieval_items`, citations, and `why_answer` coverage.
+- Tool-derived memories start quarantined. Every recall reads active
+  memories and records retrieval provenance, including misses, whatever
+  its strategy: a query, a walk of relations from an entity, or the
+  listing of every relation that `mem graph entities` and `resolve` read.
+  Add a new way of choosing memories as a strategy for `run_recall`, never
+  as a read beside it. Preserve `retrieval_items`, citations, and
+  `why_answer` coverage.
 - Relations are ordinary `fact` memories with normalized triple keys and
   `metadata.graph`. Entity merges supersede or retire relations and preserve
   sources and aliases. Do not introduce separate graph tables casually.

@@ -258,6 +258,8 @@ uv run mem graph show payments-api --hops 2 --scope my-project
 Traversal follows active relations in either direction, from 1 to 3 hops.
 Name matching ignores case and punctuation. Results include a `retrieval_id`
 for `cite`; even searches with no results are logged for `why_answer`.
+`entities` reads every relation in the scopes, and that read is logged as a
+retrieval too.
 
 ### Merge names that refer to the same entity
 
@@ -275,6 +277,10 @@ After reviewing the proposal, rerun with `--apply` to record merges:
 ```sh
 uv run mem graph resolve --scope my-project --apply
 ```
+
+Each run logs the relations it read as a retrieval and prints its id. A
+recorded merge names that retrieval, so you can see later what the proposal
+was drawn from.
 
 Nothing is rewritten in place:
 
