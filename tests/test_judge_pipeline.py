@@ -11,9 +11,11 @@ from dataclasses import replace
 from functools import partial
 
 import pytest
+from rich.table import Table
 
 from agent_memory.adapters.droid import DroidAdapter
 from agent_memory.cli import main
+from agent_memory.judge import cli as judge_cli
 from agent_memory.judge import pipeline
 from agent_memory.judge.drafter import Draft
 from agent_memory.judge.lesson import Claim, Lesson
@@ -261,6 +263,20 @@ def test_cli_decide_without_remote_opt_in(live_cfg, capsys, monkeypatch):
     err = capsys.readouterr().err
     assert code == 1
     assert "AGENT_MEMORY_JUDGE_ALLOW_REMOTE" in err
+
+
+def test_a_model_name_between_colons_is_not_printed_as_an_emoji(capsys):
+    """Rich reads `:dolphin:` as the name of an emoji, so the backend `llm:dolphin:latest`
+    reached the terminal as `llm`, a dolphin, and `latest`, in progress lines and tables."""
+    judge_cli._log("llm:dolphin:latest 1/3: review (0.0s)")
+    judge_cli._warn("llm:m: item i failed: down")
+    table = Table()
+    table.add_row("verdicts llm:dolphin:latest")
+    judge_cli.console.print(table)
+    out, err = capsys.readouterr()
+    assert "llm:dolphin:latest 1/3: review (0.0s)" in out
+    assert "verdicts llm:dolphin:latest" in out
+    assert "llm:m: item i failed: down" in err
 
 
 def test_import_writes_what_the_ledger_accepts_and_retries_the_file(

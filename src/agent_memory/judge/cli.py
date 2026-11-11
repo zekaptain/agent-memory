@@ -32,8 +32,9 @@ judge_app = typer.Typer(
     no_args_is_help=True,
 )
 
-console = Console()
-err_console = Console(stderr=True)
+# emoji=False: a model name such as `llm:dolphin:latest` holds what Rich takes for an emoji name.
+console = Console(emoji=False)
+err_console = Console(stderr=True, emoji=False)
 
 RUN = Annotated[str, typer.Option("--run", help="Run id, for example exp1.")]
 LIVE_DAY = Annotated[
