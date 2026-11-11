@@ -280,11 +280,35 @@ def test_skip_quit_invalid_actions_and_note_validation(tmp_path):
     controller = LabelController(controller.store)
     to_summary(controller)
     controller.apply(Action("back"))
-    for invalid in ("\x1b[2J", "two\nlines", "界" * 1400, "\u202eevil", "\ud800"):
+    for invalid in ("\x1b[2J", "two\nlines", "tab\there", "界" * 1400, "\u202eevil", "\ud800"):
         with pytest.raises(JudgeError):
             controller.apply(Action("note", invalid))
     with pytest.raises(JudgeError):
         controller.apply(Action("answer", "edit"))
+
+
+def test_a_tab_in_a_note_never_reaches_a_screen(tmp_path):
+    store = fresh(tmp_path, 1, two=False)
+    controller = LabelController(store)
+    to_summary(controller)
+    controller.apply(Action("back"))
+    plain = PlainFrontend(io.StringIO("1\nseen\tin plain mode\n"), io.StringIO())
+    typed = plain.exchange(controller.screen())
+    assert typed == Action("note", "seen in plain mode")
+    controller.apply(typed)
+    answer(controller, "continue")
+    answer(controller, "save")
+
+    # A note saved by an earlier version can hold a tab, and the Go helper refuses a
+    # screen whose note is not one clean line.
+    (row,) = store.read_jsonl(store.labels_path)
+    store.write_jsonl(store.labels_path, [{**row, "note": "kept\tfrom before"}])
+    review = LabelController(store, item_ids=[row["item_id"]], review=True)
+    answer(review, "redo")
+    assert review.screen().note == "kept from before"
+    to_summary(review)
+    answer(review, "save")
+    assert store.read_jsonl(store.labels_path)[0]["note"] == "kept\tfrom before"
 
 
 def frame(**overrides):

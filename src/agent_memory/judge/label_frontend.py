@@ -180,6 +180,7 @@ class PlainFrontend:
                         return Action("quit")
                     if note == "/cancel":
                         continue
+                    note = note.replace("\t", " ")  # as the Go helper's input reads a tab
                     if display_safe(note) != note or len(note.encode("utf-8")) > 4096:
                         self.write("Use one line of plain text, at most 4096 bytes.")
                         continue

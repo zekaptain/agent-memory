@@ -163,6 +163,7 @@ func TestProtocolValidatesScreenSemantics(t *testing.T) {
 		"control option":   func(s *screen) { s.Options[0].ID = "yes\nno" },
 		"long note":        func(s *screen) { s.Note = strings.Repeat("x", maxNote+1) },
 		"multiline note":   func(s *screen) { s.Note = "line\nline" },
+		"tab in note":      func(s *screen) { s.Note = "a\tb" },
 		"hidden identity":  func(s *screen) { s.Drafts = []draft{{Slot: "model-name"}} },
 		"duplicate slot":   func(s *screen) { s.Drafts = []draft{{Slot: "A"}, {Slot: "A"}} },
 		"empty slot":       func(s *screen) { s.Drafts = []draft{{Slot: ""}} },

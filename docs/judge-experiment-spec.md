@@ -1024,6 +1024,9 @@ historical reports are unchanged.
   without cursor controls or Go. Pipes and dumb terminals choose it
   automatically. It shares the controller, not a second set of branches.
   Its note input uses `/cancel`, since it reads lines rather than raw keys.
+  A note is one line without tabs: either interface reads a typed tab as a
+  space, and a note saved earlier with a tab is shown with a space while
+  its stored text stays as it was.
 - Wheels and source distributions include the small Go module. First
   interactive use with pending work builds it under a private platform
   cache, keyed by source/dependency bytes, protocol, platform and Go

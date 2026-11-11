@@ -313,7 +313,10 @@ class LabelController:
             question=title,
             options=options,
             selected=selected or options[0].id,
-            note=display_safe(self.answers.get("note", "")),
+            # The Go helper refuses a screen whose note holds a tab, and a note saved before
+            # tabs were refused can hold one. One space each, so the note cannot outgrow
+            # the limit.
+            note=display_safe(self.answers.get("note", "")).replace("\t", " "),
             can_back=self.mode != "review" and self.position > 0,
             can_redo=step in ("review", "summary"),
             notice=self.notice,
@@ -339,7 +342,7 @@ class LabelController:
             self._redo()
         elif action.action == "note" and step == "note":
             if (
-                any(ch in "\r\n" or unicodedata_control(ch) for ch in action.value)
+                any(ch in "\r\n\t" or unicodedata_control(ch) for ch in action.value)
                 or len(action.value.encode("utf-8")) > 4096
             ):
                 raise JudgeError("note must be one line of text, at most 4096 bytes")
