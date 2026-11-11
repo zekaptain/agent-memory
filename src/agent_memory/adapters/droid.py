@@ -122,7 +122,7 @@ class DroidAdapter:
         content: str | None
         if event == "UserPromptSubmit":
             source_key = identity.prompt_key(payload.get("message_id"), ts)
-            content = str(payload.get("prompt") or "")
+            content = text_of(payload.get("prompt"))
         elif event == "PreCompact":
             content = text_of(payload.get("custom_instructions")) or None
         elif event == "Notification":

@@ -174,6 +174,14 @@ def test_droid_prompt_hook():
     assert "prompt" not in r.payload
 
 
+def test_droid_prompt_hook_flattens_a_prompt_that_is_not_text():
+    parts = [{"type": "text", "text": "look at this"}, {"type": "image", "source": "clipboard"}]
+    (r,) = DroidAdapter().from_hook(hook("UserPromptSubmit", prompt=parts, message_id="m2"))
+    assert r.content == 'look at this\n{"source": "clipboard", "type": "image"}'
+    (r,) = DroidAdapter().from_hook(hook("UserPromptSubmit", message_id="m3"))
+    assert r.content == ""
+
+
 def test_droid_post_tool_hook_links_result_to_call():
     call, result = DroidAdapter().from_hook(
         hook(
