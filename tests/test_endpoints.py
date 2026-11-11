@@ -9,8 +9,6 @@ from unittest.mock import MagicMock
 import pytest
 
 from agent_memory import endpoints
-from agent_memory.judge.backends import http as judge_http
-from agent_memory.judge.store import JudgeError
 
 
 @pytest.mark.parametrize(
@@ -47,8 +45,6 @@ def test_post_checks_remote_ollama_before_network(monkeypatch):
     url = "http://gpu-box:11434/api/chat"
     with pytest.raises(endpoints.EgressError, match=endpoints.REMOTE_ENV):
         endpoints.post_json(url, {"private": "synthetic"})
-    with pytest.raises(JudgeError, match=endpoints.REMOTE_ENV):
-        judge_http.post_json(url, {})
     send.assert_not_called()
     monkeypatch.setenv(endpoints.REMOTE_ENV, "1")
     assert endpoints.post_json(url, {})[0] == {"ok": True}

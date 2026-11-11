@@ -11,14 +11,14 @@ import os
 from collections.abc import Sequence
 from typing import Any
 
+from ... import endpoints
+from ...model_call import OPENROUTER_KEY_ENV
 from ..questions import Question
 from ..store import JudgeError
-from . import http
 from .base import Answer, JudgeInput, answer_from_probabilities, require_remote
 
 OPENROUTER_URL = "https://openrouter.ai/api/alpha/decisions"
 DEFAULT_MODEL = "typesafe/jev-1.14"
-KEY_ENV = "OPENROUTER_API_KEY"
 
 
 def question_body(q: Question) -> dict[str, Any]:
@@ -116,16 +116,21 @@ class JevBackend:
         self.name = f"jev:{model}"
 
     def _key(self) -> str:
-        key = self.api_key or os.environ.get(KEY_ENV)
+        key = self.api_key or os.environ.get(OPENROUTER_KEY_ENV)
         if not key:
-            raise JudgeError(f"{KEY_ENV} is not set; the jev backend needs an OpenRouter key.")
+            raise JudgeError(
+                f"{OPENROUTER_KEY_ENV} is not set; the jev backend needs an OpenRouter key."
+            )
         return key
 
     def decide(self, inp: JudgeInput, questions: Sequence[Question]) -> dict[str, Answer]:
         require_remote("The jev backend")
         key = self._key()
         body = request_body(self.model, inp.state_with_draft(), questions)
-        response, latency = http.post_json(
-            self.url, body, headers={"Authorization": f"Bearer {key}"}, timeout=120
-        )
+        try:
+            response, latency = endpoints.post_json(
+                self.url, body, headers={"Authorization": f"Bearer {key}"}, timeout=120
+            )
+        except endpoints.EgressError as exc:
+            raise JudgeError(str(exc)) from None
         return parse_answers(response, questions, latency_ms=latency)

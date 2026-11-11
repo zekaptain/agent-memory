@@ -20,7 +20,6 @@ from agent_memory.capture.redact import Redactor
 from agent_memory.config import DEFAULT_HOME, Config
 from agent_memory.judge import metrics
 from agent_memory.judge.backends import JudgeInput, make_backend
-from agent_memory.judge.backends import http as judge_http
 from agent_memory.judge.backends.base import REMOTE_ENV, Answer, normalize
 from agent_memory.judge.backends.jev import JevBackend, parse_answers, request_body
 from agent_memory.judge.backends.llm import (
@@ -1370,23 +1369,6 @@ def test_drafter_retries_a_cut_off_draft_with_more_room(monkeypatch):
     assert draft.schema_enforced
 
 
-def test_http_status_error_exposes_code(monkeypatch):
-    import io
-    import urllib.error
-    from email.message import Message
-
-    def reject(*args, **kwargs):
-        raise urllib.error.HTTPError(
-            "http://localhost/test", 422, "bad schema", Message(), io.BytesIO(b"unsupported")
-        )
-
-    monkeypatch.setattr(endpoints.urllib.request, "urlopen", reject)
-    with pytest.raises(judge_http.HttpStatusError, match="HTTP 422") as error:
-        judge_http.post_json("http://localhost/test", {})
-    assert error.value.code == 422
-    assert error.value.latency_ms > 0
-
-
 @pytest.mark.parametrize(
     ("change", "location"),
     [
@@ -2013,15 +1995,19 @@ def test_post_json_retries_one_timeout(monkeypatch):
         return Response()
 
     monkeypatch.setattr(urllib.request, "urlopen", urlopen)
-    parsed, _ = judge_http.post_json("http://localhost/api", {"a": 1}, timeout=5)
+    parsed, _ = endpoints.post_json("http://localhost/api", {"a": 1}, timeout=5)
     assert parsed == {"ok": True}
     assert len(calls) == 2
     calls.clear()
     monkeypatch.setattr(
         urllib.request, "urlopen", lambda r, timeout: (_ for _ in ()).throw(TimeoutError())
     )
-    with pytest.raises(JudgeError, match="timed out after 5s"):
-        judge_http.post_json("http://localhost/api", {}, timeout=5)
+    with pytest.raises(endpoints.EgressError, match="timed out after 5s"):
+        endpoints.post_json("http://localhost/api", {}, timeout=5)
+    # A backend that speaks to the transport itself reports the fault as a judge's.
+    inp = JudgeInput(item_id="i", state="S", facts={}, flags=())
+    with pytest.raises(JudgeError, match="timed out after 300s"):
+        ReadoutBackend("m", host="http://localhost").decide(inp, [BY_ID["failed"]])
 
 
 def test_drafter_caps_output_and_draft_items_skips_bad_items(tmp_path, monkeypatch):

@@ -11,9 +11,10 @@ import string
 from collections.abc import Sequence
 from typing import Any
 
+from ... import endpoints
 from ...endpoints import OLLAMA_HOST
 from ..questions import Question
-from . import http
+from ..store import JudgeError
 from .base import Answer, JudgeInput, answer_from_probabilities, softmax
 
 LETTERS = string.ascii_uppercase
@@ -109,7 +110,10 @@ class ReadoutBackend:
         if logprobs:
             body["logprobs"] = True
             body["top_logprobs"] = self.top_logprobs
-        return http.post_json(f"{self.host}/api/chat", body)
+        try:
+            return endpoints.post_json(f"{self.host}/api/chat", body)
+        except endpoints.EgressError as exc:
+            raise JudgeError(str(exc)) from None
 
     def _one(self, state: str, question: Question) -> Answer:
         options = question.options()
