@@ -239,6 +239,31 @@ def test_deliver_keeps_a_rejected_record_and_writes_the_rest(live_cfg, live_clie
     assert "no content" in events[0][1]
 
 
+def test_a_record_rejected_again_is_kept_once(live_cfg, live_client, tmp_path):
+    spool = Spool(tmp_path / "spool")
+    first = spool.write_failed("factory-droid", "s-1", ["one", "two", "two"])
+    assert spool.write_failed("factory-droid", "s-1", ["two", "three"]) == first
+    assert first is not None
+    assert first.read_text().splitlines() == ["one", "two", "three"]
+
+    hsid = "d-rejected-again"
+    poison = rec(hsid, "bad", kind="memory_write", memory={"content": "", "type": "fact"})
+    worse = rec(hsid, "worse", kind="memory_write", memory={"content": "", "type": "fact"})
+    once = deliver(live_cfg, [poison], deadline=10)
+    again = deliver(live_cfg, [poison, worse], deadline=10)
+    assert once.failed_paths == again.failed_paths
+    (kept,) = again.failed_paths
+    assert [Record.from_json(line).source_key for line in kept.read_text().splitlines()] == [
+        "bad",
+        "worse",
+    ]
+    sid = ids.session_id("factory-droid", hsid)
+    assert live_client.query(
+        f"SELECT count(*) FROM events WHERE session_id = {sql_literal(sid)} "
+        "AND kind = 'capture_error'"
+    )[1] == [(2,)]
+
+
 def test_a_delivery_the_ledger_refuses_entirely_is_kept_not_dropped(live_cfg, live_client):
     hsid = "d-all-rejected"
     poison = rec(hsid, "bad", kind="memory_write", memory={"content": ""})

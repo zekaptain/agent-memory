@@ -37,9 +37,13 @@ def _lock(path: Path, *, blocking: bool = True) -> Generator[bool]:
         yield True
 
 
-def _append(path: Path, lines: Iterable[str]) -> None:
-    """Append whole lines under the file's lock, which moving the file away also takes."""
+def _append(path: Path, lines: Iterable[str], *, once: bool = False) -> None:
+    """Append whole lines under the file's lock, which moving the file away also takes.
+    With `once`, a line the file already holds is not added again."""
     with _lock(path.with_suffix(".lock")):
+        if once:
+            held = set(path.read_text(encoding="utf-8").split("\n")) if path.exists() else set()
+            lines = [line for line in dict.fromkeys(lines) if line not in held]
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write("".join(line + "\n" for line in lines))
@@ -153,12 +157,13 @@ class Spool:
     def write_failed(
         self, agent_id: str, harness_session_id: str, lines: Iterable[str]
     ) -> Path | None:
-        """Keep the lines of rejected records beside the spool, one file per session."""
+        """Keep the lines of rejected records beside the spool, one file per session. A
+        record is kept once, however often a retried hook or a reimport hands it over."""
         lines = list(lines)
         if not lines:
             return None
         target = self.failed_dir / _safe(agent_id) / f"{_safe(harness_session_id)}.jsonl"
-        _append(target, lines)
+        _append(target, lines, once=True)
         return target
 
     def retry_failed(self) -> tuple[int, int]:

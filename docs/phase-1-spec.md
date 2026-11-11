@@ -168,7 +168,8 @@ Layout: `spool/<agent_id>/<harness_session_id>.jsonl`, appended with
   `spool/failed/<agent_id>/<harness_session_id>.jsonl`, and the rest is
   written. Records that refer to a rejected record are rejected with it.
   The same happens when a record is rejected on the direct path, without
-  passing through the spool.
+  passing through the spool. A record rejected again, by a retried hook or
+  a reimported transcript, is kept there once.
 - `mem spool retry` moves every kept line back to the spool. Nothing
   retries a rejected record on its own.
 - `mem ingest --spool` is also what omp and Amp extensions call at turn end
