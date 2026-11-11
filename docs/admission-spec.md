@@ -159,10 +159,17 @@ Each `write` or `review` creates a memory through `LifecyclePlan.remember`:
 Content-hash deduplication confirms an existing rule and adds provenance
 instead of creating a second memory. A `decision` event under agent
 `judge`, harness session `admission-<day>`, records probabilities and
-identities without rule, claim, or projection text. In auto mode only a
-`write` also gets an `approve`, actor `judge`, with approver version and
-score in its reason. `review` remains quarantined. Discards stay in day
-files and make no ledger writes.
+identities without rule, claim, or projection text. It holds two results
+side by side: the judge's action and reasons as judged (`payload.judge`),
+and the approver's action, score and reasons (`payload.admission`). Its
+content names both actions. Until 2026-11-11 the approver's action and
+reasons were written over the judge's in `payload.judge`, and
+`payload.admission` had no action; events recorded before then keep that
+shape.
+
+In auto mode only a `write` also gets an `approve`, actor `judge`, with
+approver version and score in its reason. `review` remains quarantined.
+Discards stay in day files and make no ledger writes.
 
 ## Human review and feedback
 

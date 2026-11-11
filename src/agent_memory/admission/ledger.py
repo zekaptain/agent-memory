@@ -96,9 +96,8 @@ def admit(
         "backend": verdict["backend"],
         "drafter": draft["drafter"],
     }
-    record = Verdict(
-        {**verdict, "action": result["action"], "reasons": result["reasons"]}
-    ).decision_record(
+    judged = Verdict(verdict)
+    record = judged.decision_record(
         item,
         created_at,
         harness_session_id=f"admission-{day}",
@@ -108,7 +107,16 @@ def admit(
         replace(
             record,
             source_key=record.source_key + "/" + result["approver_version"],
-            payload={**(record.payload or {}), "admission": metadata},
+            # The judge's action stays as judged; the approver's is recorded beside it.
+            content=(
+                f"judge {judged.backend}: {judged.recorded.action}; "
+                f"approver {result['approver_version']}: {result['action']} "
+                f"for turn {item['turn_event_id']}"
+            ),
+            payload={
+                **(record.payload or {}),
+                "admission": {**metadata, "action": result["action"]},
+            },
         )
     )
     with MemoryClient.from_config(cfg) as client:

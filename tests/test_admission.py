@@ -184,6 +184,55 @@ def test_shadow_provenance_idempotency_and_content_dedup(admission_live, models)
     assert all(p.stat().st_mode & 0o777 == 0o600 for p in day.root.rglob("*") if p.is_file())
 
 
+def test_the_decision_event_keeps_the_judges_action_beside_the_approvers(
+    admission_live, models, monkeypatch
+):
+    """The approver's action used to be written over the judge's, so the event reported an
+    action the judge never gave and lost the judge's reasons."""
+    cfg = admission_live
+    store = install_model(cfg)
+    capture(cfg)
+    monkeypatch.setattr(
+        run.approver,
+        "score",
+        lambda *args: {"action": "review", "score": 0.6, "reasons": ["below the write cut"]},
+    )
+    run.run_day(cfg, day="2026-11-10", drafter="ollama:synthetic")
+    day = store.day("2026-11-10")
+    [item] = RunStore.read_jsonl(day.items_path)
+    [verdict] = RunStore.read_jsonl(day.verdicts_path("llm:synthetic"))
+    assert (verdict["action"], verdict["reasons"]) == ("write_lesson", ["all thresholds cleared"])
+    [(content, payload)] = query(
+        cfg, "SELECT content, payload::JSON::VARCHAR FROM events WHERE kind = 'decision'"
+    )
+    event = json.loads(payload)
+    assert (event["judge"]["action"], event["judge"]["reasons"]) == (
+        "write_lesson",
+        ["all thresholds cleared"],
+    )
+    assert event["admission"]["action"] == "review"
+    assert event["admission"]["reasons"] == ["below the write cut"]
+    assert (event["admission"]["approver_version"], event["admission"]["score"]) == (
+        "synthetic-v1",
+        0.6,
+    )
+    assert content == (
+        "judge llm:synthetic: write_lesson; approver synthetic-v1: review "
+        f"for turn {item['turn_event_id']}"
+    )
+    # The memory's own admission metadata is what it was: the approver's score and reasons.
+    metadata = json.loads(query(cfg, "SELECT metadata::JSON::VARCHAR FROM memories")[0][0])
+    assert set(metadata["admission"]) == {
+        "approver_version",
+        "score",
+        "reasons",
+        "draft_hash",
+        "item_id",
+        "backend",
+        "drafter",
+    }
+
+
 def test_discard_has_no_ledger_writes(admission_live, models, monkeypatch):
     cfg = admission_live
     install_model(cfg)
