@@ -54,8 +54,16 @@ _Avoid_: Exchange, round, step
 The normalised form of one event on its way into the ledger, the same for every harness.
 _Avoid_: Record (bare), payload, row
 
+**Hook**:
+A command a harness runs when something happens in a session, handing it a payload that describes what happened. Hooks bring the ledger what the transcript does not hold, or not soon enough: a prompt as it arrives, a notification, the start and end of a session.
+_Avoid_: Callback, trigger, plugin
+
+**Transcript**:
+The harness's own file of a session. Where a harness writes one, it is the record of replies, tool calls, and compactions, and importing it is how they reach the ledger.
+_Avoid_: Log, history, session file
+
 **Source key**:
-The harness's own identifier for an event. Capturing the same source key twice yields one event, not two.
+The harness's own identifier for an event, or, for an event the harness does not identify, the moment its hook ran. Capturing the same source key twice yields one event, not two.
 _Avoid_: External id, dedupe key
 
 **Spool**:
