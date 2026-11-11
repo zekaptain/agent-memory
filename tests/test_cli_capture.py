@@ -108,9 +108,9 @@ def test_event_never_exits_2_on_bad_input(live_mem, monkeypatch):
     assert (code, out) == (1, "")
     assert "session_id" in err
     feed(monkeypatch, HOOK)
-    code, out, err = live_mem("event", "--harness", "letta")
+    code, out, err = live_mem("event", "--harness", "vibe")
     assert (code, out) == (1, "")
-    assert "unknown harness" in err
+    assert "no adapter" in err
     feed(monkeypatch, HOOK)
     code, out, err = live_mem("event")
     assert (code, out) == (1, "")
@@ -283,8 +283,13 @@ def test_ingest_argument_validation(live_mem, tmp_path):
     assert code == 2
     assert "--harness" in err
     code, _, err = live_mem("ingest", "--harness", "vibe", "--transcript", str(transcript))
+    assert code == 2
+    assert "no adapter" in err
+    notes = tmp_path / "notes.txt"
+    notes.write_text("")
+    code, _, err = live_mem("ingest", "--harness", "droid", "--transcript", str(notes))
     assert code == 1
-    assert "Phase 2" in err
+    assert ".jsonl" in err
     code, _, err = live_mem(
         "ingest", "--harness", "droid", "--transcript", str(tmp_path / "missing.jsonl")
     )

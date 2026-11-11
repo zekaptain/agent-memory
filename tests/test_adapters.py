@@ -1,4 +1,4 @@
-"""Harness adapters: Droid transcripts and hooks, Vibe hooks."""
+"""The Droid adapter: its transcripts and its hooks."""
 
 from __future__ import annotations
 
@@ -9,7 +9,6 @@ import pytest
 
 from agent_memory.adapters import UnsupportedTranscript, get_adapter
 from agent_memory.adapters.droid import DroidAdapter
-from agent_memory.adapters.vibe import VibeAdapter
 from tests.conftest import FIXTURES
 
 TRANSCRIPT = FIXTURES / "droid_session.jsonl"
@@ -21,10 +20,11 @@ def by_key(records):
 
 def test_registry_accepts_cli_names_and_agent_ids():
     assert isinstance(get_adapter("droid"), DroidAdapter)
-    assert isinstance(get_adapter("factory-droid"), DroidAdapter)
-    assert isinstance(get_adapter("Vibe"), VibeAdapter)
-    with pytest.raises(ValueError, match="unknown harness"):
-        get_adapter("letta")
+    assert isinstance(get_adapter("Factory-Droid"), DroidAdapter)
+    # A registered agent's harness is not thereby one with an adapter.
+    for name in ("vibe", "mistral-vibe", "letta"):
+        with pytest.raises(ValueError, match="no adapter for harness"):
+            get_adapter(name)
 
 
 # Droid transcript
@@ -368,60 +368,3 @@ def test_droid_unknown_hook_becomes_a_note():
 def test_droid_hook_requires_identity():
     with pytest.raises(ValueError, match="session_id"):
         DroidAdapter().from_hook({"hook_event_name": "Stop"})
-
-
-# Vibe
-
-
-def vibe(event: str, **extra) -> dict:
-    return {
-        "session_id": "v-1",
-        "parent_session_id": None,
-        "transcript_path": "/Users/tester/.vibe/logs/session/v-1.jsonl",
-        "cwd": "/Users/tester/code/demo",
-        "hook_event_name": event,
-        **extra,
-    }
-
-
-def test_vibe_post_tool_hook():
-    call, result = VibeAdapter().from_hook(
-        vibe(
-            "post_tool",
-            tool_name="bash",
-            tool_input={"command": "ls"},
-            tool_call_id="tc-1",
-            tool_status="success",
-            tool_output={"stdout": "a\nb"},
-            tool_output_text="a\nb",
-        )
-    )
-    assert call.agent_id == "mistral-vibe"
-    assert (call.kind, call.source_key, call.content) == (
-        "tool_call",
-        "tc-1",
-        'bash {"command": "ls"}',
-    )
-    assert (result.kind, result.parent_key, result.content) == ("tool_result", "tc-1", "a\nb")
-    assert result.payload is not None
-    assert result.payload["tool_status"] == "success"
-    assert call.session is not None
-    assert call.session.metadata == {
-        "transcript_path": "/Users/tester/.vibe/logs/session/v-1.jsonl"
-    }
-
-
-def test_vibe_post_agent_and_pre_tool():
-    assert VibeAdapter().from_hook(vibe("post_agent")) == []
-    assert VibeAdapter().from_hook(vibe("pre_tool", tool_call_id="tc-2", tool_name="bash")) == []
-    (n,) = VibeAdapter(record_pre_tool=True).from_hook(
-        vibe("pre_tool", tool_call_id="tc-2", tool_name="bash", tool_input={})
-    )
-    assert (n.kind, n.source_key) == ("note", "pre_tool:tc-2")
-
-
-def test_vibe_transcripts_are_not_mapped_yet(tmp_path):
-    path = tmp_path / "v-1.jsonl"
-    path.write_text("{}\n")
-    with pytest.raises(UnsupportedTranscript, match="Phase 2"):
-        VibeAdapter().from_transcript(path)

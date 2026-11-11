@@ -11,7 +11,7 @@ from ..capture.record import Record
 
 
 class UnsupportedTranscript(Exception):
-    """This adapter cannot read transcripts (yet)."""
+    """The file is not a transcript this adapter can read."""
 
 
 class Adapter(Protocol):

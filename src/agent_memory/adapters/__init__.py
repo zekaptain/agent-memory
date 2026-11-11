@@ -4,24 +4,21 @@ from __future__ import annotations
 
 from .base import Adapter, UnsupportedTranscript
 from .droid import DroidAdapter
-from .vibe import VibeAdapter
 
-_ADAPTERS: dict[str, type[DroidAdapter] | type[VibeAdapter]] = {
+_ADAPTERS: dict[str, type[DroidAdapter]] = {
     "droid": DroidAdapter,
     "factory-droid": DroidAdapter,
-    "vibe": VibeAdapter,
-    "mistral-vibe": VibeAdapter,
 }
 
-HARNESS_NAMES = ("droid", "vibe")
+HARNESS_NAMES = ("droid",)
 
 
 def get_adapter(name: str, *, record_pre_tool: bool = False) -> Adapter:
     try:
         cls = _ADAPTERS[name.lower()]
     except KeyError:
-        choices = ", ".join(HARNESS_NAMES)
-        raise ValueError(f"unknown harness {name!r}; choose one of {choices}") from None
+        known = ", ".join(HARNESS_NAMES)
+        raise ValueError(f"no adapter for harness {name!r}; there is one for: {known}") from None
     return cls(record_pre_tool=record_pre_tool)
 
 
