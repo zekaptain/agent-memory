@@ -265,9 +265,9 @@ class RunStore:
     # Rows
 
     @staticmethod
-    def read_jsonl(path: Path) -> list[dict[str, Any]]:
+    def read_jsonl(path: Path, *, strict: bool = False) -> list[dict[str, Any]]:
         """Every row of `path`, or none when there is no file. A last line that was cut off
-        is left out."""
+        is left out; `strict` refuses it, for a file that is only ever replaced whole."""
         if not path.exists():
             return []
         rows = []
@@ -278,7 +278,7 @@ class RunStore:
                         row = json.loads(line.decode("utf-8"))
                     except (json.JSONDecodeError, UnicodeDecodeError):
                         # Only an unterminated final line can be a torn append.
-                        if not line.endswith(b"\n"):
+                        if not line.endswith(b"\n") and not strict:
                             break
                         raise JudgeError(f"{path}: invalid JSON on line {number}") from None
                     if not isinstance(row, dict):

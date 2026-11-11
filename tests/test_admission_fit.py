@@ -11,6 +11,7 @@ import pytest
 
 from agent_memory import endpoints
 from agent_memory.admission import AdmissionError, approver
+from agent_memory.admission.cli import _locked
 from agent_memory.admission.embed import DEFAULT_EMBEDDER, make_embedder
 from agent_memory.admission.examples import example_for, import_labels
 from agent_memory.admission.fit import fit_approver
@@ -20,6 +21,7 @@ from agent_memory.endpoints import EgressError
 from agent_memory.judge.backends.base import answer_from_probabilities
 from agent_memory.judge.drafter import draft_hash
 from agent_memory.judge.questions import BY_ID, DEFAULT_THRESHOLDS
+from agent_memory.judge.store import JudgeError
 from tests.test_judge import structured_draft, synthetic_run
 
 BACKEND = "llm:ref"
@@ -491,6 +493,78 @@ def test_private_files_atomic_append_and_day_store(tmp_path):
         store.read_examples()
     with pytest.raises(AdmissionError, match="invalid admission JSONL"):
         write_jsonl(store.examples_path, [_row(2, True)], append=True)
+
+
+def test_a_line_separator_inside_a_row_does_not_split_the_row(tmp_path):
+    """The admission reader split rows on every Unicode line boundary, so one example whose
+    text held U+2028 made examples.jsonl unreadable."""
+    store = AdmissionStore(Config(home=tmp_path / "production"))
+    write_jsonl(store.examples_path, [{**_row(0, True), "note": "one\u2028two\u0085three"}])
+    write_jsonl(store.examples_path, [_row(1, False)], append=True)
+    assert len(store.read_examples()) == 2
+
+
+def test_import_reads_a_judge_run_as_the_judge_reads_it(tmp_path, monkeypatch):
+    """A decide that was killed leaves a cut-off last row, which every judge command leaves
+    out. The import refused the whole run over it."""
+    source = synthetic_run(tmp_path, n=4)
+    _freeze(source)
+    with source.verdicts_path(BACKEND).open("ab") as stream:
+        stream.write(b'{"item_id": "cut off he')
+    _mock_embed(monkeypatch)
+    cfg = Config(home=tmp_path / "production")
+    assert import_labels(cfg, source.root, backend=BACKEND, embedder=DEFAULT_EMBEDDER) == 4
+
+
+def test_import_names_a_damaged_source_file(tmp_path, monkeypatch):
+    """A row damaged in the middle of a file is not a cut-off append, so it is refused."""
+    source = synthetic_run(tmp_path, n=2)
+    _freeze(source)
+    path = source.verdicts_path(BACKEND)
+    path.write_bytes(b"{not json}\n" + path.read_bytes())
+    calls = _mock_embed(monkeypatch)
+    cfg = Config(home=tmp_path / "production")
+    with pytest.raises(AdmissionError, match=r"llm_ref\.jsonl"):
+        import_labels(cfg, source.root, backend=BACKEND, embedder=DEFAULT_EMBEDDER)
+    assert calls == []
+    assert not (cfg.home / "admission" / "examples.jsonl").exists()
+
+
+@pytest.mark.parametrize("body", [None, "[]", "{not json"])
+def test_import_refuses_a_source_without_a_readable_run(tmp_path, body):
+    source = tmp_path / "not-a-run"
+    source.mkdir()
+    if body is not None:
+        (source / "run.json").write_text(body)
+    cfg = Config(home=tmp_path / "production")
+    with pytest.raises(AdmissionError, match=r"valid judge run\.json"):
+        import_labels(cfg, source, backend=BACKEND, embedder=DEFAULT_EMBEDDER)
+
+
+def test_a_linked_day_directory_is_refused_before_anything_is_written(tmp_path):
+    store = AdmissionStore(Config(home=tmp_path / "production"))
+    day = store.day("2026-01-01")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    elsewhere.chmod(0o755)
+    day.root.mkdir(mode=0o700)
+    day.projections_dir.symlink_to(elsewhere, target_is_directory=True)
+    with pytest.raises(AdmissionError, match="symbolic links"):
+        day.create({"questions_version": "questions_v4"})
+    assert elsewhere.stat().st_mode & 0o777 == 0o755
+    assert not day.exists()
+
+
+def test_a_second_admission_command_is_refused_at_once(tmp_path):
+    cfg = Config(home=tmp_path / "production")
+    with (
+        _locked(cfg),
+        pytest.raises(JudgeError, match="another admission command is running"),
+        _locked(cfg),
+    ):
+        pytest.fail("two admission commands held the lock together")
+    with _locked(cfg) as store:
+        assert (store.root / ".lock").stat().st_mode & 0o777 == 0o600
 
 
 def test_embedder_refuses_remote_and_never_includes_projection(monkeypatch):

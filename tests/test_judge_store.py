@@ -283,3 +283,14 @@ def test_verdict_files_and_live_days_are_listed_in_name_order(tmp_path):
     (store.live_dir / "stray.txt").write_text("not a day")
     assert [day.root.name for day in store.live_days()] == ["2026-11-01", "2026-11-02"]
     assert RunStore(store.cfg, "none-yet").verdicts_by_file() == {}
+
+
+def test_strict_reading_refuses_a_cut_off_last_line(tmp_path):
+    path = tmp_path / "examples.jsonl"
+    path.write_bytes(b'{"id":"whole"}\n{"id":"also whole"}')
+    assert len(RunStore.read_jsonl(path, strict=True)) == 2
+    path.write_bytes(b'{"id":"whole"}\n{"id":"PRIVATE_CONT')
+    assert RunStore.read_jsonl(path) == [{"id": "whole"}]
+    with pytest.raises(JudgeError, match="line 2") as error:
+        RunStore.read_jsonl(path, strict=True)
+    assert "PRIVATE_CONT" not in str(error.value)

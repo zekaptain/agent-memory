@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import fcntl
 import json
-import os
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -15,7 +13,7 @@ import typer
 
 from ..config import Config, load_config
 from ..db import MemoryClient
-from ..judge.store import JudgeError
+from ..judge.store import JudgeError, lock
 from . import approver
 from .examples import import_labels
 from .fit import fit_approver
@@ -45,20 +43,12 @@ def _config(ctx: typer.Context) -> Config:
 
 @contextmanager
 def _locked(cfg: Config) -> Iterator[AdmissionStore]:
+    """One admission command at a time. A second one is refused at once."""
     store = AdmissionStore(cfg)
-    store.root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    os.chmod(store.root, 0o700)
-    fd = os.open(store.root / ".lock", os.O_CREAT | os.O_RDWR, 0o600)
-    try:
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            raise JudgeError(
-                "another admission command is running; finish it before retrying"
-            ) from None
+    with lock(store.root / ".lock", wait=False) as held:
+        if not held:
+            raise JudgeError("another admission command is running; finish it before retrying")
         yield store
-    finally:
-        os.close(fd)
 
 
 @admit_app.command("import-labels")

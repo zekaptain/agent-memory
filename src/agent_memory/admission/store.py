@@ -1,11 +1,19 @@
-"""Private, atomic admission files and effective human-example history."""
+"""Admission's files: its state, the fitted approver, the examples, and one run per day.
+
+They are kept whole by the code that keeps a judge run's files (`judge.store`). Admission
+is stricter in three ways, because these files decide what enters production memory:
+
+- Nothing is written through a symbolic link, and none is followed to change a mode.
+- Everything is redacted before it is written.
+- A file is replaced whole even to add a row. It is never left with a cut-off row, so a
+  last row that does not parse is damage, and it is refused where a judge run would mend
+  it.
+"""
 
 from __future__ import annotations
 
 import hashlib
 import json
-import os
-import tempfile
 from collections.abc import Iterable, Mapping
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -13,16 +21,20 @@ from typing import Any
 
 from ..capture.redact import Redactor
 from ..config import Config
-from ..judge.store import RunStore, safe_name
+from ..judge import store as run_files
+from ..judge.store import JudgeError, RunStore
 from . import AdmissionError
+
+
+def _refuse_link(path: Path, kind: str) -> None:
+    if path.is_symlink():
+        raise AdmissionError(f"admission {kind} must not be symbolic links")
 
 
 def private_dir(path: Path) -> None:
     """Create a private leaf, refusing symlinks rather than changing their targets."""
-    if path.is_symlink():
-        raise AdmissionError("admission directories must not be symbolic links")
-    path.mkdir(mode=0o700, parents=True, exist_ok=True)
-    path.chmod(0o700)
+    _refuse_link(path, "directories")
+    run_files.private_dir(path)
 
 
 def redactor_for_config(cfg: Config) -> Redactor:
@@ -32,8 +44,7 @@ def redactor_for_config(cfg: Config) -> Redactor:
 def _read_json(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
-    if path.is_symlink():
-        raise AdmissionError("admission files must not be symbolic links")
+    _refuse_link(path, "files")
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (ValueError, UnicodeError):
@@ -45,19 +56,8 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 def _atomic_text(path: Path, body: str) -> None:
     private_dir(path.parent)
-    if path.is_symlink():
-        raise AdmissionError("admission files must not be symbolic links")
-    fd, name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    tmp = Path(name)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as stream:
-            os.fchmod(stream.fileno(), 0o600)
-            stream.write(body)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(tmp, path)
-    finally:
-        tmp.unlink(missing_ok=True)
+    _refuse_link(path, "files")
+    run_files.atomic_write(path, body)
 
 
 def write_json(path: Path, data: Mapping[str, Any]) -> None:
@@ -81,22 +81,12 @@ def write_jsonl(path: Path, rows: Iterable[Mapping[str, Any]], *, append: bool =
 
 
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
-    if not path.exists():
-        return []
-    if path.is_symlink():
-        raise AdmissionError("admission files must not be symbolic links")
-    rows = []
+    """Every row of an admission file, or none when there is no file."""
+    _refuse_link(path, "files")
     try:
-        for line in path.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            row = json.loads(line)
-            if not isinstance(row, dict):
-                raise ValueError
-            rows.append(row)
-    except (ValueError, UnicodeError):
+        return RunStore.read_jsonl(path, strict=True)
+    except JudgeError:
         raise AdmissionError(f"invalid admission JSONL: {path.name}") from None
-    return rows
 
 
 def memory_split(memory_id: str) -> str:
@@ -147,15 +137,20 @@ def latest_examples(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
 
 
 class _DayStore(RunStore):
-    """RunStore mechanics, without weakening the experiment command's home guard."""
+    """One day's admission run: a judge run's files, written under admission's rules and
+    without weakening the experiment command's home guard."""
+
+    def create(self, params: Mapping[str, Any]) -> None:
+        for directory in (self.root, self.verdicts_dir, self.projections_dir):
+            _refuse_link(directory, "directories")
+        super().create(params)
 
     def _write_run(self, data: Mapping[str, Any]) -> None:
         clean, _ = redactor_for_config(self.cfg).value(dict(data))
         write_json(self.run_json, clean)
 
     def write_projection(self, item_id: str, text: str) -> Path:
-        private_dir(self.projections_dir)
-        path = self.projections_dir / f"{safe_name(item_id)}.txt"
+        path = self._projection_path(item_id)
         clean, _ = redactor_for_config(self.cfg).text(text)
         _atomic_text(path, clean)
         return path
@@ -163,11 +158,6 @@ class _DayStore(RunStore):
     @staticmethod
     def write_jsonl(path: Path, rows: Iterable[Mapping[str, Any]], *, append: bool = False) -> int:
         return write_jsonl(path, rows, append=append)
-
-    def create(self, params: Mapping[str, Any]) -> None:
-        super().create(params)
-        private_dir(self.verdicts_dir)
-        private_dir(self.projections_dir)
 
 
 class AdmissionStore:

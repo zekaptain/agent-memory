@@ -13,10 +13,11 @@ from ..config import Config
 from ..judge.drafter import draft_hash
 from ..judge.lesson import lesson_from_row, render_lesson
 from ..judge.questions import DEFAULT_THRESHOLDS, QUESTIONS_VERSION
+from ..judge.store import JudgeError, RunStore, read_json
 from ..judge.verdict import Verdict, derive_action
 from . import ADMISSION_VERSION, AdmissionError
 from .embed import DEFAULT_EMBEDDER, lesson_fields, make_embedder, validate_vector
-from .store import AdmissionStore, latest_examples, read_jsonl, redactor_for_config, write_jsonl
+from .store import AdmissionStore, latest_examples, redactor_for_config, write_jsonl
 
 GATES = ("grounded", "faithful", "rule_supported", "generalizable", "enforced")
 
@@ -127,10 +128,10 @@ def example_for(
 
 def _run_metadata(path: Path) -> dict[str, Any]:
     try:
-        run = json.loads(path.read_text(encoding="utf-8"))
-    except (ValueError, UnicodeError, FileNotFoundError):
+        run = read_json(path)
+    except (JudgeError, OSError):
         raise AdmissionError("source must contain a valid judge run.json") from None
-    if not isinstance(run, dict) or run.get("questions_version") != QUESTIONS_VERSION:
+    if run.get("questions_version") != QUESTIONS_VERSION:
         raise AdmissionError("only questions_v4 runs can supply admission labels")
     if not isinstance(run.get("run_id"), str) or not run["run_id"]:
         raise AdmissionError("judge source is missing its run identity")
@@ -164,17 +165,19 @@ def import_labels(cfg: Config, source: Path, *, backend: str, embedder: str) -> 
     if not isinstance(spec, Mapping):
         raise AdmissionError("chosen backend has no frozen thresholds in this run")
     thresholds = validated_thresholds(spec.get("thresholds"), complete=True)
-    items = {_item_id(row): row for row in read_jsonl(root / "items.jsonl")}
-    labels = {_item_id(row): row for row in read_jsonl(root / "labels.jsonl")}
-    drafts = {
-        (_item_id(row), str(row.get("drafter") or "")): row
-        for row in read_jsonl(root / "drafts.jsonl")
-    }
-    verdicts = {}
-    for path in sorted((root / "verdicts").glob("*.jsonl")):
-        for row in read_jsonl(path):
-            if row.get("backend") == backend:
-                verdicts[_item_id(row), str(row.get("drafter") or "")] = row
+    try:
+        # Read as the judge's own commands read the run, a cut-off last row left out.
+        judged = RunStore(cfg, run["run_id"], root=root)
+        items = {_item_id(row): row for row in judged.items()}
+        labels = judged.labels()
+        drafts = {(_item_id(row), str(row.get("drafter") or "")): row for row in judged.drafts()}
+        verdicts = {}
+        for rows in judged.verdicts_by_file().values():
+            for row in rows:
+                if row.get("backend") == backend:
+                    verdicts[_item_id(row), str(row.get("drafter") or "")] = row
+    except JudgeError as exc:
+        raise AdmissionError(str(exc)) from None
     pending = []
     for key, draft in sorted(drafts.items()):
         item_id, drafter = key
