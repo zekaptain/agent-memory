@@ -195,6 +195,13 @@ do not delete existing homes or runs to resolve a workflow mistake.
 - Finish drafting before a long decide run. Do not change its drafts
   underneath it. Labeling and deciding can run independently, but freeze
   thresholds only after the intended calibration labels are complete.
+- Read and write a run's files through `RunStore` only. The rules that
+  keep them whole are at the top of `judge/store.py`: one command at a
+  time adds rows to a file, so a second `draft`, or a `decide` for a
+  backend already being judged, is refused at once; a label save adds one
+  label to what is on disk and is refused if another session saved that
+  item first. Admission keeps its files through the same code, with its
+  stricter rules in `admission/store.py`.
 - Labeling is human ground truth, not an LLM's substitute judgment. Keep
   labels blinded, correctable, and resumable with edit history. Each group
   of questions must clearly identify its subject (turn, draft A/B, or

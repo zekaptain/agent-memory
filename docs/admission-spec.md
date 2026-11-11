@@ -81,8 +81,19 @@ mutations with a nonblocking file lock. Concurrent capture remains possible.
 The day's `RunStore` uses its existing `root=` argument; it does not bypass
 or weaken an experiment guard.
 
-Import requires a frozen v4 run. Only explicit boolean `store_exact`
-labels with current draft and projection hashes enter the example set.
+Admission keeps its files with the code that keeps a judge run's files
+(`judge/store.py`), and is stricter in three ways. Nothing is written
+through a symbolic link, and no link is followed to change a mode.
+Everything is redacted before it is written. A file is replaced whole even
+to add one row, so it is never left with a cut-off row; a last row that
+does not parse is therefore damage, and it is refused where a judge run
+would cut it off and write it again.
+
+Import requires a frozen v4 run. It reads the run as the judge's own
+commands do, so a last draft or verdict row that a killed command cut off
+is left out, and it writes nothing into the run. Only explicit boolean
+`store_exact` labels with current draft and projection hashes enter the
+example set.
 The human `rule_supported` label is retained. Embeddings contain only
 rule, kind and claim texts, never the projection. Embedding requests use
 `endpoints.post_json` and the existing egress boundary.

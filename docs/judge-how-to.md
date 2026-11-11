@@ -125,6 +125,10 @@ Replace `MODEL_ID` with your server's model ID or alias. Finish every
 intended drafter before starting the full judging pass. Rerunning `draft`
 skips completed items and retries missing or failed ones.
 
+Run one `draft` at a time on a run. A second one started while the first
+is at work is refused at once, whichever drafters it names. To use two
+drafters, name both in one command.
+
 ## 5. Run the judges
 
 Start with the rules baseline and a local reasoning judge:
@@ -148,6 +152,10 @@ drafters, expect multiple verdict rows per item.
 Rerunning the same command skips current verdicts and retries missing or
 failed ones. Read warnings as well as the final counts: a command can
 finish after skipping failed items.
+
+Two `decide` commands can run on one run at the same time when they name
+different backends. A `decide` that names a backend another `decide` is
+already judging is refused at once, before it calls a model.
 
 ## 6. Add human labels
 
@@ -183,6 +191,14 @@ uv run mem judge label --run "$RUN" --plain --limit 10
 Repeat `label` to resume. It skips completed items and asks only missing
 questions when backfilling. Finish the intended labels before freezing;
 the simplest approach is to label the whole sample.
+
+Two sessions can label one run at the same time, and each keeps the labels
+the other saves. Give them different items with `--item` or different
+orders with `--seed`: two sessions with the same seed start on the same
+item. If both save one item, the first label is kept and the second
+session ends with a message; start it again to go on with the items that
+are left. An item the other session finished is left out when its turn
+comes.
 
 ## 7. Check progress and preview the report
 

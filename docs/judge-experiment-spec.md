@@ -407,7 +407,8 @@ live-week sub-run.
 
 ## Layout
 
-`src/agent_memory/judge/`: `store.py` (run directory, home guard),
+`src/agent_memory/judge/`: `store.py` (the run's files, the rules that
+keep them whole, home guard),
 `provenance.py` (session callers, message provenance), `triggers.py`
 (segmentation, triggers, sampling), `projection.py`,
 `questions.py`, `lesson.py` (the structured lesson and its sampler schema),
@@ -421,8 +422,10 @@ interface), `label_build.py` (building and caching the Go helper),
 `label_ui/` (the Go helper),
 `metrics.py`, `report.py`, `cli.py` (`judge_app`, registered
 on `mem` next to `spool`). Run directory:
-`<home>/judge/<run>/{run.json, items.jsonl, projections/ (0600),
-drafts.jsonl, verdicts/<backend>.jsonl, labels.jsonl, report.md, live/<day>/}`.
+`<home>/judge/<run>/{run.json, items.jsonl, projections/,
+drafts.jsonl, verdicts/<backend>.jsonl, labels.jsonl, report.md, live/<day>/}`,
+directories 0700 and files 0600. A file that commands write can have an
+empty `<file>.lock` beside it.
 Import bookkeeping in `<home>/judge/imports.jsonl`. New dependency: `rich`
 (already installed by typer; declared because it is imported directly).
 HTTP is standard library.
@@ -1042,3 +1045,46 @@ as. In `history`, a null old value therefore always means Unclear. The
 `unknown` list is no longer recorded as a value of its own, so one changed
 answer is one changed value. Stored labels are untouched, and the reports
 of earlier runs count their stored history as before.
+
+### The run store, as built (2026-11-11)
+
+Every command reads and writes a run's files through `RunStore`
+(`judge/store.py`). The rules that keep the files whole are stated at the
+top of that module and applied nowhere else:
+
+- A file that is replaced (`run.json`, `items.jsonl`, `labels.jsonl`, a
+  projection, `report.md`) is written beside itself, flushed to disk, and
+  moved into place. A reader or a crash sees the old file or the new one,
+  never part of one.
+- A file that grows (`drafts.jsonl`, a verdict file, `imports.jsonl`) gets
+  one row at a time, as "Appending after a cut-off row" describes.
+- One command at a time adds rows to a file. A second `draft` on a run, a
+  `decide` that names a backend another `decide` is judging, a second
+  `candidates` for a run, and a second `import` into a home are refused at
+  once, with a message that names the file. Before, the two commands cut
+  into each other's rows and paid for the same model calls twice. `decide`
+  takes every verdict file it will write before it calls a model, and runs
+  a backend that is named twice once. A `decide` on other backends and a
+  labeling session still run beside it.
+- `run.json` and `labels.jsonl` are changed by commands that run side by
+  side, so each change reads the file, merges, and writes it back under a
+  lock. `draft` and `report --freeze` each keep the fields the other set.
+
+Two labeling sessions on one run used to erase each other's saves, because
+each wrote the labels it had read when it opened plus its own. A save now
+adds its one label to the labels on disk at that moment. If another
+session has saved the same item since this one read it, the save is
+refused: the first label is kept, and the session ends with the reason.
+An item another session finished is left out of this session when its
+turn comes, with a notice.
+
+A run's directories are 0700 and its files 0600, `report.md` and the
+verdict files included. A file or directory made before this change gets
+that mode the next time a command writes it. The locks are empty
+`<file>.lock` files beside the files they guard, and can be deleted when
+no judge command is running.
+
+Admission keeps its files through the same code and adds its own rules;
+see [admission-spec.md](admission-spec.md). Regressions are in
+`tests/test_judge_store.py`, `test_judge_pipeline.py`, `test_label_ui.py`,
+and `test_admission_fit.py`.

@@ -133,8 +133,6 @@ Verified against the code in the audit of 2026-11 and still open.
 - Admission in auto mode can approve the canonical memory of a duplicate
   even when a person quarantined that memory (`admission/ledger.py`,
   `lifecycle.py`). Auto mode is not in use.
-- Two `mem judge label` sessions on one run overwrite each other's saves
-  and edit history (`judge/label_controller.py`).
 - One admission item that fails stops the items and the days after it
   (`admission/run.py`).
 - When the first item of a `decide` run fails for a reason that will
@@ -189,10 +187,10 @@ Proposed in the audit of 2026-11. None of these is approved.
 Modules that would gain from deepening, in the order the audit ranked
 them: the ledger session (three builders of session and event rows in
 `capture/writer.py`, `mcp_server/tools.py`, and `admission/ledger.py`);
-the judge run store; the model call ladder (`endpoints.py`, the judge
-backends, the drafter, `graph/resolve.py`); one session driver for
-labeling and admission review; a ledger connection with two adapters;
-auto-approval in one place.
+the model call ladder (`endpoints.py`, the judge backends, the drafter,
+`graph/resolve.py`); one session driver for labeling and admission
+review; a ledger connection with two adapters; auto-approval in one
+place.
 
 ## Open decisions
 
