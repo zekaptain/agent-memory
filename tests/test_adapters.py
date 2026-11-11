@@ -286,6 +286,42 @@ def test_droid_transcript_entry_for_a_hook_run_is_not_an_event(tmp_path):
     assert "said by the hook" not in "".join(r.to_json() for r in records)
 
 
+def test_droid_attribution_holds_only_what_droid_sends(tmp_path):
+    # Nothing recorded from Droid names a turn or a channel on a message, or a turn, a
+    # channel, or a final message in a hook payload. Where one is named it is not read.
+    path = tmp_path / "named.jsonl"
+    entries = [
+        {"type": "session_start", "id": "named", "timestamp": "2026-11-11T10:00:00Z"},
+        {
+            "type": "message",
+            "id": "r1",
+            "timestamp": "2026-11-11T10:00:02Z",
+            "turnId": "t9",
+            "channel": "final",
+            "message": {
+                "role": "assistant",
+                "turnId": "t9",
+                "channel": "final",
+                "content": [{"type": "text", "text": "Done."}],
+            },
+        },
+    ]
+    path.write_text("\n".join(json.dumps(entry) for entry in entries) + "\n")
+    reply = by_key(DroidAdapter().from_transcript(path))[("assistant_msg", "r1")]
+    assert reply.attribution == {"message_id": "r1", "has_tool_calls": False}
+    payload = {
+        "session_id": "abc-123",
+        "hook_event_name": "UserPromptSubmit",
+        "prompt": "hi",
+        "message_id": "m7",
+        "turn_id": "t9",
+        "channel": "final",
+        "final_message_id": "m8",
+    }
+    (prompt,) = DroidAdapter().from_hook(payload)
+    assert prompt.attribution == {"message_id": "m7"}
+
+
 def test_droid_transcript_rejects_other_files(tmp_path):
     other = tmp_path / "worker-transcripts.json"
     other.write_text("{}")

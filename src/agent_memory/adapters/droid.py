@@ -84,11 +84,11 @@ class DroidAdapter:
             "harness_session_id": str(hsid),
             "ts": ts,
             "session": session,
-            "attribution": {
-                key: payload[key]
-                for key in ("message_id", "turn_id", "channel", "final_message_id")
-                if payload.get(key) is not None
-            },
+            "attribution": (
+                {"message_id": payload["message_id"]}
+                if payload.get("message_id") is not None
+                else {}
+            ),
         }
         named = payload.get("message_id") if event in _KEYED_ON_MESSAGE else None
         key_tail = str(named or ts.isoformat())
@@ -293,25 +293,18 @@ class DroidAdapter:
                 case "agent_turn_outcome":
                     turn_id = entry.get("turnId")
                     if turn_id:
-                        segment = records[segment_start:]
-                        named = {
-                            (r.attribution or {}).get("turn_id")
-                            for r in segment
-                            if (r.attribution or {}).get("turn_id")
-                        }
-                        # Conflicting explicit turns make an implicit segment ambiguous.
-                        if not named or named == {str(turn_id)}:
-                            for index in range(segment_start, len(records)):
-                                rec = records[index]
-                                records[index] = replace(
-                                    rec,
-                                    attribution={
-                                        **(rec.attribution or {}),
-                                        "turn_id": str(turn_id),
-                                        "turn_complete": entry.get("resultKind") == "text",
-                                        "turn_boundary": "agent_turn_outcome",
-                                    },
-                                )
+                        # Only its outcome names a turn. The turn is what came since the
+                        # prompt, or since the outcome before this one.
+                        for index in range(segment_start, len(records)):
+                            rec = records[index]
+                            records[index] = replace(
+                                rec,
+                                attribution={
+                                    **(rec.attribution or {}),
+                                    "turn_id": str(turn_id),
+                                    "turn_complete": entry.get("resultKind") == "text",
+                                },
+                            )
                     records.append(
                         Record(
                             **base,
@@ -378,13 +371,8 @@ def _message_records(
     entry_id = str(entry.get("id") or f"message:{base['seq']}")
     content = msg.get("content")
     parts = content if isinstance(content, list) else [{"type": "text", "text": content}]
-    turn_id = entry.get("turnId") or msg.get("turnId") or entry.get("turn_id") or msg.get("turn_id")
-    channel = msg.get("channel") or entry.get("channel")
     attribution = {
         "message_id": entry_id,
-        "turn_id": str(turn_id) if turn_id is not None else None,
-        "channel": channel,
-        "turn_complete": bool(turn_id and channel == "final"),
         "has_tool_calls": any(
             isinstance(part, dict) and part.get("type") == "tool_use" for part in parts
         ),

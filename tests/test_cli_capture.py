@@ -406,19 +406,12 @@ def test_a_transcript_event_keeps_which_message_and_turn_the_adapter_placed_it_i
             "message_id": message_id,
             "turn_id": "p1",
             "turn_complete": True,
-            "turn_boundary": "agent_turn_outcome",
-            "channel": None,
             "has_tool_calls": has_tool_calls,
         }
 
     def in_no_turn_yet(message_id: str) -> dict:
-        return {
-            "message_id": message_id,
-            "turn_id": None,
-            "turn_complete": False,
-            "channel": None,
-            "has_tool_calls": False,
-        }
+        # An event says nothing of a turn that nothing has named.
+        return {"message_id": message_id, "has_tool_calls": False}
 
     assert attributions_of(live_client, path.stem) == [
         ("session_start", None),
@@ -449,16 +442,10 @@ def test_an_event_keeps_the_attribution_it_was_first_written_with(
     assert live_mem("event", "--harness", "droid") == (0, "", "")
     got = attributions_of(live_client, path.stem)
     # The outcome has arrived and named the turn. The reply's event was written before it
-    # and no event is rewritten, so it still names no turn.
+    # and no event is rewritten, so it still names no turn, and says nothing of one.
     assert ("outcome", None) in got
     assert [stored for kind, stored in got if kind == "assistant_msg"] == [
-        {
-            "message_id": "r1",
-            "turn_id": None,
-            "turn_complete": False,
-            "channel": None,
-            "has_tool_calls": False,
-        }
+        {"message_id": "r1", "has_tool_calls": False}
     ]
     # The hook wrote the prompt before the transcript was read, so its event keeps only
     # what the hook payload carried.

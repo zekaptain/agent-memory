@@ -1,4 +1,4 @@
-"""Conservative answer attribution from captured tool results and explicit turns."""
+"""Conservative answer attribution from captured tool results and the turns outcomes name."""
 
 from __future__ import annotations
 
@@ -77,7 +77,6 @@ def evidence_from_records(records: Sequence[Record]) -> list[dict[str, Any]]:
             and rec.kind == "assistant_msg"
             and (rec.payload or {}).get("part") != "thinking"
             and not attr.get("has_tool_calls")
-            and attr.get("channel") in (None, "final")
         ):
             replies[str(turn)].append(rec)
     evidence = []
@@ -116,10 +115,6 @@ def evidence_from_records(records: Sequence[Record]) -> list[dict[str, Any]]:
         supplied = (call.payload or {}).get("tool_input") or {}
         if isinstance(supplied, dict) and supplied.get("answer_event_id"):
             continue
-        candidates = replies.get(turn, [])
-        final = [r for r in candidates if (r.attribution or {}).get("channel") == "final"]
-        if final:
-            candidates = final
         evidence.append(
             {
                 "placeholder_event_id": placeholder,
@@ -131,7 +126,7 @@ def evidence_from_records(records: Sequence[Record]) -> list[dict[str, Any]]:
                 ),
                 "reply_event_ids": [
                     ids.event_id(r.agent_id, r.harness_session_id, r.kind, r.source_key)
-                    for r in candidates
+                    for r in replies.get(turn, [])
                 ],
                 "turn_id": turn,
                 "method": METHOD,

@@ -4,5 +4,5 @@
 {"type":"message","id":"recall-result","timestamp":"2026-11-09T10:00:03Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"recall-call","content":"{\"retrieval_id\":\"@RETRIEVAL_ID@\",\"items\":[]}"}]}}
 {"type":"message","id":"cite-message","timestamp":"2026-11-09T10:00:04Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"cite-call","name":"agent-memory__cite","input":{"retrieval_id":"@RETRIEVAL_ID@"}}]}}
 {"type":"message","id":"cite-result","timestamp":"2026-11-09T10:00:05Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"cite-call","content":"{\"answer_event_id\":\"@PLACEHOLDER_ID@\",\"links\":1}"}]}}
-{"type":"message","id":"reply","timestamp":"2026-11-09T10:00:06Z","message":{"role":"assistant","channel":"final","content":"A synthetic answer."}}
+{"type":"message","id":"reply","timestamp":"2026-11-09T10:00:06Z","message":{"role":"assistant","content":"A synthetic answer."}}
 {"type":"agent_turn_outcome","turnId":"identity-turn","resultKind":"text"}

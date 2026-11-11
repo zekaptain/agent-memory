@@ -217,42 +217,6 @@ def test_explicit_answer_id_is_honored(live_cfg, live_client, tmp_path):
         tools.close()
 
 
-def test_explicit_turns_survive_interleaved_activity(live_cfg, live_client, tmp_path):
-    path = tmp_path / "interleaved-cites.jsonl"
-    tools = MemoryTools(live_cfg, "factory-droid", harness_session_id=path.stem)
-    try:
-        recall = tools.recall("zznonezz")
-        placeholders = [
-            tools.cite(retrieval_id=recall["retrieval_id"])["answer_event_id"] for _ in range(2)
-        ]
-        turns = []
-        for index, placeholder in enumerate(placeholders):
-            data = entries(placeholder, outcome=False)[1:]
-            for entry in data:
-                entry["id"] += f"-{index}"
-                entry["turnId"] = f"explicit-turn-{index}"
-                content = entry["message"]["content"]
-                if isinstance(content, list):
-                    for part in content:
-                        for key in ("id", "tool_use_id"):
-                            if key in part:
-                                part[key] += f"-{index}"
-                else:
-                    entry["message"]["channel"] = "final"
-            turns.append(data)
-        interleaved = [entry for pair in zip(*turns, strict=True) for entry in pair]
-        ingest(path, interleaved, live_cfg)
-        for index, placeholder in enumerate(placeholders):
-            assert binding(live_client, placeholder) == [
-                (
-                    ids.event_id("factory-droid", path.stem, "assistant_msg", f"reply-{index}"),
-                    "unique_captured_turn",
-                )
-            ]
-    finally:
-        tools.close()
-
-
 def test_captured_recall_is_distinct_from_merely_returned(live_cfg, live_client, tmp_path):
     path = tmp_path / "captured-recall.jsonl"
     tools = MemoryTools(live_cfg, "factory-droid", harness_session_id=path.stem)
