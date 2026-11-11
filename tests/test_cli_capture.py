@@ -196,6 +196,15 @@ def test_ingest_waits_for_a_write_that_is_under_way(live_mem, live_client, tmp_p
     assert not Spool(live_mem.home / "spool").path_for("factory-droid", path.stem).exists()
 
 
+def test_ingest_spools_a_transcript_once_while_the_server_is_down(down_mem, down_cfg, tmp_path):
+    path = write_transcript(tmp_path / "down-import.jsonl", turn(1))
+    for _ in range(2):
+        code, out, _ = down_mem("ingest", "--harness", "droid", "--transcript", str(path))
+        assert code == 0
+        assert "spooled to" in out
+    assert Spool(down_cfg.spool_dir).status()[0].lines == 4
+
+
 def test_event_records_compaction_instructions_that_are_not_text(
     live_mem, live_cfg, live_client, monkeypatch
 ):

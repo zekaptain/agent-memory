@@ -80,14 +80,16 @@ class Spool:
         return self.root / _safe(agent_id) / f"{_safe(harness_session_id)}.jsonl"
 
     def append(self, records: Iterable[Record]) -> list[Path]:
-        """Append under a stable session lock shared with replay's claim operation."""
+        """Append under a stable session lock shared with replay's claim operation. A record
+        already waiting is not added again, so a transcript imported twice while the server
+        is down waits once."""
         by_file: dict[Path, list[str]] = {}
         for rec in records:
             by_file.setdefault(self.path_for(rec.agent_id, rec.harness_session_id), []).append(
                 rec.to_json()
             )
         for path, lines in by_file.items():
-            _append(path, lines)
+            _append(path, lines, once=True)
         return list(by_file)
 
     def pending(self) -> list[SpoolFile]:
