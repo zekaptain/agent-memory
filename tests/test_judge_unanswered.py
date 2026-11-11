@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Mapping
 from typing import Any
 
 import pytest
@@ -20,13 +21,10 @@ from agent_memory.judge.questions import (
     BY_ID,
     DEFAULT_THRESHOLDS,
     WRITE_GATES,
-    Derived,
     Question,
-    aggregate_claims,
-    derive_action,
-    gate_probabilities,
     unanswered,
 )
+from agent_memory.judge.verdict import Derived, Verdict, derive_action, judge
 from tests.test_judge import structured_draft, synthetic_run
 
 # Every probability clears these, so only an unanswered gate can hold a write back.
@@ -79,16 +77,17 @@ def two_claims() -> dict[str, Any]:
     ).to_dict()
 
 
-def judged(monkeypatch, spoiled, thresholds=None, draft=None) -> dict[str, Any]:
+def judged(monkeypatch, spoiled, thresholds=None, draft=None) -> Mapping[str, Any]:
+    """The stored row of the verdict the model's reply leads to."""
     reply_with(monkeypatch, spoiled)
-    return pipeline.judge_item(
+    return judge(
         LlmJudgeBackend("synthetic", think=False),
         ITEM,
         STATE,
         draft or two_claims(),
         dict(thresholds or DEFAULT_THRESHOLDS),
         run_id="synthetic",
-    )
+    ).row
 
 
 def placeholder(qid: str) -> dict[str, Any]:
@@ -180,11 +179,11 @@ def test_a_write_gate_the_judge_left_unanswered_goes_to_review(monkeypatch, qid,
     assert verdict["action"] == "review"
     assert verdict["reasons"] == [f"{gate}: unanswered"]
     assert unanswered(verdict["answers"][gate]["method"])
-    event = pipeline.decision_record(verdict, ITEM, "2026-01-01T00:00:00+00:00")
+    event = Verdict(verdict).decision_record(ITEM, "2026-01-01T00:00:00+00:00")
     assert event.payload is not None
     assert event.payload["judge"]["action"] == "review"
     assert unanswered(event.payload["judge"]["answers"][gate]["method"])
-    assert report.Scored(ITEM, {}, verdict).gate_p(gate) is None
+    assert Verdict(verdict).p(gate) is None
 
 
 @pytest.mark.parametrize("gate", ["grounded", "faithful"])
@@ -208,7 +207,7 @@ def test_an_unanswered_gate_does_not_rescue_a_declined_or_undrafted_turn(monkeyp
     assert verdict["action"] == "discard"
     reply_with(monkeypatch, {})
     backend = LlmJudgeBackend("synthetic", think=False)
-    undrafted = pipeline.judge_item(backend, ITEM, STATE, None, dict(NO_BAR), run_id="synthetic")
+    undrafted = judge(backend, ITEM, STATE, None, dict(NO_BAR), run_id="synthetic").row
     assert undrafted["action"] == "discard"
     assert undrafted["reasons"] == [f"{gate}: no answer" for gate in WRITE_GATES]
 
@@ -251,35 +250,6 @@ def test_unanswered_is_review_and_never_asked_is_discard():
     never_asked = {k: v for k, v in cleared.items() if k != "enforced"}
     assert derive_action(never_asked, NO_BAR) == Derived("discard", ["enforced: no answer"])
     assert derive_action({**cleared, "enforced": None}, declined=True).action == "discard"
-    probabilities = {
-        "grounded": {"yes": 0.5, "no": 0.5},
-        "faithful": {"yes": 0.9, "no": 0.1},
-        "generalizable": {"0": 1 / 3, "1": 1 / 3, "2": 1 / 3},
-    }
-    methods = {"grounded": "llm_json_nothink_unmatched", "generalizable": "min_over_claims"}
-    assert gate_probabilities(probabilities, methods=methods) == {
-        "grounded": None,
-        "faithful": 0.9,
-        "generalizable": pytest.approx(2 / 3),
-    }
-
-
-def test_one_unanswered_claim_leaves_its_whole_gate_unanswered():
-    answered = answer_from_probabilities(BY_ID["grounded"], {"yes": 0.9, "no": 0.1}, method="x")
-    failing = answer_from_probabilities(BY_ID["grounded"], {"yes": 0.1, "no": 0.9}, method="x")
-    silent = answer_from_probabilities(BY_ID["grounded"], {}, method="llm_json_no_probability")
-    out = aggregate_claims(
-        {
-            "grounded.1": answered,
-            "grounded.2": silent,
-            "faithful.1": answered,
-            "faithful.2": failing,
-        }
-    )
-    assert out["grounded"].method == "min_over_claims_missing"
-    assert unanswered(out["grounded"].method)
-    assert out["grounded"].latency_ms == out["grounded"].cost_usd == 0
-    assert (out["faithful"].method, out["faithful"].p_true) == ("min_over_claims", 0.1)
 
 
 # Every backend

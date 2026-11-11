@@ -12,13 +12,8 @@ from typing import Any
 from ..config import Config
 from ..judge.drafter import draft_hash
 from ..judge.lesson import lesson_from_row, render_lesson
-from ..judge.questions import (
-    DEFAULT_THRESHOLDS,
-    QUESTIONS_VERSION,
-    derive_action,
-    gate_probability,
-    unanswered,
-)
+from ..judge.questions import DEFAULT_THRESHOLDS, QUESTIONS_VERSION
+from ..judge.verdict import Verdict, derive_action
 from . import ADMISSION_VERSION, AdmissionError
 from .embed import DEFAULT_EMBEDDER, lesson_fields, make_embedder, validate_vector
 from .store import AdmissionStore, latest_examples, read_jsonl, redactor_for_config, write_jsonl
@@ -47,32 +42,32 @@ def validated_thresholds(value: Any, *, complete: bool = False) -> dict[str, flo
 
 def verdict_gates(verdict: Mapping[str, Any]) -> dict[str, float | None]:
     """The judge's probability for each gate of one draft. A gate the judge left unanswered
-    is kept as None, so the example still says it was asked."""
+    is kept as None, so the example still says it was asked. The verdict may come from a file
+    this code did not write, so its shape and numbers are checked before they are trusted."""
     answers = verdict.get("answers", {})
     if not isinstance(answers, Mapping):
         raise AdmissionError("judge answers must be an object")
-    out: dict[str, float | None] = {}
+    checked = {}
     for key in GATES:
         answer = answers.get(key)
         if answer is None:
             continue
         if not isinstance(answer, Mapping) or not isinstance(answer.get("probabilities"), Mapping):
             raise AdmissionError("invalid judge gate answer")
-        if unanswered(str(answer.get("method", ""))):
-            out[key] = None
-            continue
-        try:
-            p = gate_probability(key, answer["probabilities"])
-        except (ValueError, TypeError):
-            raise AdmissionError("invalid judge gate probability") from None
+        checked[key] = answer
+    try:
+        # Only the checked answers are read, never another key of the file.
+        gates = Verdict({"answers": checked}).gates(GATES)
+    except (ValueError, TypeError):
+        raise AdmissionError("invalid judge gate probability") from None
+    for p in gates.values():
         if p is None:
             continue
         if isinstance(p, bool) or not isinstance(p, (int, float)) or not math.isfinite(p):
             raise AdmissionError("invalid judge gate probability")
         if not 0 <= p <= 1:
             raise AdmissionError("judge gate probability must lie in [0, 1]")
-        out[key] = float(p)
-    return out
+    return {key: None if p is None else float(p) for key, p in gates.items()}
 
 
 def example_for(
@@ -84,8 +79,10 @@ def example_for(
     source: Any,
     label: bool | None,
     split: str,
+    thresholds: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Build a narrow example or scoring row. No arbitrary item/verdict text is copied."""
+    """Build a narrow example or scoring row. No arbitrary item/verdict text is copied. The
+    judge's action is derived at `thresholds`, or at the verdict's own when none are given."""
     if label is not None and type(label) is not bool:
         raise AdmissionError("admission labels must be boolean or null")
     if split not in ("calibration", "held_out", "production"):
@@ -95,7 +92,9 @@ def example_for(
         raise AdmissionError("admission example requires its judge backend")
     fields = lesson_fields(draft)
     probabilities = verdict_gates(verdict)
-    thresholds = validated_thresholds(verdict.get("thresholds") or {})
+    if thresholds is None:
+        thresholds = verdict.get("thresholds")
+    thresholds = validated_thresholds(thresholds or {})
     memory_id = item.get("memory_id")
     item_id = item.get("item_id") or draft.get("item_id") or memory_id
     run_id = verdict.get("run_id") or item.get("run_id") or "production"
@@ -235,11 +234,12 @@ def import_labels(cfg: Config, source: Path, *, backend: str, embedder: str) -> 
         example = example_for(
             {**clean, "embedder": embedder},
             item,
-            {**verdict, "thresholds": thresholds},
+            verdict,
             embedding,
             source=source_id,
             label=entry["store_exact"],
             split=item["split"],
+            thresholds=thresholds,
         )
         example["id"] = identity
         example["human_labels"] = {

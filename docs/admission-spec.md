@@ -228,9 +228,10 @@ launchctl bootout "gui/$(id -u)/com.agent-memory.admit"
 
 `ensure_experiment_home` is unchanged. `mem judge` never writes lessons,
 and no module under `judge/` imports admission. Admission composes
-guard-free judge building blocks. The only shared pipeline extension
-lets `decision_record` accept a harness session and project; defaults
-preserve historical experiment events and report behavior.
+guard-free judge building blocks: it judges through `judge/verdict.py`
+(`ask_turn`, `judge`) and records a verdict's ledger copy with
+`Verdict.decision_record`, which accepts a harness session and project.
+Its defaults preserve historical experiment events and report behavior.
 
 Local drafters are required. Hosted judge arms remain optional behind
 `AGENT_MEMORY_JUDGE_ALLOW_REMOTE=1`; a remote embedder host uses the same

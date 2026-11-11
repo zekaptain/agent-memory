@@ -19,26 +19,16 @@ import duckdb
 from ..adapters.base import UnsupportedTranscript
 from ..adapters.droid import DroidAdapter
 from ..capture.pipeline import deliver, make_redactor
-from ..capture.record import Record, SessionInfo, now
+from ..capture.record import Record
 from ..capture.writer import Writer
 from ..config import Config
 from ..db import AgentMemoryError, MemoryClient, sql_literal
-from .backends import Answer, DecisionBackend, JudgeInput, make_backend
+from .backends import make_backend
 from .drafter import DRAFTER_VERSION, draft_hash, make_drafter
 from .labeling import LABELS_VERSION
-from .lesson import lesson_from_row
 from .projection import PROJECTION_VERSION, drafter_rendering, project_candidate
 from .provenance import PROVENANCE_VERSION, session_callers
-from .questions import (
-    DEFAULT_THRESHOLDS,
-    QUESTIONS_VERSION,
-    STAGE_A,
-    aggregate_claims,
-    derive_action,
-    gate_probabilities,
-    stage_b_for,
-    thresholds_from_run,
-)
+from .questions import DEFAULT_THRESHOLDS, QUESTIONS_VERSION, thresholds_from_run
 from .store import JudgeError, RunStore, ensure_experiment_home, imports_log, utc_now_iso
 from .triggers import (
     CALLER_KINDS,
@@ -50,11 +40,11 @@ from .triggers import (
     sample_candidates,
     segment_turns,
 )
+from .verdict import JUDGE_AGENT, TurnAnswers, Verdict, ask_turn, judge
 
 Log = Callable[[str], None]
 """`log` takes progress lines; `warn` takes problems the user has to act on (a skipped item, a
 spooled batch). A caller with one channel passes only `log` and gets both on it."""
-JUDGE_AGENT = "judge"
 CALIBRATION_SHARE = 0.6
 EVENT_BATCH = 25
 
@@ -398,168 +388,6 @@ def draft_items(
 # Decide
 
 
-def _judge_input(item: dict[str, Any], state: str) -> JudgeInput:
-    return JudgeInput(
-        item_id=item["item_id"], state=state, facts=item["facts"], flags=tuple(item["flags"])
-    )
-
-
-def stage_a_from_verdict(verdict: Mapping[str, Any]) -> dict[str, Answer] | None:
-    """The Stage A answers a stored verdict carries, or None when it predates a question. The
-    copies cost nothing, so the row they land in reports only what it paid for."""
-    answers = verdict.get("answers") or {}
-    if any(q.id not in answers for q in STAGE_A):
-        return None
-    return {
-        q.id: replace(Answer.from_dict(answers[q.id]), latency_ms=0.0, cost_usd=0.0)
-        for q in STAGE_A
-    }
-
-
-def judge_draft(
-    backend: DecisionBackend,
-    item: dict[str, Any],
-    state: str,
-    draft: Mapping[str, Any] | None,
-    thresholds: dict[str, float],
-    stage_a: Mapping[str, Answer],
-    *,
-    run_id: str,
-    stage_a_reused: bool = False,
-) -> dict[str, Any]:
-    """One verdict row: the item's Stage A answers plus Stage B on this draft. A declined draft
-    gets no Stage B and is always discarded; an item with no draft yet gets Stage A alone."""
-    answers: dict[str, Answer] = dict(stage_a)
-    text = draft.get("lesson") if draft else None
-    lesson = lesson_from_row(draft) if draft else None
-    claims = tuple(lesson.claims) if lesson else ()
-    declined = draft is not None and text is None
-    if text:
-        answers.update(
-            backend.decide(
-                replace(_judge_input(item, state), draft=text, claims=claims), stage_b_for(lesson)
-            )
-        )
-        answers.update(aggregate_claims(answers))
-    probabilities = {k: a.probabilities for k, a in answers.items()}
-    derived = derive_action(
-        gate_probabilities(probabilities, methods={k: a.method for k, a in answers.items()}),
-        thresholds,
-        declined=declined,
-    )
-    snapshots = sorted({a.model_snapshot for a in answers.values() if a.model_snapshot})
-    return {
-        "run_id": run_id,
-        "item_id": item["item_id"],
-        "backend": backend.name,
-        "model_snapshot": ", ".join(snapshots),
-        "questions_version": QUESTIONS_VERSION,
-        "projection_version": item.get("projection_version", PROJECTION_VERSION),
-        "projection_hash": item["projection_hash"],
-        "drafter": draft.get("drafter") if draft else None,
-        "has_draft": bool(text),
-        "claims": len(claims),
-        "declined": declined,
-        "draft_hash": draft_hash(text),
-        "stage_a_reused": stage_a_reused,
-        "answers": {k: a.to_dict() for k, a in answers.items()},
-        "latency_ms": sum(a.latency_ms for a in answers.values()),
-        "cost_usd": sum(a.cost_usd for a in answers.values()),
-        "action": derived.action,
-        "reasons": derived.reasons,
-        "thresholds": thresholds,
-        "decided_at": utc_now_iso(),
-    }
-
-
-def judge_item(
-    backend: DecisionBackend,
-    item: dict[str, Any],
-    state: str,
-    draft: Mapping[str, Any] | None,
-    thresholds: dict[str, float],
-    *,
-    run_id: str,
-) -> dict[str, Any]:
-    """Stage A on the projection alone, then Stage B on the draft if there is one."""
-    stage_a = backend.decide(_judge_input(item, state), STAGE_A)
-    return judge_draft(backend, item, state, draft, thresholds, stage_a, run_id=run_id)
-
-
-def decision_record(
-    verdict: dict[str, Any],
-    item: dict[str, Any],
-    run_created: str,
-    *,
-    harness_session_id: str | None = None,
-    project: str = "judge-experiment",
-) -> Record:
-    """The ledger copy of a verdict: distributions and provenance, never the state text."""
-    answers = {
-        qid: {k: a[k] for k in ("value", "probabilities", "confidence", "method")}
-        for qid, a in verdict["answers"].items()
-    }
-    payload = {
-        "judge": {
-            key: verdict.get(key)
-            for key in (
-                "run_id",
-                "item_id",
-                "backend",
-                "model_snapshot",
-                "questions_version",
-                "projection_version",
-                "projection_hash",
-                "drafter",
-                "draft_hash",
-                "declined",
-                "has_draft",
-                "claims",
-                "stage_a_reused",
-                "latency_ms",
-                "cost_usd",
-                "action",
-                "reasons",
-                "thresholds",
-            )
-        }
-        | {
-            "triggers_version": TRIGGERS_VERSION,
-            "stratum": item["stratum"],
-            "flags": item["flags"],
-            "turn_event_id": item["turn_event_id"],
-            "answers": answers,
-        }
-    }
-    return Record(
-        agent_id=JUDGE_AGENT,
-        harness_session_id=harness_session_id or f"judge-{verdict['run_id']}",
-        kind="decision",
-        ts=now(),
-        # Keyed on every input, so judging the same turn again with a draft (or a new
-        # projection, or another drafter's draft) appends a new event instead of silently
-        # keeping the old one.
-        source_key="/".join(
-            (
-                verdict["backend"],
-                verdict["item_id"],
-                verdict["questions_version"],
-                verdict["projection_hash"][:16],
-                (verdict.get("draft_hash") or "nodraft")[:16],
-                verdict.get("drafter") or "nodrafter",
-            )
-        ),
-        content=f"judge {verdict['backend']}: {verdict['action']} for turn {item['turn_event_id']}",
-        payload=payload,
-        session=SessionInfo(
-            project=project,
-            scope="judge",
-            started_at=datetime.fromisoformat(run_created),
-            metadata={"run_id": verdict["run_id"]},
-        ),
-    )
-
-
 def expected_verdicts(
     items: Sequence[dict[str, Any]], drafts: Mapping[str, Sequence[Mapping[str, Any]]]
 ) -> dict[tuple[str, str | None], tuple[str, str | None]]:
@@ -571,7 +399,7 @@ def expected_verdicts(
         if not rows:
             expected[(item["item_id"], None)] = (item["projection_hash"], None)
         for row in rows:
-            # Keyed exactly as judge_draft records it, so an untagged legacy draft (no
+            # Keyed exactly as `judge` records it, so an untagged legacy draft (no
             # drafter) still matches its own verdict instead of being judged on every run.
             key = (item["item_id"], row.get("drafter"))
             expected[key] = (item["projection_hash"], draft_hash(row.get("lesson")))
@@ -589,8 +417,9 @@ def decide_items(
     log: Log = _quiet,
     warn: Log | None = None,
 ) -> dict[str, int]:
-    """Run each backend over every (item, draft) without a current verdict. Stage A is judged
-    once per item and copied into every row of that item. Returns rows written per backend."""
+    """Run each backend over every (item, draft) without a current verdict. The turn questions
+    are asked once per item and copied into every row of that item. Returns rows written per
+    backend."""
     warn = warn or log
     ensure_experiment_home(cfg)
     store = store or RunStore(cfg, run_id)
@@ -619,11 +448,11 @@ def decide_items(
         if len(kept) != len(existing):
             store.write_jsonl(path, kept)
         done = {(v["item_id"], v.get("drafter")) for v in kept}
-        stage_a_cache: dict[str, Mapping[str, Answer]] = {}
+        turns: dict[str, TurnAnswers] = {}
         for v in kept:
-            copied = stage_a_from_verdict(v)
-            if copied is not None and v["item_id"] not in stage_a_cache:
-                stage_a_cache[v["item_id"]] = copied
+            carried = Verdict(v).turn_answers()
+            if carried is not None and v["item_id"] not in turns:
+                turns[v["item_id"]] = carried
         pending_items = {key[0] for key in expected if key not in done}
         todo = [i for i in items if i["item_id"] in pending_items]
         if limit is not None:
@@ -640,11 +469,10 @@ def decide_items(
             ]
             if not drafts.get(item["item_id"]):
                 waiting = [None]
-            stage_a = stage_a_cache.get(item["item_id"])
-            reused = stage_a is not None
+            turn = turns.get(item["item_id"])
             try:
-                if stage_a is None:
-                    stage_a = backend.decide(_judge_input(item, state), STAGE_A)
+                if turn is None:
+                    turn = ask_turn(backend, item, state)
             except JudgeError as exc:
                 # A backend that has never produced a verdict in this run is probably
                 # misconfigured, so fail fast. Once it has, a bad item is skipped and the
@@ -656,15 +484,8 @@ def decide_items(
                 continue
             for draft in waiting:
                 try:
-                    verdict = judge_draft(
-                        backend,
-                        item,
-                        state,
-                        draft,
-                        thresholds,
-                        stage_a,
-                        run_id=run_id,
-                        stage_a_reused=reused,
+                    verdict = judge(
+                        backend, item, state, draft, thresholds, run_id=run_id, turn=turn
                     )
                 except JudgeError as exc:
                     if not kept and count == 0:
@@ -673,21 +494,20 @@ def decide_items(
                     who = f" draft {draft.get('drafter')}" if draft else ""
                     warn(f"{backend.name}: item {item['item_id']}{who} failed: {exc}")
                     continue
-                store.write_jsonl(path, [verdict], append=True)
+                store.write_jsonl(path, [verdict.row], append=True)
                 count += 1
                 # Later drafts of this item copy these answers instead of paying again.
-                stage_a = stage_a_from_verdict(verdict) or stage_a
-                stage_a_cache[item["item_id"]] = stage_a
-                reused = True
+                turn = verdict.turn_answers() or replace(turn, reused=True)
+                turns[item["item_id"]] = turn
                 if record_events:
-                    pending_records.append(decision_record(verdict, item, run["created_at"]))
+                    pending_records.append(verdict.decision_record(item, run["created_at"]))
                     if len(pending_records) >= EVENT_BATCH:
                         _record(cfg, pending_records, warn)
                         pending_records = []
                 who = f" [{draft.get('drafter')}]" if draft else ""
                 log(
-                    f"{backend.name} {index}/{len(todo)}{who}: {verdict['action']} "
-                    f"({verdict['latency_ms'] / 1000:.1f}s)"
+                    f"{backend.name} {index}/{len(todo)}{who}: {verdict.recorded.action} "
+                    f"({verdict.latency_ms / 1000:.1f}s)"
                 )
         if pending_records:
             _record(cfg, pending_records, warn)

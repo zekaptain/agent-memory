@@ -14,9 +14,9 @@ For setup commands and the step-by-step workflow, see
 Production lesson admission is a separate subsystem, specified in
 [admission-spec.md](admission-spec.md). It reads frozen v4 human labels
 and composes guard-free judge helpers. Experiment guards and commands
-remain unchanged; no module under `judge/` imports admission.
-`decision_record` accepts an optional harness session and project for
-admission events, with its historical defaults preserved.
+remain unchanged; no module under `judge/` imports admission. A verdict's
+ledger copy (`Verdict.decision_record`) accepts an optional harness session
+and project for admission events, with its historical defaults preserved.
 
 ## Goal
 
@@ -1373,3 +1373,33 @@ No command produces such a run: draft, decide and label refuse a run built
 under an older question set, and a run's version does not change. Every
 verdict in the stored runs (exp1 to exp4) carries its run's version, and
 the reports of exp2 and exp3 rebuild byte for byte from copies.
+
+### The verdict module, as built (2026-11-11)
+
+Everything that builds or reads a verdict is now in `judge/verdict.py`.
+No behaviour changed: new rows keep their keys and order, and stored rows
+of every question set read as before.
+
+- `ask_turn` asks the turn questions (Stage A). `judge` asks the draft
+  questions (Stage B) and returns the verdict. Given answers the turn
+  already has, it does not ask the turn questions again.
+- `Verdict` reads one stored row in place and never changes it. It gives
+  the probability that a question clears, the write gates of the question
+  set the verdict was judged with, the action recorded when it was judged,
+  the action at any other thresholds, the turn's answers for the next
+  draft of the same turn, and the ledger copy (`decision_record`).
+- `derive_action` is the write rule, moved here from `questions.py`.
+
+The decide loop, the report and admission read verdicts through this
+module instead of each reading a row's `answers` by hand. The loops stay
+where they were: `decide_items` still resumes, replaces stale rows, fails
+fast and batches ledger events, and admission's daily run is still
+`admission/run.py`.
+
+Checked against the previous code on the same inputs: the rows and ledger
+copies of a synthetic decide run (two drafters, declined, claimed and
+failing drafts, late drafts on resume) are byte for byte the same apart
+from the clock, and so are admission's imported examples. The synthetic
+reports for questions v1 to v4, open and frozen, and the reports of exp2
+and exp3 rebuilt from copies are unchanged. Tests at the module's
+interface are in `tests/test_judge_verdict.py`.

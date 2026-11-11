@@ -11,15 +11,15 @@ from .. import endpoints
 from ..capture.pipeline import make_redactor
 from ..config import Config
 from ..db import MemoryClient, sql_literal
-from ..judge.backends import JudgeInput, make_backend
+from ..judge.backends import make_backend
 from ..judge.backends.base import DecisionBackend, require_remote
 from ..judge.drafter import make_drafter
-from ..judge.pipeline import judge_draft
 from ..judge.projection import PROJECTION_VERSION, project_candidate
 from ..judge.provenance import session_callers
-from ..judge.questions import QUESTIONS_VERSION, STAGE_A
+from ..judge.questions import QUESTIONS_VERSION
 from ..judge.store import JudgeError, RunStore, utc_now_iso
 from ..judge.triggers import candidates_from_turns, fetch_turn_events, segment_turns
+from ..judge.verdict import ask_turn, judge
 from . import approver, ledger
 from .embed import make_embedder
 from .examples import example_for
@@ -137,29 +137,24 @@ def _process(cfg: Config, store: AdmissionStore, day: RunStore, log: Callable[[s
             drafts[iid] = draft
         draft = drafts[iid]
         if iid not in verdicts:
-            stage_a = _model_call(
-                partial(
-                    backend.decide,
-                    JudgeInput(iid, projection, item["facts"], flags=tuple(item["flags"])),
-                    STAGE_A,
-                ),
-                "Admission turn judging",
+            turn = _model_call(
+                partial(ask_turn, backend, item, projection), "Admission turn judging"
             )
-            verdict = _model_call(
+            judged = _model_call(
                 partial(
-                    judge_draft,
+                    judge,
                     backend,
                     item,
                     projection,
                     draft,
                     model["thresholds"],
-                    stage_a,
                     run_id=day.run_id,
+                    turn=turn,
                 ),
                 "Admission draft judging",
             )
-            write_jsonl(day.verdicts_path(backend.name), [verdict], append=True)
-            verdicts[iid] = verdict
+            write_jsonl(day.verdicts_path(backend.name), [judged.row], append=True)
+            verdicts[iid] = judged.row
         verdict = verdicts[iid]
         if iid not in scores:
             embedding = (

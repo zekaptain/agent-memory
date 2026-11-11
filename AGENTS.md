@@ -90,7 +90,7 @@ All runtime paths below are under `src/agent_memory/`.
 | `adapters/`, `capture/` | Harness input to records, redaction, blobs, idempotent writes, spool/replay, capture identity, observed coverage, answer attribution | `test_adapters`, `test_capture`, `test_writer`, `test_spool`, `test_capture_identity`, `test_observed_capture`, `test_answer_bindings`, `test_audit_persistence` |
 | `mcp_server/` | Stdio tools, recall ranking, writes, reviews, citations | `test_mcp` |
 | `graph/` | Relation metadata, traversal SQL, entity resolution | `test_graph` |
-| `judge/` | Import, provenance, candidates, projection, draft, decide, label (including the Go helper in `label_ui/`), report | `test_judge`, `test_judge_pipeline`, `test_judge_core_regressions`, `test_judge_store`, `test_judge_admission`, `test_label_ui` |
+| `judge/` | Import, provenance, candidates, projection, draft, decide, label (including the Go helper in `label_ui/`), report | `test_judge`, `test_judge_pipeline`, `test_judge_verdict`, `test_judge_unanswered`, `test_judge_core_regressions`, `test_judge_store`, `test_judge_admission`, `test_label_ui` |
 | `admission/` | Production lesson admission, fitting and blinded review | `test_admission`, `test_admission_fit` |
 | `cli.py`, `smoke.py` | Typer entry point and end-to-end check | `test_cli`, `test_cli_capture` |
 

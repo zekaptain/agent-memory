@@ -4,13 +4,13 @@ report.md. The held-out split is scored only after thresholds are frozen.
 Stage A questions are scored once per item; Stage B questions and the write decision once per
 (item, draft), per drafter. Runs built under `questions_v1` (one draft per item, `supported`
 instead of `grounded`, the v1 write rule) are read through the same code: the aliases live in
-`Scored` and `draft_label`.
+`Verdict` and `draft_label`.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from .drafter import draft_hash
@@ -27,18 +27,10 @@ from .metrics import (
     fmt,
     paired_discrimination,
 )
-from .questions import (
-    DEFAULT_THRESHOLDS,
-    QUESTIONS_VERSION,
-    STAGE_A,
-    derive_action,
-    gate_probability,
-    thresholds_from_run,
-    unanswered,
-    write_gates,
-)
+from .questions import DEFAULT_THRESHOLDS, QUESTIONS_VERSION, thresholds_from_run, write_gates
 from .store import JudgeError, RunStore, utc_now_iso
 from .triggers import CLOSED_BY, closed_by_of
+from .verdict import Verdict
 
 MARGIN_PTS = 0.03
 CASCADE_SLACK = 0.01
@@ -46,18 +38,18 @@ CONFIDENCE_AUROC_TARGET = 0.75
 WRITE_PRECISION_TARGET = 0.7
 MISS_RATE_TARGET = 0.5
 FAITHFUL_TARGET = 0.9
-_ALIAS = {"grounded": "supported", "supported": "grounded"}
-STAGE_A_IDS = {q.id for q in STAGE_A}
 
 
-def draft_label(label: Mapping[str, Any], verdict: Mapping[str, Any]) -> dict[str, Any]:
-    """The Stage B labels that apply to this verdict's draft. v2 rows hold them per drafter and
+def draft_label(
+    label: Mapping[str, Any], drafter: str | None, lesson_hash: str | None
+) -> dict[str, Any]:
+    """The Stage B labels that apply to one drafter's draft. v2 rows hold them per drafter and
     only count when the draft text is the one labeled; v1 rows hold them per item."""
     drafts = label.get("drafts")
     if isinstance(drafts, dict):
-        entry = drafts.get(str(verdict.get("drafter") or "")) or {}
+        entry = drafts.get(str(drafter or "")) or {}
         labeled_hash = entry.get("draft_hash")
-        if entry and labeled_hash != verdict.get("draft_hash"):
+        if entry and labeled_hash != lesson_hash:
             return {"declined": entry.get("declined")}
         return {
             "grounded": entry.get("grounded"),
@@ -80,64 +72,24 @@ def draft_label(label: Mapping[str, Any], verdict: Mapping[str, Any]) -> dict[st
 
 @dataclass
 class Scored:
+    """A verdict beside what it is scored against: its item, the item's label, and the labels
+    of the draft it judged."""
+
     item: dict[str, Any]
     label: dict[str, Any]
-    verdict: dict[str, Any]
+    verdict: Verdict
     draft: dict[str, Any] = field(default_factory=dict)
+    # Set on the row that stands for a whole item: what all of the item's verdicts paid.
+    paid_ms: float | None = None
+    paid_usd: float | None = None
 
     @property
-    def drafter(self) -> str | None:
-        return self.verdict.get("drafter")
+    def latency_ms(self) -> float:
+        return self.verdict.latency_ms if self.paid_ms is None else self.paid_ms
 
-    def _stored(self, qid: str) -> dict[str, Any] | None:
-        answers = self.verdict["answers"]
-        return answers.get(qid) or answers.get(_ALIAS.get(qid, ""))
-
-    def left_unanswered(self, qid: str) -> bool:
-        stored = self._stored(qid)
-        return bool(stored) and unanswered(stored.get("method", ""))
-
-    def answer(self, qid: str) -> dict[str, Any] | None:
-        """The judge's answer to a question. None when the verdict holds none, or holds only
-        the placeholder for a question left unanswered, which no metric may score."""
-        return None if self.left_unanswered(qid) else self._stored(qid)
-
-    def p(self, qid: str) -> float | None:
-        answer = self.answer(qid)
-        return answer["probabilities"].get("yes") if answer else None
-
-    def gate_p(self, gate: str) -> float | None:
-        answer = self.answer(gate)
-        return gate_probability(gate, answer["probabilities"]) if answer else None
-
-    def confidence(self, qid: str) -> float:
-        answer = self.answer(qid)
-        return float(answer["confidence"]) if answer else 0.0
-
-    def value(self, qid: str) -> str | None:
-        answer = self.answer(qid)
-        if not answer:
-            return None
-        value = answer["value"]
-        return str(round(value)) if isinstance(value, float) else str(value)
-
-    def gate_probabilities(self, gates: Sequence[str]) -> dict[str, float | None]:
-        """The gates as `derive_action` reads them: None for one the judge left unanswered,
-        and no entry for one the verdict was never asked."""
-        out: dict[str, float | None] = {}
-        for gate in gates:
-            if self.left_unanswered(gate):
-                out[gate] = None
-            elif (p := self.gate_p(gate)) is not None:
-                out[gate] = p
-        return out
-
-    def stage_b_latency(self) -> float:
-        return sum(
-            float(a.get("latency_ms", 0.0))
-            for qid, a in self.verdict["answers"].items()
-            if qid not in STAGE_A_IDS
-        )
+    @property
+    def cost_usd(self) -> float:
+        return self.verdict.cost_usd if self.paid_usd is None else self.paid_usd
 
 
 def gate_truth(gate: str, row: Scored) -> bool | None:
@@ -206,26 +158,27 @@ def load_scored(store: RunStore) -> tuple[list[dict[str, Any]], dict[str, dict[K
     scored: dict[str, dict[Key, Scored]] = {}
     if store.verdicts_dir.exists():
         for path in sorted(store.verdicts_dir.glob("*.jsonl")):
-            for verdict in store.read_jsonl(path):
-                if verdict.get("questions_version") != version:
+            for row in store.read_jsonl(path):
+                verdict = Verdict(row)
+                if verdict.questions_version != version:
                     # Each question set has its own write gates and labels.
                     raise JudgeError(
                         f"{path.name} holds a verdict judged with "
-                        f"{verdict.get('questions_version') or 'no question set'}, but run "
+                        f"{verdict.questions_version or 'no question set'}, but run "
                         f"{store.run_id!r} was built with {version or 'no question set'}; "
                         "a report cannot score two question sets as one"
                     )
-                item = by_item.get(verdict["item_id"])
-                label = labels.get(verdict["item_id"])
+                item = by_item.get(verdict.item_id)
+                label = labels.get(verdict.item_id)
                 if item is None or label is None:
                     continue
-                if verdict.get("projection_hash") != item.get("projection_hash"):
+                if verdict.projection_hash != item.get("projection_hash"):
                     continue  # judged a projection the run no longer has
-                key = (item["item_id"], verdict.get("drafter"))
-                draft = draft_label(label, verdict)
-                if current and (key not in hashes or hashes[key] != verdict.get("draft_hash")):
+                key = (item["item_id"], verdict.drafter)
+                draft = draft_label(label, verdict.drafter, verdict.draft_hash)
+                if current and (key not in hashes or hashes[key] != verdict.draft_hash):
                     draft = {}  # An old matching label/verdict is not the current draft.
-                scored.setdefault(verdict["backend"], {})[key] = Scored(item, label, verdict, draft)
+                scored.setdefault(verdict.backend, {})[key] = Scored(item, label, verdict, draft)
     return items, scored
 
 
@@ -236,14 +189,15 @@ def per_item(rows: Mapping[Key, Scored]) -> dict[str, Scored]:
     paid: dict[str, float] = {}
     cost: dict[str, float] = {}
     for (item_id, _drafter), row in sorted(rows.items(), key=lambda kv: (kv[0][0], kv[0][1] or "")):
-        paid[item_id] = paid.get(item_id, 0.0) + float(row.verdict.get("latency_ms", 0.0))
-        cost[item_id] = cost.get(item_id, 0.0) + float(row.verdict.get("cost_usd", 0.0))
+        paid[item_id] = paid.get(item_id, 0.0) + float(row.verdict.latency_ms)
+        cost[item_id] = cost.get(item_id, 0.0) + float(row.verdict.cost_usd)
         out.setdefault(item_id, row)
     for item_id, row in out.items():
-        verdict = {**row.verdict, "latency_ms": paid[item_id]}
-        if row.verdict.get("questions_version") == QUESTIONS_VERSION:
-            verdict["cost_usd"] = cost[item_id]
-        out[item_id] = Scored(row.item, row.label, verdict, row.draft)
+        # A run before questions_v4 reports an item's cost as its first row's own.
+        current = row.verdict.questions_version == QUESTIONS_VERSION
+        out[item_id] = replace(
+            row, paid_ms=paid[item_id], paid_usd=cost[item_id] if current else None
+        )
     return out
 
 
@@ -295,12 +249,12 @@ class StageBEval:
 def _binary(rows: Sequence[Scored], gate: str, threshold: float) -> BinaryMetrics | None:
     probs, confs, labels = [], [], []
     for r in rows:
-        p = r.gate_p(gate)
+        p = r.verdict.p(gate)
         y = gate_truth(gate, r)
         if p is None or y is None:
             continue
         probs.append(p)
-        confs.append(r.confidence(gate))
+        confs.append(r.verdict.confidence(gate))
         labels.append(y)
     return binary_metrics(probs, confs, labels, threshold) if probs else None
 
@@ -309,7 +263,7 @@ def _pairs(rows: Sequence[Scored]) -> Iterator[tuple[float, float]]:
     """Every (failed, clean) pair of labeled turns from the same project."""
     by_project: dict[str, tuple[list[float], list[float]]] = {}
     for r in rows:
-        p = r.p("failed")
+        p = r.verdict.p("failed")
         y = r.label.get("failed")
         if p is None or y is None:
             continue
@@ -322,9 +276,9 @@ def evaluate_stage_a(
     name: str, rows: Sequence[Scored], thresholds: Mapping[str, float], *, category_on_failed: bool
 ) -> StageAEval:
     cats = [
-        (r.value("category"), r.label["category"])
+        (r.verdict.value("category"), r.label["category"])
         for r in rows
-        if r.value("category")
+        if r.verdict.value("category")
         and r.label.get("category") is not None
         and (not category_on_failed or r.label.get("failed") is True)
     ]
@@ -341,8 +295,8 @@ def evaluate_stage_a(
         incomplete=_binary(rows, "incomplete", 0.5),
         category_accuracy=accuracy([c for c, _ in cats], [t for _, t in cats]),
         paired=paired_discrimination(_pairs(rows)),
-        mean_latency_ms=sum(r.verdict["latency_ms"] for r in rows) / len(rows) if rows else 0.0,
-        total_cost_usd=sum(r.verdict.get("cost_usd", 0.0) for r in rows),
+        mean_latency_ms=sum(r.latency_ms for r in rows) / len(rows) if rows else 0.0,
+        total_cost_usd=sum(r.cost_usd for r in rows),
         majority_failed=majority,
     )
 
@@ -355,25 +309,23 @@ def evaluate_stage_b(
     gates: Sequence[str],
 ) -> StageBEval:
     gens = [
-        (r.value("generalizable"), str(r.draft["generalizable"]))
+        (r.verdict.value("generalizable"), str(r.draft["generalizable"]))
         for r in rows
-        if r.value("generalizable") is not None and r.draft.get("generalizable") is not None
+        if r.verdict.value("generalizable") is not None and r.draft.get("generalizable") is not None
     ]
     enf = [
-        (r.value("enforced"), str(r.draft["enforced_by"]))
+        (r.verdict.value("enforced"), str(r.draft["enforced_by"]))
         for r in rows
-        if r.value("enforced") is not None and r.draft.get("enforced_by") is not None
+        if r.verdict.value("enforced") is not None and r.draft.get("enforced_by") is not None
     ]
     actions: dict[str, int] = {"write_lesson": 0, "review": 0, "discard": 0}
     current = "rule_supported" in gates
     writes_worth = writes = worth = missed = writes_enforced = admission_scored = unscored = 0
     left_unanswered = 0
     for r in rows:
-        probabilities = r.gate_probabilities(gates)
-        declined = bool(r.verdict.get("declined"))
         # A declined draft is a discard whatever its answers, so no gate holds it.
-        left_unanswered += not declined and None in probabilities.values()
-        action = derive_action(probabilities, thresholds, gates=gates, declined=declined).action
+        left_unanswered += not r.verdict.declined and None in r.verdict.gates().values()
+        action = r.verdict.action_at(thresholds).action
         actions[action] += 1
         is_worth = should_write(
             r.label, r.draft, questions_version=QUESTIONS_VERSION if current else None
@@ -401,16 +353,9 @@ def evaluate_stage_b(
         faithful=_binary(rows, "faithful", thresholds["faithful"]),
         generalizable_accuracy=accuracy([g for g, _ in gens], [t for _, t in gens]),
         enforced_accuracy=accuracy([e for e, _ in enf], [t for _, t in enf]),
-        mean_latency_ms=sum(r.stage_b_latency() for r in rows) / len(rows) if rows else 0.0,
-        total_cost_usd=(
-            sum(
-                float(a.get("cost_usd", 0.0))
-                for r in rows
-                for qid, a in r.verdict["answers"].items()
-                if qid not in STAGE_A_IDS
-            )
-            if current
-            else sum(r.verdict.get("cost_usd", 0.0) for r in rows)
+        mean_latency_ms=sum(r.verdict.draft_latency_ms for r in rows) / len(rows) if rows else 0.0,
+        total_cost_usd=sum(
+            r.verdict.draft_cost_usd if current else r.verdict.cost_usd for r in rows
         ),
         write_precision=writes_worth / writes if writes else None,
         miss_rate=missed / worth if worth else None,
@@ -445,14 +390,14 @@ def cascade_against(
     confs, cheap_ok, exp_ok, cheap_cost, exp_cost = [], [], [], [], []
     for i in shared:
         y = bool(cheap[i].label["failed"])
-        pc, pe = cheap[i].p("failed"), expensive[i].p("failed")
+        pc, pe = cheap[i].verdict.p("failed"), expensive[i].verdict.p("failed")
         if pc is None or pe is None:
             continue
-        confs.append(cheap[i].confidence("failed"))
+        confs.append(cheap[i].verdict.confidence("failed"))
         cheap_ok.append((pc >= threshold) == y)
         exp_ok.append((pe >= 0.5) == y)
-        cheap_cost.append(cheap[i].verdict["latency_ms"])
-        exp_cost.append(expensive[i].verdict["latency_ms"])
+        cheap_cost.append(cheap[i].latency_ms)
+        exp_cost.append(expensive[i].latency_ms)
     if not confs:
         return None
     if gate is None:
@@ -486,7 +431,7 @@ def freeze_thresholds(
             pairs = [
                 (p, y)
                 for r in pool
-                if (p := r.gate_p(gate)) is not None and (y := gate_truth(gate, r)) is not None
+                if (p := r.verdict.p(gate)) is not None and (y := gate_truth(gate, r)) is not None
             ]
             if pairs:
                 thresholds[gate] = round(
@@ -821,7 +766,7 @@ def drafter_notes(
                 continue
             if not isinstance(labeled_drafts, dict):
                 continue  # Historical item-level labels did not rate separate drafter arms.
-            entry = draft_label(label, {"drafter": drafter, "draft_hash": current_hashes[drafter]})
+            entry = draft_label(label, drafter, current_hashes[drafter])
             if current:
                 if (labeled_drafts.get(drafter) or {}).get("draft_hash") != current_hashes[drafter]:
                     continue
@@ -1074,7 +1019,7 @@ def claim_notes(
                     if row.item.get("split") != split:
                         continue
                     for i, claim_label in enumerate(row.draft.get("claims") or [], 1):
-                        value = row.value(f"{key}.{i}")
+                        value = row.verdict.value(f"{key}.{i}")
                         label = claim_label.get(key)
                         if value in ("yes", "no") and label is not None:
                             pairs.append((value == "yes", bool(label)))

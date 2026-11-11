@@ -8,7 +8,7 @@ import math
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from ..judge.questions import derive_action
+from ..judge.verdict import derive_action
 from . import ADMISSION_VERSION, AdmissionError
 from .embed import validate_vector
 from .examples import GATES, validated_thresholds

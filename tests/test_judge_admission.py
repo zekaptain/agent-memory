@@ -24,10 +24,10 @@ from agent_memory.judge.questions import (
     QUESTIONS_VERSION,
     STAGE_A,
     WRITE_GATES,
-    derive_action,
     write_gates,
 )
 from agent_memory.judge.store import JudgeError
+from agent_memory.judge.verdict import Verdict, derive_action, judge
 from tests.test_judge import structured_draft, synthetic_run
 
 
@@ -89,7 +89,7 @@ def test_true_claims_do_not_justify_an_unsupported_rule(monkeypatch, support, cu
         "projection_hash": "hash",
         "turn_event_id": "turn",
     }
-    verdict = pipeline.judge_item(
+    judged = judge(
         LlmJudgeBackend("synthetic", think=False),
         item,
         "[1] The server was running.\n[2] The database was locked.",
@@ -97,6 +97,7 @@ def test_true_claims_do_not_justify_an_unsupported_rule(monkeypatch, support, cu
         {"rule_supported": cut},
         run_id="synthetic",
     )
+    verdict = judged.row
     assert len(calls) == 2
     assert "DRAFT LESSON" not in calls[0]
     assert draft["lesson"] in calls[1]
@@ -108,7 +109,7 @@ def test_true_claims_do_not_justify_an_unsupported_rule(monkeypatch, support, cu
     assert verdict["answers"]["failed"]["value"] == "no"  # Failure is not required.
     assert verdict["action"] == expected
     assert verdict["latency_ms"] == pytest.approx(40.0)
-    entry = pipeline.decision_record(verdict, item, "2026-01-01T00:00:00+00:00")
+    entry = judged.decision_record(item, "2026-01-01T00:00:00+00:00")
     assert entry.payload is not None
     payload = entry.payload["judge"]
     assert payload["questions_version"] == "questions_v4"
@@ -119,9 +120,8 @@ def test_true_claims_do_not_justify_an_unsupported_rule(monkeypatch, support, cu
     }
     assert "Always disable" not in entry.to_json()
     assert "The server was running" not in entry.to_json()
-    row = report.Scored(item, {}, verdict)
     if support in ("missing", "invalid"):
-        assert row.gate_p("rule_supported") is None
+        assert judged.p("rule_supported") is None
         assert verdict["reasons"] == ["rule_supported: unanswered"]
 
 
@@ -151,8 +151,10 @@ def test_valuable_turn_with_bad_draft_is_not_a_correct_write(tmp_path):
     assert result.admission_scored == result.writes_scored == 1
     assert result.miss_rate is None  # No human-approved exact draft to miss.
     # Historical scoring deliberately used the opportunity label instead.
+    v3 = "questions_v3"
+    historical = replace(row, verdict=Verdict({**row.verdict.row, "questions_version": v3}))
     old = report.evaluate_stage_b(
-        "rules", "ollama:m", [row], DEFAULT_THRESHOLDS, write_gates("questions_v3")
+        "rules", "ollama:m", [historical], DEFAULT_THRESHOLDS, write_gates(v3)
     )
     assert old.write_precision == 1.0
     row.label["worth_remembering"] = False
@@ -267,7 +269,7 @@ def test_multi_draft_costs_include_rule_question_and_charge_stage_a_once(tmp_pat
     assert sum(r["cost_usd"] for r in rows) == pytest.approx(a_cost + 2 * b_cost)
     assert all(r["answers"]["rule_supported"]["cost_usd"] == 0.01 for r in rows)
     assert all(r["answers"]["grounded"]["cost_usd"] == 0.0 for r in rows)
-    scored = {(r["item_id"], r["drafter"]): report.Scored(item, {}, r) for r in rows}
+    scored = {(r["item_id"], r["drafter"]): report.Scored(item, {}, Verdict(r)) for r in rows}
     unique = list(report.per_item(scored).values())
     a = report.evaluate_stage_a("rules", unique, DEFAULT_THRESHOLDS, category_on_failed=True)
     b = stage_b(list(scored.values()))

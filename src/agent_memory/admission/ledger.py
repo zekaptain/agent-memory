@@ -10,7 +10,7 @@ from ..capture.pipeline import make_redactor
 from ..capture.record import Record
 from ..config import Config
 from ..db import MemoryClient, sql_literal
-from ..judge.pipeline import decision_record
+from ..judge.verdict import Verdict
 from ..lifecycle import LifecyclePlan, stable_id
 
 MEMORY_TYPES = {
@@ -96,8 +96,9 @@ def admit(
         "backend": verdict["backend"],
         "drafter": draft["drafter"],
     }
-    record = decision_record(
-        {**verdict, "action": result["action"], "reasons": result["reasons"]},
+    record = Verdict(
+        {**verdict, "action": result["action"], "reasons": result["reasons"]}
+    ).decision_record(
         item,
         created_at,
         harness_session_id=f"admission-{day}",

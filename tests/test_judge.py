@@ -53,10 +53,6 @@ from agent_memory.judge.questions import (
     QUESTIONS_VERSION,
     STAGE_A,
     STAGE_B,
-    WRITE_GATES_V1,
-    aggregate_claims,
-    derive_action,
-    gate_probabilities,
     stage_b_for,
     thresholds_from_run,
 )
@@ -73,6 +69,7 @@ from agent_memory.judge.triggers import (
     tool_error_facts,
     trigger_flags,
 )
+from agent_memory.judge.verdict import Verdict, judge
 from tests.conftest import FIXTURES
 
 JUDGE_TRANSCRIPT = FIXTURES / "droid_session_judge.jsonl"
@@ -522,7 +519,7 @@ def test_projection_is_deterministic_and_bounded_and_redacted():
 # Questions
 
 
-def test_question_set_shape_and_derived_action():
+def test_question_set_shape_and_run_thresholds():
     assert [q.id for q in STAGE_A] == [
         "failed",
         "incomplete",
@@ -542,40 +539,6 @@ def test_question_set_shape_and_derived_action():
     assert BY_ID["category"].options()[-1] == "none"
     assert BY_ID["generalizable"].options() == ["0", "1", "2"]
     assert BY_ID["enforced"].options() == ["none", "harness", "project_docs", "tooling"]
-    # v4 adds exact-rule support; Stage A failure is still not a write prerequisite.
-    probs = {
-        "failed": {"yes": 0.1, "no": 0.9},
-        "grounded": {"yes": 0.9, "no": 0.1},
-        "faithful": {"yes": 0.8, "no": 0.2},
-        "rule_supported": {"yes": 0.9, "no": 0.1},
-        "generalizable": {"0": 0.2, "1": 0.5, "2": 0.3},
-        "enforced": {"none": 0.7, "harness": 0.1, "project_docs": 0.1, "tooling": 0.1},
-    }
-    gates = gate_probabilities(probs)
-    assert gates == {
-        "grounded": 0.9,
-        "faithful": 0.8,
-        "generalizable": 0.8,
-        "enforced": 0.7,
-        "rule_supported": 0.9,
-    }
-    assert derive_action(gates).action == "write_lesson"
-    assert derive_action({**gates, "enforced": 0.2}).action == "discard"
-    assert derive_action({**gates, "faithful": 0.55}).action == "review"
-    assert derive_action({"grounded": 0.9}).action == "discard"
-    declined = derive_action(gates, declined=True)
-    assert (declined.action, declined.reasons) == (
-        "discard",
-        ["drafter declined: nothing worth keeping"],
-    )
-    # v1 runs keep their rule.
-    v1 = {"failed": 0.9, "recurrence": 0.8, "supported": 0.9}
-    assert derive_action(v1, gates=WRITE_GATES_V1).action == "write_lesson"
-    assert derive_action({**v1, "recurrence": 0.2}, gates=WRITE_GATES_V1).action == "discard"
-    assert derive_action({**v1, "failed": 0.55}, gates=WRITE_GATES_V1).action == "review"
-    assert gate_probabilities({"supported": {"yes": 0.4, "no": 0.6}}, WRITE_GATES_V1) == {
-        "supported": 0.4
-    }
     run = {
         "thresholds": {"failed": 0.4},
         "frozen": {"backends": {"rules": {"thresholds": {"failed": 0.7}}}},
@@ -1606,49 +1569,8 @@ def test_claim_questions_aggregation_and_rules():
     check_contract(answers, questions)
     assert [answers[f"grounded.{i}"].p_true for i in range(1, 4)] == [0.8, 0.2, 0.1]
     assert [answers[f"faithful.{i}"].p_true for i in range(1, 4)] == [0.65, 0.35, 0.1]
-    aggregated = aggregate_claims(answers)
-    for key in ("grounded", "faithful"):
-        assert aggregated[key].p_true == 0.1
-        assert aggregated[key].method == "min_over_claims"
-        assert aggregated[key].latency_ms == aggregated[key].cost_usd == 0
-        assert key not in answers
-    assert aggregate_claims({}) == {}
-    assert aggregate_claims({"grounded": aggregated["grounded"]}) == {}
-
-
-def test_judge_draft_keeps_claim_answers_and_derived_gates():
-    from agent_memory.judge.pipeline import decision_record, judge_item
-
-    draft = structured_draft(
-        claims=[
-            {"text": "The database was locked.", "cited": [1]},
-            {"text": "The server kept running.", "cited": []},
-        ]
-    ).to_dict()
-    item = {
-        "item_id": "i",
-        "facts": {},
-        "flags": ["T0"],
-        "projection_hash": "h",
-        "stratum": "T0",
-        "turn_event_id": "t",
-    }
-    verdict = judge_item(
-        RulesBackend(), item, "[1] The database was locked.", draft, {}, run_id="s"
-    )
-    assert verdict["claims"] == 2
-    assert verdict["draft_hash"] == draft_hash(draft["lesson"])
-    assert verdict["questions_version"] == "questions_v4"
-    assert verdict["action"] == "review"  # enforced=0.6 still lies inside the unchanged band
-    assert "grounded=0.10 below 0.50" in verdict["reasons"]
-    assert verdict["answers"]["grounded.1"]["probabilities"]["yes"] == 0.8
-    assert verdict["answers"]["grounded"]["probabilities"]["yes"] == 0.1
-    assert verdict["answers"]["grounded"]["method"] == "min_over_claims"
-    assert verdict["answers"]["faithful"]["probabilities"]["yes"] == 0.1
-    record = decision_record(verdict, item, "2026-01-01T00:00:00+00:00")
-    assert record.payload is not None
-    assert record.payload["judge"]["answers"]["grounded.1"]["value"] == "yes"
-    assert "database was locked" not in json.dumps(record.payload)
+    # The whole-draft gates of a claimed draft are derived when it is judged, not asked.
+    assert not {"grounded", "faithful"} & set(answers)
 
 
 # Metrics
@@ -2155,14 +2077,14 @@ def test_decide_items_skips_failing_item_on_resume(tmp_path, monkeypatch):
         pipeline.decide_items(cfg, "syn", ["rules"], store=store, record_events=False)
     # One good verdict exists, so the same failure is now skipped and reported.
     seed = items[2]
-    verdict = pipeline.judge_item(
+    verdict = judge(
         make_backend("rules"),
         seed,
         store.read_projection(seed["item_id"]),
         store.read_drafts()[seed["item_id"]][0],
         thresholds_from_run(store.read_run(), "rules"),
         run_id="syn",
-    )
+    ).row
     assert verdict["drafter"] == "ollama:m"
     assert verdict["draft_hash"] == draft_hash("Lesson 2.")
     assert set(verdict["answers"]) == {q.id for q in ALL_QUESTIONS}
@@ -2252,9 +2174,9 @@ def test_decide_items_judges_each_draft_and_reuses_stage_a(tmp_path, monkeypatch
     # Ledger events are keyed per drafter too, so two drafts of one turn are two events.
     created = store.read_run()["created_at"]
     keys = {
-        pipeline.decision_record(
-            r, {"stratum": "T0", "flags": [], "turn_event_id": "t"}, created
-        ).source_key
+        Verdict(r)
+        .decision_record({"stratum": "T0", "flags": [], "turn_event_id": "t"}, created)
+        .source_key
         for r in rows
     }
     assert len(keys) == 5

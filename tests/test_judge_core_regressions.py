@@ -341,23 +341,25 @@ def test_project_pairs_are_lazy_and_preserve_order_and_missing_labels(tmp_path):
     _, scored = report.load_scored(store)
     rows = list(report.per_item(scored["rules"]).values())
     rows[0].label["failed"] = None
-    rows[1].verdict["answers"].pop("failed")
-    valid = [r for r in rows if r.label.get("failed") is not None and r.p("failed") is not None]
+    rows[1].verdict.row["answers"].pop("failed")
+    valid = [
+        r for r in rows if r.label.get("failed") is not None and r.verdict.p("failed") is not None
+    ]
     expected = []
     for project in dict.fromkeys(row.item["project"] for row in valid):
         failed = [
-            r.p("failed")
+            r.verdict.p("failed")
             for r in valid
             if r.item["project"] == project
             and r.label.get("failed") is True
-            and r.p("failed") is not None
+            and r.verdict.p("failed") is not None
         ]
         clean = [
-            r.p("failed")
+            r.verdict.p("failed")
             for r in valid
             if r.item["project"] == project
             and r.label.get("failed") is False
-            and r.p("failed") is not None
+            and r.verdict.p("failed") is not None
         ]
         expected.extend((f, c) for f in failed for c in clean)
     pairs = report._pairs(rows)
