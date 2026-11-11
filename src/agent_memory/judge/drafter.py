@@ -11,12 +11,13 @@ is nothing for a future session to remember.
 The drafter sees the projection without its NEXT MESSAGE entry, so a lesson comes from this
 turn's own evidence and cannot fuse the request with an unrelated follow-up. The header's
 `closed_by` tells it whether the turn finished; a cut-off turn yields a lesson about the
-attempt, not the result. Every item is drafted, clean controls included, so Stage B judges
-learn to reject lessons drawn from turns that did not fail.
+attempt, not the result. Every item is drafted, clean controls included, so judges answering
+the draft questions learn to reject lessons drawn from turns that did not fail.
 
 Three kinds: `ollama:<model>` and `llamacpp:<model>` stay local; `openrouter:<model>` sends
 the redacted rendering to a hosted model and needs the remote opt-in. Several drafters can
-draft the same run, one row per (item, drafter), so Stage B compares them on identical turns.
+draft the same run, one row per (item, drafter), so the draft questions compare them on
+identical turns.
 """
 
 from __future__ import annotations
@@ -53,7 +54,7 @@ SCHEMA_REJECTED = frozenset({400, 422})
 
 # One short harness sentence, on purpose. A paragraph spelling out harness behavior made a 26B
 # local model decline nearly every turn, project facts included, while still writing up the
-# Spec Mode refusal it described; Stage B's `enforced` gate is the backstop for that model.
+# Spec Mode refusal it described; the `enforced` draft question is the backstop for that model.
 SYSTEM = (
     "You write one lesson for a future AI coding-agent session on the same project, from a "
     "numbered projection of one past turn: the request, the tool calls and their results, the "

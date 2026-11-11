@@ -134,8 +134,9 @@ uv run mem judge decide --run "$RUN" \
   --backend rules --backend llm:gemma4:26b
 ```
 
-Stage A judges the turn once per backend. Stage B judges each non-declined
-draft, including each claim's grounding and faithfulness. With multiple
+The turn questions judge the turn once per backend. The draft questions
+judge each non-declined draft, including each claim's grounding and
+faithfulness. The report calls them Stage A and Stage B. With multiple
 drafters, expect multiple verdict rows per item.
 
 - `--backend SPEC` is required and repeatable. See [Model choices](#model-choices).

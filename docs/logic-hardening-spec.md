@@ -126,7 +126,7 @@ checks remain. Admission adds the whole-draft `rule_supported` gate:
 
 Grounded, faithful, reusable, not already enforced, and rule supported are
 all required for a write. Missing or uncertain support cannot yield a write.
-Stage A failure is descriptive, not a prerequisite.
+The turn question `failed` is descriptive, not a prerequisite.
 
 Blinded human labels include rule support and "Would you store this exact
 draft?" Turn-level worth remains a discovery/opportunity measure, not draft

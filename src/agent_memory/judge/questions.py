@@ -1,10 +1,10 @@
 """The typed question set (`questions_v4`) and which of its questions gate a write.
 
-Stage A is asked once per item from the projection alone; Stage B once per draft. The write
-rule reads only Stage B: a lesson is written when it is grounded, faithful, reusable beyond
-the turn, enforced by nothing else, and its exact rule follows from the evidence. `failed`
-and `recurrence` describe the turn, not admission. Historical versions keep their gates
-through `write_gates`. How answers become an action is in `verdict.py`.
+Turn questions are asked once per item from the projection alone; draft questions once per
+draft. The write rule reads only draft questions: a lesson is written when it is grounded,
+faithful, reusable beyond the turn, enforced by nothing else, and its exact rule follows from
+the evidence. `failed` and `recurrence` describe the turn, not admission. Historical versions
+keep their gates through `write_gates`. How answers become an action is in `verdict.py`.
 
 A question the judge did not usably answer is marked `unanswered` and never read as a
 probability: on a write gate it sends the verdict to review.
@@ -76,7 +76,7 @@ ENFORCED: dict[str, str] = {
     "tooling": "A tool would catch the slip anyway (lint, type check, CI, hook).",
 }
 
-STAGE_A: tuple[Question, ...] = (
+TURN_QUESTIONS: tuple[Question, ...] = (
     Question(
         "failed",
         "noul",
@@ -150,7 +150,7 @@ STAGE_A: tuple[Question, ...] = (
     ),
 )
 
-STAGE_B: tuple[Question, ...] = (
+DRAFT_QUESTIONS: tuple[Question, ...] = (
     Question(
         "grounded",
         "noul",
@@ -220,7 +220,7 @@ STAGE_B: tuple[Question, ...] = (
     ),
 )
 
-ALL_QUESTIONS: tuple[Question, ...] = STAGE_A + STAGE_B
+ALL_QUESTIONS: tuple[Question, ...] = TURN_QUESTIONS + DRAFT_QUESTIONS
 BY_ID: dict[str, Question] = {q.id: q for q in ALL_QUESTIONS}
 
 
@@ -261,11 +261,11 @@ def claim_questions(claims: Sequence[Claim]) -> tuple[Question, ...]:
     return tuple(out)
 
 
-def stage_b_for(lesson: Lesson | None) -> tuple[Question, ...]:
+def draft_questions_for(lesson: Lesson | None) -> tuple[Question, ...]:
     if lesson is None or not lesson.claims:
-        return STAGE_B
+        return DRAFT_QUESTIONS
     return claim_questions(lesson.claims) + tuple(
-        q for q in STAGE_B if q.id not in ("grounded", "faithful")
+        q for q in DRAFT_QUESTIONS if q.id not in ("grounded", "faithful")
     )
 
 

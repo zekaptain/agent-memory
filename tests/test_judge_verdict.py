@@ -13,9 +13,9 @@ from agent_memory.judge.drafter import draft_hash
 from agent_memory.judge.questions import (
     ALL_QUESTIONS,
     DEFAULT_THRESHOLDS,
+    DRAFT_QUESTIONS,
     QUESTIONS_VERSION,
-    STAGE_A,
-    STAGE_B,
+    TURN_QUESTIONS,
     WRITE_GATES,
     WRITE_GATES_V1,
     WRITE_GATES_V2,
@@ -37,7 +37,7 @@ ITEM = {
 }
 STATE = "[1] The server was running.\n[2] SENTINEL_STATE_TEXT: the database was locked."
 DRAFT = {"item_id": "i", "lesson": "Stop the server before migrating.", "drafter": "ollama:m"}
-TURN_IDS = {q.id for q in STAGE_A}
+TURN_IDS = {q.id for q in TURN_QUESTIONS}
 ROW_KEYS = [
     "run_id",
     "item_id",
@@ -88,7 +88,7 @@ class Scripted:
         self.asked: list[tuple[bool, str | None, list[str]]] = []
 
     def decide(self, inp, questions):
-        self.asked.append((questions is STAGE_A, inp.draft, [q.id for q in questions]))
+        self.asked.append((questions is TURN_QUESTIONS, inp.draft, [q.id for q in questions]))
         if self.fail_on is not None and inp.draft == self.fail_on:
             raise JudgeError("synthetic model failure")
         return {
@@ -159,10 +159,10 @@ def test_a_turn_is_asked_once_and_later_drafts_copy_its_answers_at_no_cost():
         assert (paid["latency_ms"], paid["cost_usd"]) == (10.0, 0.01)
         assert copied == {**paid, "latency_ms": 0.0, "cost_usd": 0.0}
     assert first.latency_ms == pytest.approx(10.0 * len(ALL_QUESTIONS))
-    assert second.latency_ms == pytest.approx(10.0 * len(STAGE_B))
+    assert second.latency_ms == pytest.approx(10.0 * len(DRAFT_QUESTIONS))
     for verdict in (first, second):
-        assert verdict.draft_latency_ms == pytest.approx(10.0 * len(STAGE_B))
-        assert verdict.draft_cost_usd == pytest.approx(0.01 * len(STAGE_B))
+        assert verdict.draft_latency_ms == pytest.approx(10.0 * len(DRAFT_QUESTIONS))
+        assert verdict.draft_cost_usd == pytest.approx(0.01 * len(DRAFT_QUESTIONS))
     assert second.cost_usd == pytest.approx(second.draft_cost_usd)
 
 

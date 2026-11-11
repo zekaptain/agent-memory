@@ -93,7 +93,7 @@ def test_import_candidates_decide_and_ledger_events(live_cfg, live_client, sessi
             assert "No, that's wrong" not in text
     assert decide_items(live_cfg, "t1", ["rules"], record_events=False) == {"rules": 0}
 
-    # A draft arriving later supersedes the Stage-A-only verdict for that item and adds a
+    # A draft arriving later supersedes the turn-only verdict for that item and adds a
     # second decision event; the other items stay as they were.
     error_line = next(line for line in projection.splitlines() if "TOOL RESULT (error):" in line)
     error_number = int(error_line.split("]", 1)[0].lstrip("["))

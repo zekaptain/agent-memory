@@ -48,7 +48,7 @@ def _config(ctx: typer.Context) -> Config:
     return cfg
 
 
-# The rendered report's widest tables (Stage A has 13 columns) need about this many columns.
+# The rendered report's widest tables ("Stage A" has 13 columns) need about this many columns.
 REPORT_WIDTH = 150
 
 

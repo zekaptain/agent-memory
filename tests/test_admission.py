@@ -530,7 +530,7 @@ def test_run_real_transports_redact_before_persistence(admission_live, monkeypat
     )
     args = ["--home", str(cfg.home), "--port", str(cfg.port), "admit"]
     assert main([*args, "run", "--day", "2026-11-10", "--drafter", "ollama:synthetic"]) == 0
-    assert len(calls) == 4  # Draft, Stage A, Stage B and lesson embedding.
+    assert len(calls) == 4  # Draft, turn questions, draft questions and lesson embedding.
     assert query(cfg, "SELECT status FROM memory_status") == [("quarantined",)]
     assert query(cfg, "SELECT type FROM memories") == [("fact",)]
     assert "[REDACTED:github_token]" in query(cfg, "SELECT content FROM memories")[0][0]

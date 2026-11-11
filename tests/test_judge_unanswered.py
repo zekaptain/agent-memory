@@ -222,7 +222,7 @@ def test_decide_records_the_unanswered_verdict_once_and_does_not_ask_again(tmp_p
         store.cfg, "syn", ["llm:synthetic"], store=store, record_events=False, log=logs.append
     )
     assert written == {"llm:synthetic": 2}
-    assert len(prompts) == 4  # Stage A and Stage B once per item: no second attempt.
+    assert len(prompts) == 4  # Turn and draft questions once per item: no second attempt.
     rows = store.read_jsonl(store.verdicts_path("llm:synthetic"))
     assert [(r["action"], r["reasons"]) for r in rows] == [
         ("review", ["generalizable: unanswered"])
@@ -301,8 +301,8 @@ def test_rules_have_no_answer_for_a_question_they_do_not_know():
 # The report
 
 
-def stage_b(rows):
-    return report.evaluate_stage_b("rules", "ollama:m", rows, DEFAULT_THRESHOLDS, WRITE_GATES)
+def draft_eval(rows):
+    return report.evaluate_drafts("rules", "ollama:m", rows, DEFAULT_THRESHOLDS, WRITE_GATES)
 
 
 def gate_distribution(gate: str, p: float) -> dict[str, float]:
@@ -357,7 +357,7 @@ def test_an_unanswered_verdict_is_counted_as_a_review_and_scores_nothing(tmp_pat
     others = [r for r in rows if r.item["item_id"] != silent["item_id"]]
     assert len(rows) == len(others) + 1 == 12
 
-    with_it, without = stage_b(rows), stage_b(others)
+    with_it, without = draft_eval(rows), draft_eval(others)
     for name in ("grounded", "faithful", "rule_supported"):
         assert getattr(with_it, name) == getattr(without, name), name
     assert with_it.generalizable_accuracy == without.generalizable_accuracy
@@ -365,11 +365,11 @@ def test_an_unanswered_verdict_is_counted_as_a_review_and_scores_nothing(tmp_pat
     assert with_it.actions == {**without.actions, "review": without.actions["review"] + 1}
     assert (with_it.unanswered, without.unanswered) == (1, 0)
 
-    def stage_a(some):
-        return report.evaluate_stage_a("rules", some, DEFAULT_THRESHOLDS, category_on_failed=True)
+    def turn_eval(some):
+        return report.evaluate_turns("rules", some, DEFAULT_THRESHOLDS, category_on_failed=True)
 
     for name in ("failed", "incomplete", "category_accuracy", "paired"):
-        assert getattr(stage_a(rows), name) == getattr(stage_a(others), name), name
+        assert getattr(turn_eval(rows), name) == getattr(turn_eval(others), name), name
 
     notes = [line for line in report.build_report(store).splitlines() if "unanswered" in line]
     assert len(notes) == 1
@@ -386,5 +386,5 @@ def test_a_declined_draft_is_not_counted_as_held_by_an_unanswered_gate(tmp_path)
     store.write_jsonl(path, verdicts)
     _, scored = report.load_scored(store)
     rows = [r for r in scored["rules"].values() if r.item["split"] == "calibration"]
-    assert stage_b(rows).unanswered == 0
+    assert draft_eval(rows).unanswered == 0
     assert "unanswered" not in report.build_report(store)

@@ -12,13 +12,13 @@ from agent_memory.judge import metrics, pipeline, report, triggers
 from agent_memory.judge.backends.rules import RulesBackend
 from agent_memory.judge.drafter import draft_hash
 from agent_memory.judge.provenance import Caller
-from agent_memory.judge.questions import STAGE_A
+from agent_memory.judge.questions import TURN_QUESTIONS
 from agent_memory.judge.store import JudgeError
 from tests.test_judge import _rows, as_questions_version, synthetic_run
 
 
 @pytest.mark.parametrize("first", ["draft", "decline", "failed"])
-def test_stage_a_is_charged_only_to_first_persisted_verdict(tmp_path, monkeypatch, first):
+def test_the_turn_is_charged_only_to_first_persisted_verdict(tmp_path, monkeypatch, first):
     store = synthetic_run(tmp_path, n=2)
     items = store.read_jsonl(store.items_path)
     item_id = items[1]["item_id"]
@@ -37,16 +37,16 @@ def test_stage_a_is_charged_only_to_first_persisted_verdict(tmp_path, monkeypatc
     real_decide = RulesBackend.decide
 
     def paid(self, inp, questions):
-        stage_a = questions is STAGE_A
-        calls.append((inp.item_id, stage_a, inp.draft))
+        asked_turn = questions is TURN_QUESTIONS
+        calls.append((inp.item_id, asked_turn, inp.draft))
         if first == "failed" and inp.draft == "A":
-            raise JudgeError("synthetic Stage B failure")
+            raise JudgeError("synthetic draft-question failure")
         answers = real_decide(self, inp, questions)
         return {
             key: replace(
                 answer,
-                latency_ms=12.0 if stage_a else 3.0,
-                cost_usd=0.003 if stage_a else 0.001,
+                latency_ms=12.0 if asked_turn else 3.0,
+                cost_usd=0.003 if asked_turn else 0.001,
             )
             for key, answer in answers.items()
         }
@@ -58,18 +58,18 @@ def test_stage_a_is_charged_only_to_first_persisted_verdict(tmp_path, monkeypatc
     assert written == {"rules": 2 if first == "failed" else 3}
     rows = [row for row in store.read_jsonl(path) if row["item_id"] == item_id]
     assert [row["stage_a_reused"] for row in rows] == [False] + [True] * (len(rows) - 1)
-    assert sum(stage_a for _, stage_a, _ in calls) == 1
-    a_ids = {q.id for q in STAGE_A}
+    assert sum(asked_turn for _, asked_turn, _ in calls) == 1
+    turn_ids = {q.id for q in TURN_QUESTIONS}
     for index, row in enumerate(rows):
-        for key in a_ids:
+        for key in turn_ids:
             assert row["answers"][key]["latency_ms"] == (0.0 if index else 12.0)
             assert row["answers"][key]["cost_usd"] == (0.0 if index else 0.003)
-        stage_b_count = len(set(row["answers"]) - a_ids)
-        assert row["latency_ms"] == (0.0 if index else 72.0) + stage_b_count * 3.0
-        assert row["cost_usd"] == pytest.approx((0.0 if index else 0.018) + stage_b_count * 0.001)
+        draft_count = len(set(row["answers"]) - turn_ids)
+        assert row["latency_ms"] == (0.0 if index else 72.0) + draft_count * 3.0
+        assert row["cost_usd"] == pytest.approx((0.0 if index else 0.018) + draft_count * 0.001)
         if row["declined"]:
             assert row["action"] == "discard"
-            assert stage_b_count == 0
+            assert draft_count == 0
 
     # Decision records carry the corrected totals, but never state or lesson text.
     assert len(records) == len(rows)
@@ -82,7 +82,7 @@ def test_stage_a_is_charged_only_to_first_persisted_verdict(tmp_path, monkeypatc
         assert "SENTINEL_STATE_TEXT" not in record.to_json()
         assert "lesson" not in judge
 
-    # Retry the failed arm and add another arm; neither pays for Stage A again.
+    # Retry the failed arm and add another arm; neither pays for the turn questions again.
     first = "draft"
     calls.clear()
     records.clear()
@@ -91,7 +91,7 @@ def test_stage_a_is_charged_only_to_first_persisted_verdict(tmp_path, monkeypatc
     )
     written = pipeline.decide_items(store.cfg, store.run_id, ["rules"], store=store)
     assert written["rules"] == (2 if len(rows) == 2 else 1)
-    assert not any(stage_a for _, stage_a, _ in calls)
+    assert not any(asked_turn for _, asked_turn, _ in calls)
     resumed = store.read_jsonl(path)[-written["rules"] :]
     assert all(row["stage_a_reused"] for row in resumed)
     assert all(record.payload["judge"]["latency_ms"] == 18.0 for record in records)

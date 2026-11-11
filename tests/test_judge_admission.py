@@ -22,7 +22,7 @@ from agent_memory.judge.lesson import Claim, Lesson
 from agent_memory.judge.questions import (
     DEFAULT_THRESHOLDS,
     QUESTIONS_VERSION,
-    STAGE_A,
+    TURN_QUESTIONS,
     WRITE_GATES,
     write_gates,
 )
@@ -135,8 +135,8 @@ def test_absent_gate_never_writes_even_with_zero_threshold_and_band():
         assert derive_action(probabilities, gates=write_gates(version)).action == "write_lesson"
 
 
-def stage_b(rows):
-    return report.evaluate_stage_b("rules", "ollama:m", rows, DEFAULT_THRESHOLDS, WRITE_GATES)
+def draft_eval(rows):
+    return report.evaluate_drafts("rules", "ollama:m", rows, DEFAULT_THRESHOLDS, WRITE_GATES)
 
 
 def test_valuable_turn_with_bad_draft_is_not_a_correct_write(tmp_path):
@@ -145,7 +145,7 @@ def test_valuable_turn_with_bad_draft_is_not_a_correct_write(tmp_path):
     row = list(scored["rules"].values())[3]
     assert row.label["worth_remembering"] is True
     row.draft["store_exact"] = False
-    result = stage_b([row])
+    result = draft_eval([row])
     assert result.actions["write_lesson"] == 1
     assert result.write_precision == 0.0
     assert result.admission_scored == result.writes_scored == 1
@@ -153,13 +153,13 @@ def test_valuable_turn_with_bad_draft_is_not_a_correct_write(tmp_path):
     # Historical scoring deliberately used the opportunity label instead.
     v3 = "questions_v3"
     historical = replace(row, verdict=Verdict({**row.verdict.row, "questions_version": v3}))
-    old = report.evaluate_stage_b(
+    old = report.evaluate_drafts(
         "rules", "ollama:m", [historical], DEFAULT_THRESHOLDS, write_gates(v3)
     )
     assert old.write_precision == 1.0
     row.label["worth_remembering"] = False
     row.draft["store_exact"] = True
-    assert stage_b([row]).write_precision == 1.0  # The labels have distinct subjects.
+    assert draft_eval([row]).write_precision == 1.0  # The labels have distinct subjects.
 
 
 @pytest.mark.parametrize("missing", ["absent", "null", "unknown", "hash", "current_draft"])
@@ -183,7 +183,7 @@ def test_missing_or_stale_admission_is_unscored_not_correct_or_negative(tmp_path
     store.write_jsonl(store.labels_path, labels)
     _, scored = report.load_scored(store)
     row = list(scored["rules"].values())[3]
-    result = stage_b([row])
+    result = draft_eval([row])
     assert result.actions["write_lesson"] == 1
     assert result.write_precision is result.miss_rate is None
     assert result.admission_scored == result.writes_scored == 0
@@ -202,7 +202,7 @@ def test_precision_and_misses_exclude_unknowns_but_costs_do_not(tmp_path):
         row.draft["store_exact"] = None
     rows[0].draft["store_exact"] = True  # Discard: a missed approved draft.
     rows[1].draft["store_exact"] = False  # Write: an explicitly bad draft.
-    result = stage_b(rows)
+    result = draft_eval(rows)
     assert result.write_precision == 0.0
     assert result.miss_rate == 1.0
     assert result.admission_scored == 2
@@ -245,7 +245,7 @@ def test_rule_thresholds_fit_calibration_only_and_remain_frozen(tmp_path, monkey
     assert store.run_json.read_bytes() == frozen_bytes
 
 
-def test_multi_draft_costs_include_rule_question_and_charge_stage_a_once(tmp_path, monkeypatch):
+def test_multi_draft_costs_include_rule_question_and_charge_the_turn_once(tmp_path, monkeypatch):
     store = synthetic_run(tmp_path, n=1)
     store.verdicts_path("rules").unlink()
     item = store.read_jsonl(store.items_path)[0]
@@ -264,15 +264,15 @@ def test_multi_draft_costs_include_rule_question_and_charge_stage_a_once(tmp_pat
     rows = store.read_jsonl(store.verdicts_path("rules"))
     assert len(rows) == 2
     assert [r["stage_a_reused"] for r in rows] == [False, True]
-    a_cost = len(STAGE_A) * 0.01
+    a_cost = len(TURN_QUESTIONS) * 0.01
     b_cost = 6 * 0.01  # One grounded/faithful pair plus four whole-draft questions.
     assert sum(r["cost_usd"] for r in rows) == pytest.approx(a_cost + 2 * b_cost)
     assert all(r["answers"]["rule_supported"]["cost_usd"] == 0.01 for r in rows)
     assert all(r["answers"]["grounded"]["cost_usd"] == 0.0 for r in rows)
     scored = {(r["item_id"], r["drafter"]): report.Scored(item, {}, Verdict(r)) for r in rows}
     unique = list(report.per_item(scored).values())
-    a = report.evaluate_stage_a("rules", unique, DEFAULT_THRESHOLDS, category_on_failed=True)
-    b = stage_b(list(scored.values()))
+    a = report.evaluate_turns("rules", unique, DEFAULT_THRESHOLDS, category_on_failed=True)
+    b = draft_eval(list(scored.values()))
     assert a.total_cost_usd == pytest.approx(a_cost + 2 * b_cost)
     assert b.total_cost_usd == pytest.approx(2 * b_cost)
     assert b.admission_scored == 0

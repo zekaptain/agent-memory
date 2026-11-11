@@ -50,10 +50,10 @@ from agent_memory.judge.projection import FullEvent, build_projection, drafter_r
 from agent_memory.judge.questions import (
     ALL_QUESTIONS,
     BY_ID,
+    DRAFT_QUESTIONS,
     QUESTIONS_VERSION,
-    STAGE_A,
-    STAGE_B,
-    stage_b_for,
+    TURN_QUESTIONS,
+    draft_questions_for,
     thresholds_from_run,
 )
 from agent_memory.judge.report import build_report
@@ -520,7 +520,7 @@ def test_projection_is_deterministic_and_bounded_and_redacted():
 
 
 def test_question_set_shape_and_run_thresholds():
-    assert [q.id for q in STAGE_A] == [
+    assert [q.id for q in TURN_QUESTIONS] == [
         "failed",
         "incomplete",
         "user_corrected",
@@ -528,7 +528,7 @@ def test_question_set_shape_and_run_thresholds():
         "category",
         "recurrence",
     ]
-    assert [q.id for q in STAGE_B] == [
+    assert [q.id for q in DRAFT_QUESTIONS] == [
         "grounded",
         "faithful",
         "rule_supported",
@@ -584,7 +584,8 @@ def test_rules_backend_contract_and_direction():
     assert answers["actionable"].value == "yes"
     assert answers["enforced"].value == "none"
     clean = RulesBackend().decide(
-        JudgeInput(item_id="j", state="", facts={"last_result_ok": True}, flags=("T0",)), STAGE_A
+        JudgeInput(item_id="j", state="", facts={"last_result_ok": True}, flags=("T0",)),
+        TURN_QUESTIONS,
     )
     assert clean["failed"].value == "no"
     assert clean["category"].value == "none"
@@ -1537,7 +1538,7 @@ def test_claim_questions_aggregation_and_rules():
         )
     )
     assert lesson is not None
-    questions = stage_b_for(lesson)
+    questions = draft_questions_for(lesson)
     assert [q.id for q in questions] == [
         "grounded.1",
         "faithful.1",
@@ -1553,8 +1554,11 @@ def test_claim_questions_aggregation_and_rules():
     assert (
         "Claim 3: The migration database was locked. (cites nothing)" in questions[4].instructions
     )
-    assert stage_b_for(None) is STAGE_B
-    assert stage_b_for(Lesson.model_construct(rule="r", kind="process", claims=[])) is STAGE_B
+    assert draft_questions_for(None) is DRAFT_QUESTIONS
+    assert (
+        draft_questions_for(Lesson.model_construct(rule="r", kind="process", claims=[]))
+        is DRAFT_QUESTIONS
+    )
     assert "Every claim" not in " ".join(questions[0].option_descriptions())
     assert "This claim" in " ".join(questions[1].option_descriptions())
     inp = JudgeInput(
@@ -1707,7 +1711,7 @@ def _verdict(
 
 
 def synthetic_run(tmp_path: Path, *, n: int = 20, v1: bool = False) -> RunStore:
-    """A current run with legacy-shaped drafts and labels, exercising Stage B's fallback.
+    """A current run with legacy-shaped drafts and labels, exercising the draft-label fallback.
     `v1` builds an exp2-shaped run: no drafter on verdicts,
     `supported`/`generalizable`/`enforced_by` on the item."""
     cfg = Config(home=tmp_path / "exp")
@@ -2109,7 +2113,7 @@ def test_decide_items_skips_failing_item_on_resume(tmp_path, monkeypatch):
     assert bad not in {v["item_id"] for v in verdicts}
 
 
-def test_decide_items_judges_each_draft_and_reuses_stage_a(tmp_path, monkeypatch):
+def test_decide_items_judges_each_draft_and_reuses_turn_answers(tmp_path, monkeypatch):
     from agent_memory.judge import pipeline
 
     store = synthetic_run(tmp_path, n=3)
@@ -2126,18 +2130,18 @@ def test_decide_items_judges_each_draft_and_reuses_stage_a(tmp_path, monkeypatch
         ],
         append=True,
     )
-    stage_a_calls: list[str] = []
+    turn_calls: list[str] = []
     real_decide = RulesBackend.decide
 
     def counting(self, inp, questions):
-        if questions is STAGE_A:
-            stage_a_calls.append(inp.item_id)
+        if questions is TURN_QUESTIONS:
+            turn_calls.append(inp.item_id)
         return real_decide(self, inp, questions)
 
     monkeypatch.setattr(RulesBackend, "decide", counting)
     written = pipeline.decide_items(cfg, "syn", ["rules"], store=store, record_events=False)
     assert written == {"rules": 5}
-    assert sorted(stage_a_calls) == sorted(ids)  # once per item, not per draft
+    assert sorted(turn_calls) == sorted(ids)  # once per item, not per draft
     rows = store.read_jsonl(store.verdicts_path("rules"))
     by_key = {(r["item_id"], r["drafter"]): r for r in rows}
     assert set(by_key) == {
@@ -2155,17 +2159,19 @@ def test_decide_items_judges_each_draft_and_reuses_stage_a(tmp_path, monkeypatch
     )
     assert declined["action"] == "discard"
     assert declined["reasons"] == ["drafter declined: nothing worth keeping"]
-    assert set(declined["answers"]) == {q.id for q in STAGE_A}
+    assert set(declined["answers"]) == {q.id for q in TURN_QUESTIONS}
     full = by_key[(ids[0], "ollama:m")]
     assert set(full["answers"]) == {q.id for q in ALL_QUESTIONS}
-    # The first row of an item paid for Stage A; the second copied it at no cost.
+    # The first row of an item paid for the turn questions; the second copied them at no cost.
     first, second = sorted(
         (by_key[(ids[0], "llamacpp:x")], by_key[(ids[0], "ollama:m")]),
         key=lambda r: r["stage_a_reused"],
     )
     assert (first["stage_a_reused"], second["stage_a_reused"]) == (False, True)
     assert all(
-        a["latency_ms"] == 0.0 for q, a in second["answers"].items() if q in {x.id for x in STAGE_A}
+        a["latency_ms"] == 0.0
+        for q, a in second["answers"].items()
+        if q in {x.id for x in TURN_QUESTIONS}
     )
     assert first["answers"]["failed"] == {
         **second["answers"]["failed"],
@@ -2182,8 +2188,8 @@ def test_decide_items_judges_each_draft_and_reuses_stage_a(tmp_path, monkeypatch
     assert len(keys) == 5
     assert all(k.endswith(("/ollama:m", "/llamacpp:x")) for k in keys)
 
-    # Resume: a late draft on item 2 gets one new row, with Stage A copied from the stored one.
-    stage_a_calls.clear()
+    # Resume: a late draft on item 2 gets one new row, with turn answers copied from the stored one.
+    turn_calls.clear()
     store.write_jsonl(
         store.drafts_path,
         [{"item_id": ids[2], "lesson": "Late.", "drafter": "llamacpp:x"}],
@@ -2192,7 +2198,7 @@ def test_decide_items_judges_each_draft_and_reuses_stage_a(tmp_path, monkeypatch
     assert pipeline.decide_items(cfg, "syn", ["rules"], store=store, record_events=False) == {
         "rules": 1
     }
-    assert stage_a_calls == []
+    assert turn_calls == []
     rows = store.read_jsonl(store.verdicts_path("rules"))
     assert len(rows) == 6
     late = next(r for r in rows if (r["item_id"], r["drafter"]) == (ids[2], "llamacpp:x"))

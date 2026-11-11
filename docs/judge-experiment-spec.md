@@ -1403,3 +1403,12 @@ from the clock, and so are admission's imported examples. The synthetic
 reports for questions v1 to v4, open and frozen, and the reports of exp2
 and exp3 rebuilt from copies are unchanged. Tests at the module's
 interface are in `tests/test_judge_verdict.py`.
+
+### Turn questions and draft questions, renamed (2026-11-11)
+
+The code now says turn questions and draft questions where this spec says
+Stage A and Stage B: `TURN_QUESTIONS`, `DRAFT_QUESTIONS`,
+`draft_questions_for`, `evaluate_turns` and `evaluate_drafts`. Nothing
+else changed. Report headings and the stored row key `stage_a_reused`
+keep the old names, so reports and stored rows read as before, and the
+earlier sections of this spec keep them too.

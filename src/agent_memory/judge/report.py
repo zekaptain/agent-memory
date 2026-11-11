@@ -1,7 +1,7 @@
 """Scores verdicts against labels, freezes thresholds on the calibration split, and writes
 report.md. The held-out split is scored only after thresholds are frozen.
 
-Stage A questions are scored once per item; Stage B questions and the write decision once per
+Turn questions are scored once per item; draft questions and the write decision once per
 (item, draft), per drafter. Runs built under `questions_v1` (one draft per item, `supported`
 instead of `grounded`, the v1 write rule) are read through the same code: the aliases live in
 `Verdict` and `draft_label`.
@@ -43,8 +43,8 @@ FAITHFUL_TARGET = 0.9
 def draft_label(
     label: Mapping[str, Any], drafter: str | None, lesson_hash: str | None
 ) -> dict[str, Any]:
-    """The Stage B labels that apply to one drafter's draft. v2 rows hold them per drafter and
-    only count when the draft text is the one labeled; v1 rows hold them per item."""
+    """The draft-question labels that apply to one drafter's draft. v2 rows hold them per drafter
+    and only count when the draft text is the one labeled; v1 rows hold them per item."""
     drafts = label.get("drafts")
     if isinstance(drafts, dict):
         entry = drafts.get(str(drafter or "")) or {}
@@ -183,7 +183,7 @@ def load_scored(store: RunStore) -> tuple[list[dict[str, Any]], dict[str, dict[K
 
 
 def per_item(rows: Mapping[Key, Scored]) -> dict[str, Scored]:
-    """One row per item for Stage A, which every row of an item carries alike; the latency
+    """One row per item for the turn answers, which every row of an item carries alike; the latency
     attributed to the item is what all its rows paid together."""
     out: dict[str, Scored] = {}
     paid: dict[str, float] = {}
@@ -209,7 +209,7 @@ def per_drafter(rows: Mapping[Key, Scored]) -> dict[str | None, list[Scored]]:
 
 
 @dataclass
-class StageAEval:
+class TurnEval:
     name: str
     n: int
     failed: BinaryMetrics | None
@@ -222,7 +222,7 @@ class StageAEval:
 
 
 @dataclass
-class StageBEval:
+class DraftEval:
     name: str
     drafter: str | None
     n: int
@@ -272,9 +272,9 @@ def _pairs(rows: Sequence[Scored]) -> Iterator[tuple[float, float]]:
     return ((f, c) for failed, clean in by_project.values() for f in failed for c in clean)
 
 
-def evaluate_stage_a(
+def evaluate_turns(
     name: str, rows: Sequence[Scored], thresholds: Mapping[str, float], *, category_on_failed: bool
-) -> StageAEval:
+) -> TurnEval:
     cats = [
         (r.verdict.value("category"), r.label["category"])
         for r in rows
@@ -288,7 +288,7 @@ def evaluate_stage_a(
         if failed_labels
         else None
     )
-    return StageAEval(
+    return TurnEval(
         name=name,
         n=len(rows),
         failed=_binary(rows, "failed", thresholds["failed"]),
@@ -301,13 +301,13 @@ def evaluate_stage_a(
     )
 
 
-def evaluate_stage_b(
+def evaluate_drafts(
     name: str,
     drafter: str | None,
     rows: Sequence[Scored],
     thresholds: Mapping[str, float],
     gates: Sequence[str],
-) -> StageBEval:
+) -> DraftEval:
     gens = [
         (r.verdict.value("generalizable"), str(r.draft["generalizable"]))
         for r in rows
@@ -342,7 +342,7 @@ def evaluate_stage_b(
             writes_worth += is_worth
         elif is_worth:
             missed += 1
-    return StageBEval(
+    return DraftEval(
         name=name,
         drafter=drafter,
         n=len(rows),
@@ -458,7 +458,7 @@ def _table(header: Sequence[str], rows: Sequence[Sequence[str]]) -> list[str]:
     return out
 
 
-_STAGE_A_HEADER = [
+_TURN_HEADER = [
     "backend",
     "n",
     "failed acc",
@@ -475,7 +475,7 @@ _STAGE_A_HEADER = [
 ]
 
 
-def _stage_a_rows(evals: Sequence[StageAEval]) -> list[list[str]]:
+def _turn_rows(evals: Sequence[TurnEval]) -> list[list[str]]:
     rows = []
     for e in evals:
         f, inc = e.failed, e.incomplete
@@ -499,7 +499,7 @@ def _stage_a_rows(evals: Sequence[StageAEval]) -> list[list[str]]:
     return rows
 
 
-_STAGE_B_HEADER = [
+_DRAFT_HEADER = [
     "backend",
     "drafter",
     "n",
@@ -515,7 +515,7 @@ _STAGE_B_HEADER = [
 ]
 
 
-def _stage_b_rows(evals: Sequence[StageBEval]) -> list[list[str]]:
+def _draft_rows(evals: Sequence[DraftEval]) -> list[list[str]]:
     rows = []
     for e in evals:
         g, f = e.grounded, e.faithful
@@ -538,7 +538,7 @@ def _stage_b_rows(evals: Sequence[StageBEval]) -> list[list[str]]:
     return rows
 
 
-def _write_rows(evals: Sequence[StageBEval]) -> list[list[str]]:
+def _write_rows(evals: Sequence[DraftEval]) -> list[list[str]]:
     return [
         [
             e.name,
@@ -555,7 +555,7 @@ def _write_rows(evals: Sequence[StageBEval]) -> list[list[str]]:
     ]
 
 
-def _unanswered_note(evals: Sequence[StageBEval]) -> list[str]:
+def _unanswered_note(evals: Sequence[DraftEval]) -> list[str]:
     """Per backend, how many verdicts are a review because the judge left a write gate
     unanswered. Nothing when there are none, so a run without any reads as it did before."""
     counts: dict[str, list[int]] = {}
@@ -1054,7 +1054,7 @@ def _slices(
     run: Mapping[str, Any],
     use_frozen: bool,
 ) -> list[str]:
-    """Stage A accuracy by how the turn closed and by the incomplete label."""
+    """Turn-question accuracy by how the turn closed and by the incomplete label."""
     names = sorted(scored)
     if not names:
         return []
@@ -1109,8 +1109,8 @@ def _slices(
 
 
 def _criteria(
-    evals: Sequence[StageAEval],
-    stage_b: Sequence[StageBEval],
+    evals: Sequence[TurnEval],
+    draft_evals: Sequence[DraftEval],
     reference: str | None,
     cascades: Mapping[str, CascadeResult | None],
     *,
@@ -1123,7 +1123,7 @@ def _criteria(
         return ["No reference `llm:` backend with labeled verdicts; criteria need one."]
     ref_acc = ref.failed.accuracy or 0.0
     majority = ref.majority_failed or 0.0
-    ref_b = [e for e in stage_b if e.name == reference]
+    ref_b = [e for e in draft_evals if e.name == reference]
     ref_grounded = (
         max((e.grounded.accuracy or 0.0) for e in ref_b if e.grounded)
         if any(e.grounded for e in ref_b)
@@ -1133,7 +1133,7 @@ def _criteria(
         if e.name == reference or e.failed is None:
             continue
         acc = e.failed.accuracy or 0.0
-        mine = [b for b in stage_b if b.name == e.name]
+        mine = [b for b in draft_evals if b.name == e.name]
         grounded = (
             max((b.grounded.accuracy or 0.0) for b in mine if b.grounded)
             if any(b.grounded for b in mine)
@@ -1222,16 +1222,16 @@ def build_report(store: RunStore, *, freeze: bool = False) -> str:
     ]
 
     def section(title: str, ids: set[str], use_frozen: bool, *, is_held_out: bool = False) -> None:
-        stage_a: list[StageAEval] = []
-        stage_b: list[StageBEval] = []
+        turn_evals: list[TurnEval] = []
+        draft_evals: list[DraftEval] = []
         cascades: dict[str, CascadeResult | None] = {}
         for name, rows_by_key in sorted(scored.items()):
             unique = {i: r for i, r in per_item(rows_by_key).items() if i in ids}
             if not unique:
                 continue
             thresholds = thresholds_from_run(run, name) if use_frozen else dict(DEFAULT_THRESHOLDS)
-            stage_a.append(
-                evaluate_stage_a(
+            turn_evals.append(
+                evaluate_turns(
                     name,
                     list(unique.values()),
                     thresholds,
@@ -1241,7 +1241,7 @@ def build_report(store: RunStore, *, freeze: bool = False) -> str:
             for drafter, rows in per_drafter(rows_by_key).items():
                 in_split = [r for r in rows if r.item["item_id"] in ids]
                 if in_split:
-                    stage_b.append(evaluate_stage_b(name, drafter, in_split, thresholds, gates))
+                    draft_evals.append(evaluate_drafts(name, drafter, in_split, thresholds, gates))
             if reference and name != reference and reference in scored:
                 gate = (
                     ((frozen or {}).get("backends", {}).get(name, {}).get("gate"))
@@ -1255,13 +1255,13 @@ def build_report(store: RunStore, *, freeze: bool = False) -> str:
                 if result is not None:
                     cascades[name] = result
         lines.extend([f"## {title} ({len(ids)} items)", ""])
-        if not stage_a:
+        if not turn_evals:
             lines.extend(["No labeled verdicts in this split.", ""])
             return
         lines.extend(["### Stage A (one row per item)", ""])
-        lines.extend(_table(_STAGE_A_HEADER, _stage_a_rows(stage_a)))
+        lines.extend(_table(_TURN_HEADER, _turn_rows(turn_evals)))
         lines.extend(["", "### Stage B (one row per draft)", ""])
-        lines.extend(_table(_STAGE_B_HEADER, _stage_b_rows(stage_b)))
+        lines.extend(_table(_DRAFT_HEADER, _draft_rows(draft_evals)))
         if current:
             lines.extend(
                 [
@@ -1285,7 +1285,7 @@ def build_report(store: RunStore, *, freeze: bool = False) -> str:
                                 fmt(b.rule_supported.brier if b.rule_supported else None),
                                 fmt(b.rule_supported.ece if b.rule_supported else None),
                             ]
-                            for b in stage_b
+                            for b in draft_evals
                         ],
                     ),
                 ]
@@ -1336,18 +1336,18 @@ def build_report(store: RunStore, *, freeze: bool = False) -> str:
                         if current
                         else []
                     )
-                    for row, b in zip(_write_rows(stage_b), stage_b, strict=True)
+                    for row, b in zip(_write_rows(draft_evals), draft_evals, strict=True)
                 ],
             )
         )
-        lines.extend(_unanswered_note(stage_b))
+        lines.extend(_unanswered_note(draft_evals))
         if cascades:
             lines.extend(["", f"### Cascade to `{reference}` on `failed`", ""])
             rows = []
             for name, c in cascades.items():
                 if c is None:
                     continue
-                ref_eval = next((e for e in stage_a if e.name == reference), None)
+                ref_eval = next((e for e in turn_evals if e.name == reference), None)
                 ref_cost = ref_eval.mean_latency_ms * ref_eval.n if ref_eval else 0.0
                 rows.append(
                     [
@@ -1366,8 +1366,8 @@ def build_report(store: RunStore, *, freeze: bool = False) -> str:
         lines.extend(["### Success criteria", ""])
         lines.extend(
             _criteria(
-                stage_a,
-                stage_b,
+                turn_evals,
+                draft_evals,
                 reference,
                 cascades,
                 held_out=is_held_out,

@@ -248,11 +248,11 @@ _Avoid_: Outcome, result
 
 **Turn questions**:
 The questions a judge answers about a turn itself. They are asked once for a turn, and every verdict of that turn carries the answers.
-_Avoid_: Stage A (kept only where old reports and stored verdicts already say it)
+_Avoid_: Stage A (kept only in report headings and stored verdicts, which already say it)
 
 **Draft questions**:
 The questions a judge answers about one draft of a turn.
-_Avoid_: Stage B (kept only where old reports already say it)
+_Avoid_: Stage B (kept only in report headings, which already say it)
 
 **Unanswered question**:
 A question a judge was asked but gave no usable answer to. It is evidence of nothing, so no lesson is written on the strength of one.

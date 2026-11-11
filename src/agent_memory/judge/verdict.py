@@ -26,9 +26,9 @@ from .questions import (
     BY_ID,
     DEFAULT_THRESHOLDS,
     QUESTIONS_VERSION,
-    STAGE_A,
+    TURN_QUESTIONS,
     WRITE_GATES,
-    stage_b_for,
+    draft_questions_for,
     unanswered,
     write_gates,
 )
@@ -40,7 +40,7 @@ JUDGE_AGENT = "judge"
 
 Action = Literal["write_lesson", "review", "discard"]
 
-_TURN_IDS = frozenset(q.id for q in STAGE_A)
+_TURN_IDS = frozenset(q.id for q in TURN_QUESTIONS)
 # A questions_v1 run asked `grounded` under the name `supported`.
 _ALIAS = {"grounded": "supported", "supported": "grounded"}
 # What the ledger copy of a verdict may hold: nothing that quotes the state or the lesson.
@@ -263,12 +263,12 @@ class Verdict:
         so the row they land in reports only what it paid for. None when the verdict predates
         a turn question."""
         answers = self.row.get("answers") or {}
-        if any(q.id not in answers for q in STAGE_A):
+        if any(q.id not in answers for q in TURN_QUESTIONS):
             return None
         return TurnAnswers(
             {
                 q.id: replace(Answer.from_dict(answers[q.id]), latency_ms=0.0, cost_usd=0.0)
-                for q in STAGE_A
+                for q in TURN_QUESTIONS
             },
             reused=True,
         )
@@ -335,7 +335,7 @@ def _judge_input(item: Mapping[str, Any], state: str) -> JudgeInput:
 
 def ask_turn(backend: DecisionBackend, item: Mapping[str, Any], state: str) -> TurnAnswers:
     """Ask the turn questions, from the projection alone. Raises what the backend raises."""
-    return TurnAnswers(backend.decide(_judge_input(item, state), STAGE_A))
+    return TurnAnswers(backend.decide(_judge_input(item, state), TURN_QUESTIONS))
 
 
 def _claim_gates(answers: Mapping[str, Answer]) -> dict[str, Answer]:
@@ -381,7 +381,8 @@ def judge(
     if text:
         answers.update(
             backend.decide(
-                replace(_judge_input(item, state), draft=text, claims=claims), stage_b_for(lesson)
+                replace(_judge_input(item, state), draft=text, claims=claims),
+                draft_questions_for(lesson),
             )
         )
         answers.update(_claim_gates(answers))
