@@ -15,8 +15,8 @@ How those files are kept whole is decided here and nowhere else:
   removes it, since the command that resumes writes the row again.
 - One command at a time adds rows to a file (`sole_writer`). A second one is refused at
   once, because two appenders cut each other's rows and do the same work twice.
-- run.json is changed by commands that run side by side, so each change reads the file,
-  merges, and writes it back under a lock.
+- Labels and run.json are changed by commands that run side by side, so each change reads
+  the file, merges, and writes it back under a lock.
 """
 
 from __future__ import annotations
@@ -367,6 +367,26 @@ class RunStore:
                 raise JudgeError(f"{self.labels_path}: a label names no item")
             labels[row["item_id"]] = row
         return labels
+
+    def save_label(
+        self, row: Mapping[str, Any], *, seen: Mapping[str, Any] | None
+    ) -> dict[str, dict[str, Any]]:
+        """Save `row` as its item's label and return every label of the run, those saved
+        by other sessions included. `seen` is the label the caller last read for the item,
+        or None if it had none. If the item's label is no longer that one, another session
+        has saved it since: nothing is written and the save is refused."""
+        with lock(_lock_path(self.labels_path)):
+            labels = self.labels()
+            if labels.get(row["item_id"]) != seen:
+                raise JudgeError(
+                    "Another labeling session has saved this item since this one read it. "
+                    "Its label was kept and yours was not saved. Start the session again "
+                    "to continue."
+                )
+            labels[row["item_id"]] = dict(row)
+            self.write_jsonl(self.labels_path, labels.values())
+            # As a later reader sees them, so the caller's next `seen` compares equal.
+            return self.labels()
 
     # Report
 

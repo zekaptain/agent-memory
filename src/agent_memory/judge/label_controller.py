@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import os
 import random
-import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from typing import Any
@@ -81,20 +79,6 @@ class Screen:
 
     def payload(self) -> dict[str, Any]:
         return asdict(self)
-
-
-def atomic_labels(store: RunStore, rows: Sequence[Mapping[str, Any]]) -> None:
-    """Publish an entire label snapshot atomically, without risking earlier saved items."""
-    fd, name = tempfile.mkstemp(prefix=".labels-", suffix=".tmp", dir=store.root)
-    path = store.root / name
-    try:
-        os.close(fd)
-        store.write_jsonl(path, rows)
-        with path.open("rb") as file:
-            os.fsync(file.fileno())
-        os.replace(path, store.labels_path)
-    finally:
-        path.unlink(missing_ok=True)
 
 
 class LabelController:
@@ -190,19 +174,29 @@ class LabelController:
         return self.plan[self.position] if self.position < len(self.plan) else "summary"
 
     def _start(self) -> None:
-        if self.done:
-            return
-        self.drafts = self.views(self.item)
-        self.projection = self.store.read_projection(self.item["item_id"])
-        previous = self.existing.get(self.item["item_id"])
-        self.only = (
-            missing_steps(previous, self.drafts, self.has_errors(self.item))
-            if previous is not None and self.backfill
-            else None
-        )
-        self.answers = raw_answers(previous, self.drafts) if previous is not None else {}
-        self.position = 0
-        self.mode = "review" if self.review and previous is not None else ""
+        left_out = 0
+        while not self.done:
+            self.drafts = self.views(self.item)
+            previous = self.existing.get(self.item["item_id"])
+            self.only = (
+                missing_steps(previous, self.drafts, self.has_errors(self.item))
+                if previous is not None and self.backfill
+                else None
+            )
+            if self.only == []:
+                # Nothing is left to ask: another session has finished this item since this
+                # one opened, and its label came back with this session's last save.
+                self.index += 1
+                left_out += 1
+                continue
+            self.projection = self.store.read_projection(self.item["item_id"])
+            self.answers = raw_answers(previous, self.drafts) if previous is not None else {}
+            self.position = 0
+            self.mode = "review" if self.review and previous is not None else ""
+            break
+        if left_out:
+            items = "1 item" if left_out == 1 else f"{left_out} items"
+            self.notice = f"{self.notice} Left out {items} another session labeled.".strip()
 
     def _advance(self) -> None:
         self.index += 1
@@ -396,13 +390,12 @@ class LabelController:
         else:
             new = {"item_id": item_id, **row, "labeled_at": stamp}
         new["labels_version"] = LABELS_VERSION
-        updated = {**self.existing, item_id: new}
         try:
-            atomic_labels(self.store, list(updated.values()))
+            # What other sessions saved meanwhile comes back merged with this label.
+            self.existing = self.store.save_label(new, seen=previous)
         except OSError:
             self.notice = "Save failed. Retry Save or quit. Earlier saved items are safe."
             return
-        self.existing = updated
         self.labeled += 1
         self.changed += bool(moved)
         self.notice = "Saved."

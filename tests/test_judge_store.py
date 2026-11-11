@@ -217,6 +217,47 @@ def test_sole_writer_holds_one_file_and_lets_go_of_it(tmp_path):
     assert not drafts.exists()  # Holding a file does not create it.
 
 
+def test_labels_saved_at_once_all_land(tmp_path):
+    store = synthetic_run(tmp_path, n=1)
+    store.labels_path.unlink()
+    ids = [f"item-{i}" for i in range(40)]
+    with ThreadPoolExecutor(8) as pool:
+        list(pool.map(lambda i: store.save_label({"item_id": i, "failed": False}, seen=None), ids))
+    assert sorted(store.labels()) == sorted(ids)
+    assert len(store.read_jsonl(store.labels_path)) == 40
+
+
+def test_a_label_is_saved_only_over_the_label_its_writer_read(tmp_path):
+    store = synthetic_run(tmp_path, n=2)
+    first, second = store.labels().values()
+    saved = store.save_label({**first, "note": "mine"}, seen=first)
+    assert list(saved) == [first["item_id"], second["item_id"]]  # A relabel keeps its place.
+    assert saved[first["item_id"]]["note"] == "mine"
+    before = store.labels_path.read_bytes()
+    for stale in (first, None):
+        with pytest.raises(JudgeError, match="Another labeling session"):
+            store.save_label({**first, "note": "theirs"}, seen=stale)
+    with pytest.raises(JudgeError, match="Another labeling session"):
+        store.save_label({"item_id": "new", "failed": True}, seen=first)
+    assert store.labels_path.read_bytes() == before
+    # What comes back is what a later reader sees, so it serves as the next `seen`.
+    again = store.save_label({**first, "note": "mine again"}, seen=saved[first["item_id"]])
+    assert again == store.labels()
+
+
+def test_a_failed_label_save_keeps_the_old_labels(tmp_path, monkeypatch):
+    store = synthetic_run(tmp_path, n=1)
+    before = store.labels_path.read_bytes()
+    (label,) = store.labels().values()
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "replace", lambda *args: (_ for _ in ()).throw(OSError("disk full")))
+        with pytest.raises(OSError, match="disk full"):
+            store.save_label({**label, "note": "changed"}, seen=label)
+    assert store.labels_path.read_bytes() == before
+    assert not list(store.root.glob(".labels*"))
+    assert store.save_label({**label, "note": "changed"}, seen=label)  # The lock was let go.
+
+
 def test_a_label_that_names_no_item_is_reported(tmp_path):
     store = synthetic_run(tmp_path, n=1)
     store.write_jsonl(store.labels_path, [{"failed": True, "note": "PRIVATE_CONTENT"}])

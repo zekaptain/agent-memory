@@ -184,22 +184,21 @@ def test_save_failure_retry_and_redo_preserve_earlier_items(tmp_path, monkeypatc
     saved = store.labels_path.read_bytes()
     assert controller.screen().notice == "Saved."
     to_summary(controller)
-    original = store.write_jsonl
 
-    def fail(path, rows, **kwargs):
-        path.write_text("partial")
+    def fail(fd):
         raise OSError("PRIVATE_CONTENT must not reach output")
 
-    monkeypatch.setattr(store, "write_jsonl", fail)
-    answer(controller, "save")
+    with monkeypatch.context() as patch:
+        # The disk gives out while the new labels are written beside the old ones.
+        patch.setattr(os, "fsync", fail)
+        answer(controller, "save")
     assert controller.step == "summary"
     assert controller.labeled == 1
     assert "Save failed" in controller.screen().notice
     assert "Saved" not in controller.screen().notice
     assert "PRIVATE_CONTENT" not in controller.screen().notice
     assert store.labels_path.read_bytes() == saved
-    assert not list(store.root.glob(".labels-*.tmp"))
-    monkeypatch.setattr(store, "write_jsonl", original)
+    assert not list(store.root.glob(".labels*"))
     controller.apply(Action("redo"))
     assert controller.step == "failed"
     to_summary(controller)
@@ -211,6 +210,121 @@ def test_save_failure_retry_and_redo_preserve_earlier_items(tmp_path, monkeypatc
     # Lost acknowledgement/next launch still finds committed items, never duplicates.
     resumed = LabelController(store)
     assert len(resumed.todo) == 1
+
+
+def test_two_sessions_on_one_run_keep_each_others_saves(tmp_path):
+    """Each session used to write the labels it had read when it opened plus its own, so the
+    session that saved second erased what the first had saved meanwhile."""
+    store = fresh(tmp_path, 3, two=False)
+    first_id, second_id, _ = (item["item_id"] for item in store.read_jsonl(store.items_path))
+    first = LabelController(store, item_ids=[first_id])
+    second = LabelController(store, item_ids=[second_id])
+    to_summary(first)
+    answer(first, "save")
+    to_summary(second)
+    answer(second, "save")
+    assert [row["item_id"] for row in store.read_jsonl(store.labels_path)] == [first_id, second_id]
+    assert second.summary().remaining == 1
+    assert len(LabelController(store).todo) == 1
+
+
+def test_a_label_another_session_saved_is_not_overwritten(tmp_path):
+    store = fresh(tmp_path, 1, two=False)
+    first, second = LabelController(store), LabelController(store)
+    to_summary(first)
+    answer(first, "save")
+    saved = store.labels_path.read_bytes()
+    to_summary(second)
+    with pytest.raises(JudgeError, match="Another labeling session"):
+        answer(second, "save")
+    assert store.labels_path.read_bytes() == saved
+    assert second.labeled == 0
+
+
+def test_a_relabel_does_not_overwrite_a_newer_relabel(tmp_path):
+    store = fresh(tmp_path, 1, two=False)
+    opening = LabelController(store)
+    to_summary(opening)
+    answer(opening, "save")
+    item_id = store.read_jsonl(store.labels_path)[0]["item_id"]
+    first = LabelController(store, item_ids=[item_id])
+    second = LabelController(store, item_ids=[item_id])
+    answer(first, "y")  # The first relabel changes `failed`, which goes into the edit history.
+    to_summary(first)
+    answer(first, "save")
+    saved = store.labels_path.read_bytes()
+    # The edit history keeps the answer the relabel replaced.
+    assert store.read_jsonl(store.labels_path)[0]["history"][0]["changed"]["failed"] is False
+    to_summary(second)
+    with pytest.raises(JudgeError, match="Another labeling session"):
+        answer(second, "save")
+    assert store.labels_path.read_bytes() == saved
+
+
+def test_a_session_leaves_out_an_item_another_session_labeled_meanwhile(tmp_path):
+    """The session read the other one's label back with its own save, and then opened that
+    item on a summary of answers its reviewer never gave."""
+    store = fresh(tmp_path, 3, two=False)
+    mine = LabelController(store)
+    first_id, theirs_id, last_id = (item["item_id"] for item in mine.todo)
+    theirs = LabelController(store, item_ids=[theirs_id])
+    to_summary(theirs)
+    answer(theirs, "save")
+    kept = store.labels()[theirs_id]
+    to_summary(mine)
+    answer(mine, "save")
+    assert mine.item["item_id"] == last_id
+    assert mine.step != "summary"
+    assert "Saved." in mine.screen().notice
+    assert "another session" in mine.screen().notice
+    to_summary(mine)
+    answer(mine, "save")
+    assert mine.done
+    assert (mine.labeled, mine.skipped, mine.summary().remaining) == (2, 0, 0)
+    assert store.labels()[theirs_id] == kept
+    assert list(store.labels()) == [theirs_id, first_id, last_id]
+
+
+def test_a_session_refused_over_a_same_item_clash_closes_its_frontend(
+    tmp_path, monkeypatch, capsys
+):
+    store = fresh(tmp_path, 1, two=False)
+    closed = []
+
+    class Frontend:
+        def __init__(self, _binary):
+            pass
+
+        def exchange(self, screen):
+            key = screen.key.partition(":")[2]
+            if key == "summary":
+                # A second session labels the item while this one is on its last screen.
+                other = LabelController(store)
+                to_summary(other)
+                answer(other, "save")
+            value = {
+                "failed": "n",
+                "worth_remembering": "n",
+                "note": "continue",
+                "summary": "save",
+            }.get(key, screen.selected)
+            return Action("answer", value)
+
+        def finish(self, message):
+            raise AssertionError("should not reach completion")
+
+        def close(self):
+            closed.append(True)
+
+    monkeypatch.setattr(label_frontend, "GoFrontend", Frontend)
+    monkeypatch.setattr(label_frontend, "automatic_plain", lambda: False)
+    monkeypatch.setattr(label_frontend, "frontend_binary", lambda **kwargs: tmp_path / "unused")
+    with pytest.raises(JudgeError, match="Another labeling session"):
+        label_frontend.label_session(store)
+    assert closed == [True]
+    assert "Saved" not in capsys.readouterr().out
+    [label] = store.labels().values()
+    assert "relabeled_at" not in label
 
 
 def test_backfill_declines_review_history_and_reports(tmp_path):
@@ -778,17 +892,6 @@ def test_missing_go_build_failure_and_empty_run(tmp_path, monkeypatch):
     )
     with pytest.raises(JudgeError, match="--plain"):
         label_build.frontend_binary(source=source, root=tmp_path / "cache" / "ui")
-
-
-def test_atomic_replace_failure_keeps_old_labels(tmp_path, monkeypatch):
-    store = synthetic_run(tmp_path, n=1)
-    before = store.labels_path.read_bytes()
-    monkeypatch.setattr(
-        label_controller.os, "replace", lambda *args: (_ for _ in ()).throw(OSError("disk full"))
-    )
-    with pytest.raises(OSError, match="disk full"):
-        label_controller.atomic_labels(store, [])
-    assert store.labels_path.read_bytes() == before
 
 
 def helper_script(tmp_path: Path, body: str) -> Path:
