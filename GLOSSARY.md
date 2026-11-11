@@ -159,8 +159,12 @@ _Avoid_: Approval (approval concerns one memory; acceptance concerns a replaceme
 ### Recall and audit
 
 **Recall**:
-An agent's request for memories relevant to a query.
-_Avoid_: Search, lookup
+An agent's request to be shown memories. Asking with a query, walking relations out from an entity, and listing every relation in a scope are all recalls.
+_Avoid_: Search, lookup, graph traversal (a walk is a recall with its own strategy)
+
+**Strategy**:
+The way one recall chooses and orders memories: by matching the query's text, by importance when there is no query, by distance from an entity, or by listing every relation.
+_Avoid_: Ranking, algorithm, search mode
 
 **Retrieval**:
 The ledger's record of one recall: what was asked, how it was ranked, and what came back, including nothing.
