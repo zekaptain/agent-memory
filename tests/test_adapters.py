@@ -214,6 +214,23 @@ def test_droid_precompact_and_session_end():
     assert e.payload == {"hook": "SessionEnd", "reason": "exit", "permission_mode": "default"}
 
 
+def test_droid_precompact_instructions_that_are_not_text_become_text():
+    (as_object,) = DroidAdapter().from_hook(
+        hook("PreCompact", custom_instructions={"keep": "decisions"}, message_id="m4")
+    )
+    assert as_object.content == '{"keep": "decisions"}'
+    (as_parts,) = DroidAdapter().from_hook(
+        hook(
+            "PreCompact",
+            custom_instructions=[{"type": "text", "text": "keep decisions"}],
+            message_id="m5",
+        )
+    )
+    assert as_parts.content == "keep decisions"
+    (empty,) = DroidAdapter().from_hook(hook("PreCompact", custom_instructions="", message_id="m6"))
+    assert empty.content is None
+
+
 def test_droid_unknown_hook_becomes_a_note():
     (n,) = DroidAdapter().from_hook(hook("BrandNewEvent", detail=1))
     assert n.kind == "note"

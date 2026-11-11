@@ -643,3 +643,9 @@ three concurrent `mem event` processes against a running `mem serve` with no
 record lost, spooled, or rejected. The same 1000-record batch takes 440 ms
 to write (414 ms before) and 68 ms to write again (63 ms before); one hook
 record takes 16 ms, as before.
+
+Follow-ups the same day:
+
+- The Droid adapter passed a `PreCompact` hook's `custom_instructions`
+  through as content without turning it into text, so a value that was not
+  text was rejected. It now goes through `text_of` like other hook text.

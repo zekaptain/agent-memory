@@ -7,7 +7,9 @@ import json
 
 import pytest
 
+from agent_memory.adapters.droid import DroidAdapter
 from agent_memory.capture import ids
+from agent_memory.capture.record import Record, now
 from agent_memory.capture.spool import Spool
 from agent_memory.cli import main
 from agent_memory.db import MemoryClient, MemoryServer, sql_literal
@@ -109,14 +111,39 @@ def test_event_with_nothing_to_record(live_mem, monkeypatch):
     assert live_mem("event", "--harness", "droid") == (0, "", "")
 
 
-def test_event_keeps_a_record_the_ledger_rejects(live_mem, live_cfg, live_client, monkeypatch):
+def test_event_records_compaction_instructions_that_are_not_text(
+    live_mem, live_cfg, live_client, monkeypatch
+):
     hook = {
-        "session_id": "cli-rejected",
+        "session_id": "cli-compact",
         "hook_event_name": "PreCompact",
         "message_id": "c1",
-        "custom_instructions": {"not": "text"},
+        "custom_instructions": {"keep": "decisions"},
     }
     feed(monkeypatch, hook)
+    assert live_mem("event", "--harness", "droid") == (0, "", "")
+    sid = ids.session_id("factory-droid", "cli-compact")
+    assert live_client.query(
+        f"SELECT kind, content FROM events WHERE session_id = {sql_literal(sid)}"
+    )[1] == [("compaction", '{"keep": "decisions"}')]
+    assert not (
+        Spool(live_cfg.spool_dir).failed_dir / "factory-droid" / "cli-compact.jsonl"
+    ).exists()
+
+
+def test_event_keeps_a_record_the_ledger_rejects(live_mem, live_cfg, live_client, monkeypatch):
+    # No hook payload is meant to produce a record the ledger refuses, so an adapter that
+    # returns one stands in for a fault the adapters are not known to have.
+    refused = Record(
+        agent_id="factory-droid",
+        harness_session_id="cli-rejected",
+        kind="memory_write",
+        ts=now(),
+        source_key="bad",
+        memory={"content": ""},
+    )
+    monkeypatch.setattr(DroidAdapter, "from_hook", lambda self, payload: [refused])
+    feed(monkeypatch, {**HOOK, "session_id": "cli-rejected"})
     code, out, err = live_mem("event", "--harness", "droid")
     assert (code, out) == (0, "")
     assert "1 record(s) rejected" in err
