@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 
 import pytest
@@ -127,6 +128,62 @@ def test_droid_transcript_since_key_skips_known_entries():
     assert records[0].session is None  # nothing re-sends the session block
 
 
+def hook_run(entry_id: str, event: str, parent: str, at: str) -> dict:
+    """The entry Droid adds to a transcript for a hook command it ran."""
+    return {
+        "type": "message",
+        "id": entry_id,
+        "parentId": parent,
+        "timestamp": at,
+        "message": {
+            "role": "user",
+            "content": [],
+            "visibility": "user_only",
+            "hookEventName": event,
+            "hookParentId": parent,
+            "hookStatus": "completed",
+            "hookCommands": [{"type": "command", "command": "mem event --harness droid"}],
+            "hookResults": [{"exitCode": 0, "stdout": "", "stderr": "said by the hook"}],
+        },
+    }
+
+
+def test_droid_transcript_entry_for_a_hook_run_is_not_an_event(tmp_path):
+    # With a hook registered Droid writes an entry for each run of it. The one for a Stop
+    # hook falls between a reply and the outcome of its turn.
+    path = tmp_path / "hooked.jsonl"
+    entries = [
+        {"type": "session_start", "id": "hooked", "timestamp": "2026-11-11T10:00:00Z"},
+        {
+            "type": "message",
+            "id": "p1",
+            "timestamp": "2026-11-11T10:00:01Z",
+            "message": {"role": "user", "content": [{"type": "text", "text": "Run it."}]},
+        },
+        {
+            "type": "message",
+            "id": "r1",
+            "timestamp": "2026-11-11T10:00:02Z",
+            "message": {"role": "assistant", "content": [{"type": "text", "text": "Done."}]},
+        },
+        hook_run("h1", "Stop", "r1", "2026-11-11T10:00:03Z"),
+        {"type": "agent_turn_outcome", "turnId": "p1", "reason": "completed", "resultKind": "text"},
+        hook_run("h2", "SessionEnd", "r1", "2026-11-11T10:30:03Z"),
+    ]
+    path.write_text("\n".join(json.dumps(entry) for entry in entries) + "\n")
+    records = DroidAdapter().from_transcript(path)
+    assert [(r.kind, r.source_key) for r in records] == [
+        ("session_start", "hooked"),
+        ("user_msg", "p1"),
+        ("assistant_msg", "r1"),
+        ("outcome", "p1"),
+    ]
+    reply = by_key(records)[("assistant_msg", "r1")]
+    assert reply.attribution is not None
+    assert (reply.attribution["turn_id"], reply.attribution["turn_complete"]) == ("p1", True)
+    assert "said by the hook" not in "".join(r.to_json() for r in records)
+
+
 def test_droid_transcript_rejects_other_files(tmp_path):
     other = tmp_path / "worker-transcripts.json"
     other.write_text("{}")
@@ -247,6 +304,27 @@ def test_droid_precompact_and_session_end():
     (e,) = DroidAdapter().from_hook(hook("SessionEnd", reason="exit"))
     assert e.kind == "session_end"
     assert e.payload == {"hook": "SessionEnd", "reason": "exit", "permission_mode": "default"}
+
+
+def test_droid_session_end_is_placed_by_the_last_message():
+    # What Droid sends when it ends a session nobody has used for half an hour. The id is
+    # that of the session's last message, which the hook for a resume names too.
+    payload = hook(
+        "SessionEnd", reason="other", message_id="m9", message_count=4, session_duration_ms=9.5
+    )
+    (e,) = DroidAdapter().from_hook(payload)
+    assert (e.kind, e.source_key, e.content) == ("session_end", "SessionEnd:m9", None)
+    assert e.payload == {
+        "hook": "SessionEnd",
+        "reason": "other",
+        "message_id": "m9",
+        "message_count": 4,
+        "session_duration_ms": 9.5,
+        "permission_mode": "default",
+    }
+    # Ended again with nothing said since, the session has ended nowhere new.
+    (again,) = DroidAdapter().from_hook(payload)
+    assert again.source_key == e.source_key
 
 
 def test_droid_precompact_instructions_that_are_not_text_become_text():
