@@ -355,6 +355,117 @@ def test_a_hook_whose_transcript_cannot_be_read_exits_1_and_keeps_its_own_event(
     assert "transcript" in err
 
 
+def attributions_of(client: MemoryClient, harness_session_id: str) -> list[tuple[str, object]]:
+    """Each event's kind and the `capture_attribution` stored with it, None where there is none."""
+    sid = ids.session_id("factory-droid", harness_session_id)
+    rows = client.query(
+        f"SELECT kind, payload::JSON::VARCHAR FROM events WHERE session_id = {sql_literal(sid)} "
+        "ORDER BY ts, kind"
+    )[1]
+    return [
+        (kind, (json.loads(payload) if payload else {}).get("capture_attribution"))
+        for kind, payload in rows
+    ]
+
+
+def test_a_transcript_event_keeps_which_message_and_turn_the_adapter_placed_it_in(
+    live_mem, live_client, tmp_path
+):
+    def message(entry_id: str, second: int, role: str, *parts: dict) -> dict:
+        return {
+            "type": "message",
+            "id": entry_id,
+            "timestamp": f"2026-11-11T10:01:{second:02d}Z",
+            "message": {"role": role, "content": list(parts)},
+        }
+
+    def said(text: str) -> dict:
+        return {"type": "text", "text": text}
+
+    finished = [
+        message("p1", 1, "user", said("Prompt 1.")),
+        message(
+            "c1",
+            2,
+            "assistant",
+            said("Looking."),
+            {"type": "tool_use", "id": "call-1", "name": "Read", "input": {"file_path": "/x"}},
+        ),
+        message(
+            "t1", 3, "user", {"type": "tool_result", "tool_use_id": "call-1", "content": "found"}
+        ),
+        message("r1", 4, "assistant", said("Reply 1.")),
+        {"type": "agent_turn_outcome", "turnId": "p1", "reason": "completed", "resultKind": "text"},
+    ]
+    path = write_transcript(tmp_path / f"{tmp_path.name}.jsonl", finished, turn(2, outcome=False))
+    code, _, err = live_mem("ingest", "--harness", "droid", "--transcript", str(path))
+    assert (code, err) == (0, "")
+
+    def in_turn_1(message_id: str, *, has_tool_calls: bool = False) -> dict:
+        return {
+            "message_id": message_id,
+            "turn_id": "p1",
+            "turn_complete": True,
+            "turn_boundary": "agent_turn_outcome",
+            "channel": None,
+            "has_tool_calls": has_tool_calls,
+        }
+
+    def in_no_turn_yet(message_id: str) -> dict:
+        return {
+            "message_id": message_id,
+            "turn_id": None,
+            "turn_complete": False,
+            "channel": None,
+            "has_tool_calls": False,
+        }
+
+    assert attributions_of(live_client, path.stem) == [
+        ("session_start", None),
+        ("user_msg", in_turn_1("p1")),
+        # Every event made from a message says what the message held, the call too.
+        ("assistant_msg", in_turn_1("c1", has_tool_calls=True)),
+        ("tool_call", in_turn_1("c1", has_tool_calls=True)),
+        ("tool_result", in_turn_1("t1")),
+        ("assistant_msg", in_turn_1("r1")),
+        ("outcome", None),
+        # Only an outcome names a turn, and the second turn has none yet.
+        ("user_msg", in_no_turn_yet("p2")),
+        ("assistant_msg", in_no_turn_yet("r2")),
+    ]
+
+
+def test_an_event_keeps_the_attribution_it_was_first_written_with(
+    live_mem, live_client, tmp_path, monkeypatch
+):
+    # A turn as Droid's hooks deliver it: the prompt, the reply at Stop, the outcome later.
+    path = write_transcript(tmp_path / f"{tmp_path.name}.jsonl", turn(1, outcome=False))
+    feed(monkeypatch, droid_hook(path, "UserPromptSubmit", message_id="p1", prompt="Prompt 1."))
+    assert live_mem("event", "--harness", "droid") == (0, "", "")
+    feed(monkeypatch, droid_hook(path, "Stop", message_id="r1"))
+    assert live_mem("event", "--harness", "droid") == (0, "", "")
+    write_transcript(path, turn(1))
+    feed(monkeypatch, droid_hook(path, "SessionEnd", message_id="r1", reason="other"))
+    assert live_mem("event", "--harness", "droid") == (0, "", "")
+    got = attributions_of(live_client, path.stem)
+    # The outcome has arrived and named the turn. The reply's event was written before it
+    # and no event is rewritten, so it still names no turn.
+    assert ("outcome", None) in got
+    assert [stored for kind, stored in got if kind == "assistant_msg"] == [
+        {
+            "message_id": "r1",
+            "turn_id": None,
+            "turn_complete": False,
+            "channel": None,
+            "has_tool_calls": False,
+        }
+    ]
+    # The hook wrote the prompt before the transcript was read, so its event keeps only
+    # what the hook payload carried.
+    assert [stored for kind, stored in got if kind == "user_msg"] == [{"message_id": "p1"}]
+    assert ("session_end", {"message_id": "r1"}) in got
+
+
 def test_ingest_waits_for_a_write_that_is_under_way(live_mem, live_client, tmp_path, monkeypatch):
     # A hook gives the ledger two seconds. The import of a long session takes longer, and
     # giving up on it puts the whole transcript in the spool.
