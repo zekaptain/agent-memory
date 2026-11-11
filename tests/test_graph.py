@@ -680,3 +680,22 @@ def test_mem_graph_entities_and_resolve_record_what_they_read(
         "SELECT returned FROM retrievals WHERE strategy = 'graph_relations_v1' "
         "AND list_contains(scopes, 'recorded-nothing')",
     ) == [(0,)]
+
+
+def test_mem_graph_with_an_unknown_agent_fails_in_one_line(
+    live_cfg, live_client, monkeypatch, capsys
+):
+    for var in ("AGENT_MEMORY_HOME", "AGENT_MEMORY_HOST", "AGENT_MEMORY_PORT"):
+        monkeypatch.delenv(var, raising=False)
+    base = ["--home", str(live_cfg.home), "--port", str(live_cfg.port), "graph"]
+    for args in (["entities"], ["show", "anything"], ["resolve", "--model", "stub"]):
+        assert main([*base, *args, "--agent", "nobody-registered"]) == 1
+        out, err = capsys.readouterr()
+        assert out == ""
+        assert err.splitlines() == [
+            "mem: unknown agent 'nobody-registered'; set AGENT_MEMORY_AGENT, "
+            "or --agent at the CLI, to a registered agent"
+        ]
+    assert q(live_client, "SELECT count(*) FROM sessions WHERE agent_id = 'nobody-registered'") == [
+        (0,)
+    ]

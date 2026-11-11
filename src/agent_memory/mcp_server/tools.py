@@ -121,7 +121,10 @@ class MemoryTools:
             f"SELECT capture_tier FROM agents WHERE agent_id = {sql_literal(self.agent_id)}"
         )
         if not tier:
-            raise ToolError(f"unknown agent {self.agent_id!r}; set AGENT_MEMORY_AGENT")
+            raise ToolError(
+                f"unknown agent {self.agent_id!r}; set AGENT_MEMORY_AGENT, "
+                "or --agent at the CLI, to a registered agent"
+            )
         client.insert(
             {
                 "sessions": [

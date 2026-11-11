@@ -32,6 +32,7 @@ from .db import (
 )
 from .graph.cli import graph_app
 from .judge.cli import judge_app
+from .mcp_server.tools import ToolError
 
 app = typer.Typer(
     name="mem",
@@ -577,7 +578,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 1 if code == 2 and _subcommand(args) == "event" else code
         print(exc.code, file=sys.stderr)
         return 1
-    except (AgentMemoryError, ConfigError) as exc:
+    except (AgentMemoryError, ConfigError, ToolError) as exc:
         print(f"mem: {exc}", file=sys.stderr)
         return 1
     except duckdb.Error as exc:
