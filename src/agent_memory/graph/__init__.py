@@ -6,7 +6,7 @@ provenance, status derivation, and `why_answer` for free. The graph is reconstru
 """
 
 from .merge import EntityMerge, apply_merge
-from .model import GRAPH_VERSION, Relation, normalize_entity, normalize_predicate
+from .model import GRAPH_VERSION, Relation, normalize_entity
 from .recall import RelationListing, RelationWalk
 from .sql import GRAPH_STRATEGY, MAX_HOPS, hop_sql, relations_sql
 
@@ -21,6 +21,5 @@ __all__ = [
     "apply_merge",
     "hop_sql",
     "normalize_entity",
-    "normalize_predicate",
     "relations_sql",
 ]

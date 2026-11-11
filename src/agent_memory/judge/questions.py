@@ -21,7 +21,6 @@ from .lesson import Claim, Lesson
 QUESTIONS_VERSION = "questions_v4"
 
 QuestionType = Literal["noul", "choice", "score"]
-Stage = Literal["A", "B"]
 
 
 @dataclass(frozen=True)
@@ -29,7 +28,6 @@ class Question:
     id: str
     type: QuestionType
     instructions: str
-    stage: Stage
     # choice: {option: description}; score: ordered level descriptions; noul: {true, false}.
     criteria: Any = None
 
@@ -83,7 +81,6 @@ TURN_QUESTIONS: tuple[Question, ...] = (
         "The agent did not accomplish what the user asked in this turn. Judge by the tool "
         "results, the recorded outcome, and the user's next message, not by the agent's own "
         "claims of completion.",
-        "A",
         {
             "true": "Tool errors went unresolved, the outcome was cancelled or errored, or the "
             "user's next message shows the work was wrong or incomplete.",
@@ -96,7 +93,6 @@ TURN_QUESTIONS: tuple[Question, ...] = (
         "noul",
         "The turn ended before the agent finished: it was cut off by the next message or by the "
         "end of the session, so whether the request was carried out cannot be read from it.",
-        "A",
         {
             "true": "The header says closed_by=next_message or closed_by=session_end and the "
             "agent's last visible step is not a finished result: no final message that closes "
@@ -110,7 +106,6 @@ TURN_QUESTIONS: tuple[Question, ...] = (
         "user_corrected",
         "noul",
         "The user's next message corrects, rejects, or redirects the agent's work from this turn.",
-        "A",
         {
             "true": "The next message says the result was wrong, asks to revert or redo, or "
             "points out something the agent missed.",
@@ -122,7 +117,6 @@ TURN_QUESTIONS: tuple[Question, ...] = (
         "noul",
         "A tool result in this turn independently confirms the agent's claimed completion "
         "(tests passed, a command exited cleanly, a check succeeded).",
-        "A",
         {
             "true": "At least one tool result after the last change shows success.",
             "false": "No tool result confirms it; the agent only asserted completion.",
@@ -132,7 +126,6 @@ TURN_QUESTIONS: tuple[Question, ...] = (
         "category",
         "choice",
         "Which best describes what went wrong in this turn, if anything?",
-        "A",
         CATEGORIES,
     ),
     Question(
@@ -140,7 +133,6 @@ TURN_QUESTIONS: tuple[Question, ...] = (
         "noul",
         "The cause of the problem in this turn is specific to this project and likely to recur "
         "in future sessions on it.",
-        "A",
         {
             "true": "A project convention, a tool or dependency quirk, or a codebase fact that "
             "will trip the agent again.",
@@ -155,7 +147,6 @@ DRAFT_QUESTIONS: tuple[Question, ...] = (
         "grounded",
         "noul",
         "The DRAFT LESSON is supported by the evidence it cites in this turn.",
-        "B",
         {
             "true": "Every claim in the lesson can be traced to a cited tool result, outcome, "
             "or user message shown above.",
@@ -168,7 +159,6 @@ DRAFT_QUESTIONS: tuple[Question, ...] = (
         "noul",
         "The DRAFT LESSON's account of what happened in this turn is right: it does not misread "
         "the evidence it cites.",
-        "B",
         {
             "true": "The lesson's description of the cause, the error, or the fact matches what "
             "the cited lines actually show.",
@@ -182,7 +172,6 @@ DRAFT_QUESTIONS: tuple[Question, ...] = (
         "Do the supported claims and cited evidence justify this EXACT rule, including its "
         "scope and conditions, without an unsupported causal leap or overgeneralization? "
         "Judge the whole DRAFT LESSON, not whether its individual claims are true.",
-        "B",
         {
             "true": "The evidence warrants this exact rule and its scope and conditions.",
             "false": "True claims do not establish the proposed rule, its causal explanation, "
@@ -193,7 +182,6 @@ DRAFT_QUESTIONS: tuple[Question, ...] = (
         "generalizable",
         "score",
         "How reusable is the DRAFT LESSON beyond this exact turn?",
-        "B",
         [
             "One-off: tied to this specific request; would not help another session.",
             "Project-reusable: helps future sessions on this project.",
@@ -204,7 +192,6 @@ DRAFT_QUESTIONS: tuple[Question, ...] = (
         "actionable",
         "noul",
         "The DRAFT LESSON says what to do differently next time, not only what happened.",
-        "B",
         {
             "true": "It names a concrete action, check, or command to use or avoid.",
             "false": "It only describes the failure or states a vague intention.",
@@ -215,7 +202,6 @@ DRAFT_QUESTIONS: tuple[Question, ...] = (
         "choice",
         "Is the DRAFT LESSON already enforced somewhere the agent will meet anyway, so that "
         "memory would add nothing? Judge the lesson, not the turn.",
-        "B",
         ENFORCED,
     ),
 )
@@ -254,7 +240,6 @@ def claim_questions(claims: Sequence[Claim]) -> tuple[Question, ...]:
                     "noul",
                     f"Claim {i} of the DRAFT LESSON {instruction}. "
                     f"Claim {i}: {claim.text} (cites {lines})",
-                    "B",
                     criteria[key],
                 )
             )

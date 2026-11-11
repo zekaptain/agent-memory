@@ -111,10 +111,6 @@ def softmax(logits: Mapping[str, float]) -> dict[str, float]:
     return {k: w / total for k, w in weights.items()}
 
 
-def remote_allowed() -> bool:
-    return endpoints.remote_allowed()
-
-
 def require_remote(what: str) -> None:
     try:
         endpoints.require_egress("https://hosted.invalid", what)

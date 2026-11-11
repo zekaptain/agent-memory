@@ -296,7 +296,7 @@ def test_jev_entry_without_a_distribution_is_no_answer():
 
 
 def test_rules_have_no_answer_for_a_question_they_do_not_know():
-    novel = Question("novel", "noul", "A question the rules were never written for.", "B")
+    novel = Question("novel", "noul", "A question the rules were never written for.")
     inp = JudgeInput(item_id="i", state="", facts={}, flags=())
     assert RulesBackend().decide(inp, [novel])["novel"].method == "rules_missing"
 

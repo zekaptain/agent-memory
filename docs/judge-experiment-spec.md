@@ -187,11 +187,11 @@ line numbers to events so a cited lesson can be traced without the state
 leaving the machine. Projections are written 0600 under the run directory
 and `mem judge purge` deletes them.
 
-The drafter is given the `for_drafter` rendering, the same text without the
+The drafter is given the drafter rendering, the same text without the
 next-message line, so a lesson cannot fuse the request with an unrelated
 follow-up. The sidecar is shared, so cited line numbers mean the same in
 both renderings. `projection_v2`, which exp2 used, had no `closed_by` in
-its header and no `for_drafter` rendering.
+its header and no drafter rendering.
 
 ### Drafter (`drafter_v3`)
 
@@ -696,7 +696,7 @@ remember. `kind` uses the same five options as the item's `lesson_kind`
 label. A lesson has 1 to 4 claims, each one sentence about this turn
 with its own cited entry numbers. Uncited claims are allowed; neither
 the judge nor the labeler skips their questions or supplies automatic
-answers. The drafter still sees only `for_drafter`, with the same
+answers. The drafter still sees only the drafter rendering, with the same
 `closed_by` guidance and no next message.
 
 The `drafter_v3` prompt leads with the decline. Its first wording gave

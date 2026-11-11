@@ -5,9 +5,9 @@ lines back to events so a verdict can cite evidence without the state leaving th
 User messages are shown without the harness blocks the transcript wraps them in, and the
 header says who started the session, how the turn closed, and who wrote the next message.
 
-The drafter sees the same text without the NEXT MESSAGE entry (`for_drafter`), so a lesson
-cannot fuse the request with an unrelated follow-up. The sidecar is shared, so cited line
-numbers mean the same thing in both renderings.
+The drafter sees the same text without the NEXT MESSAGE entry (`drafter_rendering`), so a
+lesson cannot fuse the request with an unrelated follow-up. The sidecar is shared, so cited
+line numbers mean the same thing in both renderings.
 """
 
 from __future__ import annotations
@@ -63,10 +63,6 @@ class Projection:
     @property
     def hash(self) -> str:
         return hashlib.sha256(self.text.encode("utf-8")).hexdigest()
-
-    @property
-    def for_drafter(self) -> str:
-        return drafter_rendering(self.text)
 
 
 _NEXT_MESSAGE = re.compile(r"\n\[\d+\] NEXT MESSAGE\b")

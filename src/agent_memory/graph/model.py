@@ -27,10 +27,6 @@ def normalize_entity(name: str) -> str:
     return _SPACES.sub(" ", text).strip(" .-/")
 
 
-def normalize_predicate(predicate: str) -> str:
-    return normalize_entity(predicate)
-
-
 @dataclass(frozen=True)
 class Relation:
     subject: str
@@ -58,7 +54,7 @@ class Relation:
 
     @property
     def predicate_norm(self) -> str:
-        return normalize_predicate(self.predicate)
+        return normalize_entity(self.predicate)
 
     @property
     def object_norm(self) -> str:

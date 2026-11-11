@@ -195,9 +195,10 @@ def test_closed_by_distinguishes_outcome_next_message_and_session_end():
     proj = build_projection(cands[0], events, nxt)
     assert "closed_by=next_message outcome=none" in proj.text
     assert "NEXT MESSAGE (human): Now do B instead" in proj.text
-    assert "NEXT MESSAGE" not in proj.for_drafter
-    assert proj.text.startswith(proj.for_drafter)
-    assert proj.for_drafter.rstrip().endswith("OUTCOME: none recorded")
+    for_drafter = drafter_rendering(proj.text)
+    assert "NEXT MESSAGE" not in for_drafter
+    assert proj.text.startswith(for_drafter)
+    assert for_drafter.rstrip().endswith("OUTCOME: none recorded")
 
 
 @pytest.mark.parametrize(
@@ -488,9 +489,10 @@ def test_projection_is_deterministic_and_bounded_and_redacted():
     )
     assert not any(e.event_id in first.text for e in events)
     # The drafter sees everything but the next message; the numbering is shared.
-    assert "NEXT MESSAGE" not in first.for_drafter
-    assert "[1] REQUEST (human): " in first.for_drafter
-    assert first.text.startswith(first.for_drafter)
+    for_drafter = drafter_rendering(first.text)
+    assert "NEXT MESSAGE" not in for_drafter
+    assert "[1] REQUEST (human): " in for_drafter
+    assert first.text.startswith(for_drafter)
     assert drafter_rendering("no entries at all") == "no entries at all"
     assert drafter_rendering("[1] A\n[2] NEXT MESSAGE: x\nmore") == "[1] A"
     assert [s["event_id"] for s in first.sidecar if s["kind"] == "tool_call"] == [
