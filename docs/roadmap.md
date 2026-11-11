@@ -139,8 +139,10 @@ Verified against the code in the audit of 2026-11 and still open.
   apart from a slow item. `mem judge draft` and `decide` then wait out
   the timeout twice for every remaining item and skip each one
   (`endpoints.py`, `judge/pipeline.py`).
-- `mem judge report --freeze` does not check that the calibration labels
-  are complete.
+- `mem judge report --freeze` does not check that every backend has
+  judged every calibration item. A backend that skipped items gets its
+  thresholds from the ones it judged, and nothing says so
+  (`judge/report.py`).
 - The Parquet export copies tables one after another while clients write,
   so a snapshot can be inconsistent across tables (`db.py`).
 - A caller chooses the `trust_level` of what it remembers, and any agent
@@ -194,8 +196,8 @@ above these were deepened on 2026-11-11: the ledger session
   item's doing, so today only an unreachable model server stops one.
 - Are the `readout` and `jev` backends and the `actionable` question still
   wanted? May the unreachable v4 fallbacks and `Question.stage` go?
-- Should `--freeze` require complete calibration labels? May a run be
-  relabeled after a freeze?
+- May a run be relabeled after a freeze? Should `--freeze` also ask for
+  every backend's verdicts on the calibration items?
 - Do Phases 0.5, 3, and 5 stay on this roadmap?
 - `--keep-raw` for transcripts: implement or remove?
 - Is the Parquet export a backup or a browsing aid?

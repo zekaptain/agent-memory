@@ -253,6 +253,22 @@ in `run.json`, and reports held-out scores with those thresholds.
 Freeze is one-time: a second `--freeze` is refused. Use a new run for a
 revised experiment rather than editing frozen metadata.
 
+`--freeze` is refused while calibration items are not fully labeled: an
+item with no label, or one whose label has questions left because a
+drafter was added after it was labeled. The message says how many there
+are, and nothing is frozen. Run `mem judge label` to finish them; a
+session opens them along with any held-out items still to label. To
+freeze on the labels there are anyway:
+
+```sh
+uv run mem judge report --run "$RUN" --freeze --partial
+```
+
+A partial freeze cannot be undone either. The run records how many
+calibration items it went without, and every report of the run says so.
+`--freeze` does not check verdicts: use `status` to see that every
+backend has judged the sample.
+
 Later, refresh the report without freezing again:
 
 ```sh

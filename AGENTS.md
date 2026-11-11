@@ -201,6 +201,11 @@ do not delete existing homes or runs to resolve a workflow mistake.
 - Finish drafting before a long decide run. Do not change its drafts
   underneath it. Labeling and deciding can run independently, but freeze
   thresholds only after the intended calibration labels are complete.
+  `report --freeze` refuses while a calibration item has no label or a
+  label with questions left; `--partial` overrides that and the run
+  records how many items were short. Keep "fully labeled" meaning what a
+  labeling session would still ask (`labeling.questions_left`), not a
+  second definition.
 - Read and write a run's files through `RunStore` only. The rules that
   keep them whole are at the top of `judge/store.py`: one command at a
   time adds rows to a file, so a second `draft`, or a `decide` for a

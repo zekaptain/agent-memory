@@ -374,8 +374,11 @@ cheapest gate whose cascade accuracy is within 1 point of the reference.
 
 `--freeze` chooses, on calibration items only, each backend's
 accuracy-maximising cut on `failed` and `supported` and its cascade gate,
-writes them to `run.json`, and refuses to run twice. The held-out split is
-scored only after a freeze; before that the report says so and stops.
+writes them to `run.json`, and refuses to run twice. It also refuses while
+calibration items are not fully labeled, unless `--partial` is given (see
+"A freeze asks for the calibration labels" under As built). The held-out
+split is scored only after a freeze; before that the report says so and
+stops.
 
 ### Live week
 
@@ -405,7 +408,7 @@ All under `mem judge`, all refusing the default home:
 | `draft --run ID [--drafter SPEC ...] [--limit N]` | draft lessons, one arm per `--drafter` (default `ollama:gemma4:26b`); resumable per drafter |
 | `decide --run ID --backend SPEC [--backend SPEC ...] [--limit N] [--no-events]` | run backends; resumable per backend |
 | `label --run ID [--limit N] [--seed 1] [--item ID ...] [--review] [--plain]` | blinded review; `--item` relabels in full, `--review` steps through labeled items, `--plain` uses numbered prompts without the Go helper |
-| `report --run ID [--freeze] [--raw]` | score, optionally freeze, write `report.md` |
+| `report --run ID [--freeze [--partial]] [--raw]` | score, optionally freeze, write `report.md`; `--partial` freezes although calibration items are not fully labeled |
 | `live --run ID --since DATE [--sessions-dir PATH] [--backend SPEC ...] [--drafter SPEC ...] [--day D]` | one live-week step |
 | `status --run ID` | items per stratum, drafts, verdicts, labels, frozen or not |
 | `purge --run ID` | delete projection text; verdicts and labels stay |
@@ -1204,3 +1207,40 @@ Not covered: a model server that accepts the connection and never
 answers. Each remaining item then waits out its timeout, twice, and is
 skipped. Regressions are in `tests/test_judge.py`, `test_endpoints.py`,
 and `test_model_call.py`.
+
+### A freeze asks for the calibration labels, as built (2026-11-11)
+
+Thresholds are chosen once. `report --freeze` chose them on whatever
+calibration items had labels at that moment, and neither the run nor the
+report said how many that was. A freeze started too early could not be
+taken back, and nothing showed that it had been early.
+
+`report --freeze` now refuses while a calibration item is not fully
+labeled, names how many are short, and leaves `run.json` as it was. An
+item is fully labeled when a labeling session would ask nothing more
+about it. It is short when:
+
+- it has no label; or
+- its label has questions left, which happens when a drafter is added
+  after the item was labeled, so nobody has answered for the new draft.
+
+This is the labeler's own test of what is left to ask
+(`labeling.questions_left`), so a labeling session opens every such
+item and `mem judge label` is how to finish them. Held-out items do not
+count: they take no part in choosing thresholds. For a run built with an
+older question set only the first case applies. Its labels answer the
+questions of their day, and labeling no longer opens such a run.
+
+`--freeze --partial` freezes on the labels there are. The run then
+records it under `frozen.partial` (`calibration`, the size of the split,
+and `unlabeled`, how many items were short), and every report of that
+run says so beside the freeze time. A freeze with nothing short is
+stored as before, so earlier runs and their reports are unchanged.
+`--partial` without `--freeze` is a usage error.
+
+Tried on private copies of the stored runs: exp3, with 118 of its 120
+calibration items unlabeled, was refused where it would have frozen.
+
+Not covered: a calibration item that has a label but no verdict from
+some backend. That backend's thresholds are still chosen without it, and
+nothing says so. Regressions are in `tests/test_judge.py`.
