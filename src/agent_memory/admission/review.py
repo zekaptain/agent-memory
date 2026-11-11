@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import random
 import sys
 import textwrap
@@ -20,7 +19,7 @@ from ..judge.store import JudgeError, RunStore
 from ..lifecycle import stable_id
 from . import ledger
 from .examples import example_for
-from .store import AdmissionStore, write_jsonl
+from .store import AdmissionStore, memory_split, write_jsonl
 
 GUIDE = textwrap.fill(
     "Judge the exact lesson, without repairing it. Yes approves it for recall; No retires it; "
@@ -29,14 +28,6 @@ GUIDE = textwrap.fill(
     "redo, skip, or quit without losing saved reviews.",
     width=58,
 )
-
-
-def review_split(memory_id: str) -> str:
-    return (
-        "calibration"
-        if int(hashlib.sha256(memory_id.encode()).hexdigest(), 16) % 10 < 6
-        else "held_out"
-    )
 
 
 class ReviewController:
@@ -300,7 +291,7 @@ class ReviewController:
                 result["embedding"],
                 source=row["action_id"],
                 label=label,
-                split=review_split(identity),
+                split=memory_split(identity),
             )
             example.update(
                 memory_id=identity,
