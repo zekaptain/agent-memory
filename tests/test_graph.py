@@ -416,6 +416,47 @@ def test_merge_entity_supersedes_rewrites_and_retires_as_history(tools, live_cli
         tools.merge_entity("a", "b", "  ")
 
 
+def _merged_content(tools, live_client, alias, canonical, **relation):
+    note = tools.relate(**relation)
+    (renamed,) = tools.merge_entity(alias, canonical, "same entity")["superseded"]
+    assert renamed["memory_id"] == note["memory_id"]
+    return q(
+        live_client, f"SELECT content FROM memories WHERE memory_id = {sql_literal(renamed['by'])}"
+    )[0][0]
+
+
+def test_merge_entity_renames_a_whole_name_in_prose_not_a_fragment(tools, live_client):
+    # The alias is also the start of other words, and part of a longer entity name.
+    content = _merged_content(
+        tools,
+        live_client,
+        "Al",
+        "Alice Liddell",
+        subject="Al",
+        predicate="maintains",
+        object="the alerting rules",
+        content="Al also maintains the alerting rules, with al-bot. Ask Al.",
+    )
+    assert (
+        content
+        == "Alice Liddell also maintains the alerting rules, with al-bot. Ask Alice Liddell."
+    )
+
+
+def test_merge_entity_keeps_a_backslash_in_the_canonical_name(tools, live_client):
+    content = _merged_content(
+        tools,
+        live_client,
+        "Dana",
+        r"CORP\dana",
+        subject="payments-api",
+        predicate="owned by",
+        object="Dana",
+        content="payments-api is owned by Dana",
+    )
+    assert content == r"payments-api is owned by CORP\dana"
+
+
 def test_graph_sql_passes_the_policy_through_quack(live_client):
     # Both statements classify as SELECT-style after literal stripping.
     assert live_client.query(hop_sql("x|y", 3, ["global"], ["fact"]))[1] == []

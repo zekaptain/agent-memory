@@ -1004,9 +1004,14 @@ def _rename_in_text(content: str, old: Relation, new: Relation) -> str:
     for before, after in ((old.subject, new.subject), (old.object, new.object)):
         if before == after:
             continue
-        pattern = re.compile(re.escape(before), re.IGNORECASE)
+        # A name stands alone: not inside a word, nor inside a longer name such as `al-bot`
+        # or `db.py`, since entity names keep `-`, `/` and an inner `.`.
+        pattern = re.compile(
+            rf"(?<![\w\-/])(?<!\w\.){re.escape(before)}(?![\w\-/])(?!\.\w)", re.IGNORECASE
+        )
         if pattern.search(text):
-            text = pattern.sub(after, text)
+            # A function, so a backslash in the new name is not read as a group reference.
+            text = pattern.sub(lambda _match, name=after: name, text)
             changed = True
     return text if changed else new.sentence
 
