@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 
@@ -126,6 +127,54 @@ def test_droid_transcript_since_key_skips_known_entries():
     assert ("compaction", "compact-1") in keys
     assert ("user_msg", "msg-u2") in keys
     assert records[0].session is None  # nothing re-sends the session block
+
+
+def said(entry_id: str, role: str, text: str, at: str) -> dict:
+    return {
+        "type": "message",
+        "id": entry_id,
+        "timestamp": at,
+        "message": {"role": role, "content": [{"type": "text", "text": text}]},
+    }
+
+
+def two_turns() -> list[dict]:
+    """As Droid writes them: the session's first entry has no timestamp, and an outcome has
+    none either and names its turn by the id of the turn's prompt."""
+    return [
+        {"type": "session_start", "id": "two", "title": "Two turns", "cwd": "/x/demo"},
+        said("p1", "user", "Run it.", "2026-11-11T10:00:01Z"),
+        said("r1", "assistant", "Done.", "2026-11-11T10:00:02Z"),
+        {"type": "agent_turn_outcome", "turnId": "p1", "reason": "completed", "resultKind": "text"},
+        said("p2", "user", "Again.", "2026-11-11T10:05:01Z"),
+        said("r2", "assistant", "Done again.", "2026-11-11T10:05:02Z"),
+    ]
+
+
+def write(path: Path, entries: list[dict]) -> Path:
+    path.write_text("".join(json.dumps(entry) + "\n" for entry in entries))
+    return path
+
+
+def covered(records) -> dict:
+    assert records[0].observation is not None
+    return records[0].observation
+
+
+def test_droid_session_start_without_a_time_is_placed_just_before_the_first_timed_entry(tmp_path):
+    path = write(tmp_path / "two.jsonl", two_turns())
+    records = DroidAdapter().from_transcript(path)
+    start = records[0]
+    assert start.kind == "session_start"
+    assert start.ts.isoformat() == "2026-11-11T10:00:00.999000+00:00"
+    assert start.session is not None
+    assert start.session.started_at == start.ts
+    # What the read covered is what the file says, not when it was read.
+    assert covered(records)["covered_from"] == start.ts
+    assert covered(records)["covered_through"].isoformat() == "2026-11-11T10:05:02+00:00"
+    # The file says the same thing however often it is read.
+    again = DroidAdapter().from_transcript(path)
+    assert [r.to_json() for r in again] == [r.to_json() for r in records]
 
 
 def hook_run(entry_id: str, event: str, parent: str, at: str) -> dict:

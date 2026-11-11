@@ -178,16 +178,21 @@ class DroidAdapter:
                     started_at=parse_ts(entry["timestamp"]) if entry.get("timestamp") else None,
                     metadata=_session_metadata(entry),
                 )
-            # agent_turn_outcome carries neither timestamp nor seq. It takes the previous
-            # entry's time plus one millisecond, so file order survives a sort by (ts, seq).
+            # Two kinds of entry carry no timestamp. An agent_turn_outcome takes the time
+            # of the entry before it plus one millisecond. A session_start, the first entry,
+            # takes the time of the first entry that has one less a millisecond. File order
+            # then survives a sort by (ts, seq), and the file says the same thing however
+            # often it is read.
             if entry.get("timestamp"):
                 ts = parse_ts(entry["timestamp"])
+                if last_ts is None:
+                    records[:] = [_placed(rec, ts - timedelta(milliseconds=1)) for rec in records]
+                last_ts = ts
             elif last_ts is not None:
-                ts = last_ts + timedelta(milliseconds=1)
+                ts = last_ts = last_ts + timedelta(milliseconds=1)
             else:
-                ts = parse_ts(session.started_at or now())
-            seq = int(entry.get("seq") or last_seq)
-            last_ts, last_seq = ts, seq
+                ts = now()  # stands until an entry gives a time; a file may give none
+            seq = last_seq = int(entry.get("seq") or last_seq)
             base: dict[str, Any] = {
                 "agent_id": AGENT_ID,
                 "harness_session_id": hsid,
@@ -448,6 +453,15 @@ def _bad_line(hsid: str, path: Path, number: int, raw: str) -> Record:
         content=f"unparseable transcript line {number}",
         payload={"line": raw[:4096]},
     )
+
+
+def _placed(rec: Record, ts: datetime) -> Record:
+    """The record of an entry that carries no time, at the time its place in the file gives
+    it. A line that could not be read keeps the time it was found."""
+    if rec.kind == "capture_error":
+        return rec
+    session = replace(rec.session, started_at=ts) if rec.session else None
+    return replace(rec, ts=ts, session=session)
 
 
 def _with_model(rec: Record, model: str) -> Record:
