@@ -357,6 +357,10 @@ The same audit proposed removing the following. Each was looked at on
   a value from a harness payload, a stored row, or a tool call. The
   annotation says more than that data can promise, so the conversion
   stays.
+- The reading and the migrating of a ledger that has applied migration
+  0001 only (`legacy_preflight` in `audit.py`, `_migrate_lifecycle` in
+  `db.py`). Both live homes are still at 0001, and their next
+  `mem migrate` runs it.
 
 ## Open decisions
 
