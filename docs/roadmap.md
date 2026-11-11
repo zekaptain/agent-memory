@@ -143,8 +143,6 @@ Verified against the code in the audit of 2026-11 and still open.
   judged every calibration item. A backend that skipped items gets its
   thresholds from the ones it judged, and nothing says so
   (`judge/report.py`).
-- The Parquet export copies tables one after another while clients write,
-  so a snapshot can be inconsistent across tables (`db.py`).
 - A caller chooses the `trust_level` of what it remembers, and any agent
   can approve any quarantined memory. Outside admission, no command lets a
   person review quarantined memories (`mcp_server/tools.py`).

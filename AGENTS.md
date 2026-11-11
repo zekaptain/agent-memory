@@ -119,6 +119,11 @@ Entry points are `mem` (`agent_memory.cli:main`) and `mem-mcp`
 - `mem serve` owns the database file during normal operation. Clients use
   `MemoryClient` over Quack. Direct admin access and migrations require
   stopping that server; do not bypass the file lock.
+- A Parquet export holds the ledger as it was at one moment. Copy tables
+  only through `export_snapshot` (one transaction on the database file) or
+  `MemoryClient.export` (a client's statements each see the server as it
+  is then, so it compares its copies with one count of every table and
+  copies again). Both rely on every table being append-only.
 - Quack in DuckDB 2.0.0 does not forward bound parameters. Preserve the
   client's parameterized local staging tables and streamed inserts.
   `VARIANT` values are encoded through JSON. Insert parents before children

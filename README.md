@@ -370,6 +370,10 @@ and keeps the newest 14. Failed exports are logged and retried.
 | Change automatic retention | `mem serve --export-keep N` |
 
 Exports go to `export/<timestamp>/`; `export/latest` points to the newest.
+Each one holds the ledger as it was at one moment. `mem export` checks
+that no table grew while it copied them and copies them again if one did.
+If the ledger is written to during three tries in a row, it exits 1 and
+leaves `latest` where it was; run it again when no agent is writing.
 
 Stop the server before checking or applying migrations:
 

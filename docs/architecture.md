@@ -275,8 +275,15 @@ schema was written. The tests pin the ones the design depends on.
 - Backups: the daily Parquet snapshot in `export/<timestamp>/`, with
   `export/latest` pointing at the newest. The server keeps the newest 14
   (`--export-keep`). A failed export is logged and retried at the next
-  interval; it does not stop the server. A file copy of `memory.duckdb` is
-  only consistent while the server is stopped.
+  interval; it does not stop the server. A snapshot holds the ledger as it
+  was at one moment. The server, and `mem export --direct`, copy every
+  table in one transaction. `mem export` through a running server cannot
+  hold the tables still, because each statement a client sends sees the
+  server as it is then. It counts every table in one statement after
+  copying them, which is enough because the tables only grow, copies them
+  again if one grew meanwhile, and after three tries publishes nothing and
+  exits 1. A file copy of `memory.duckdb` is only consistent while the
+  server is stopped.
 - While it serves, `mem serve` also applies corrections that have come due,
   once a second. A failed pass, like a failed export, is printed with the
   name of the step and tried again; neither stops the server.
