@@ -295,7 +295,9 @@ def test_next_user_linking_is_linear_and_keeps_session_provenance(monkeypatch):
 
 def test_completed_resume_checks_expected_keys_only_once(tmp_path, monkeypatch):
     store = synthetic_run(tmp_path, n=20)
-    original = pipeline.expected_verdicts(store.read_jsonl(store.items_path), store.read_drafts())
+    original = pipeline.expected_verdicts(
+        store.read_jsonl(store.items_path), store.drafts_by_item()
+    )
 
     class CountedKeys(dict):
         visits = 0

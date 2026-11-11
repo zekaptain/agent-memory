@@ -141,14 +141,14 @@ Key = tuple[str, str | None]
 def load_scored(store: RunStore) -> tuple[list[dict[str, Any]], dict[str, dict[Key, Scored]]]:
     """Items, and per backend every labeled verdict row keyed by (item, drafter). Every
     verdict must have been judged with the run's question set."""
-    items = store.read_jsonl(store.items_path)
-    labels = {row["item_id"]: row for row in store.read_jsonl(store.labels_path)}
+    items = store.items()
+    labels = store.labels()
     version = store.read_run().get("questions_version")
     current = version == QUESTIONS_VERSION
     hashes = (
         {
             (item_id, row.get("drafter")): draft_hash(row.get("lesson"))
-            for item_id, rows in store.read_drafts().items()
+            for item_id, rows in store.drafts_by_item().items()
             for row in rows
         }
         if current
@@ -156,29 +156,28 @@ def load_scored(store: RunStore) -> tuple[list[dict[str, Any]], dict[str, dict[K
     )
     by_item = {i["item_id"]: i for i in items}
     scored: dict[str, dict[Key, Scored]] = {}
-    if store.verdicts_dir.exists():
-        for path in sorted(store.verdicts_dir.glob("*.jsonl")):
-            for row in store.read_jsonl(path):
-                verdict = Verdict(row)
-                if verdict.questions_version != version:
-                    # Each question set has its own write gates and labels.
-                    raise JudgeError(
-                        f"{path.name} holds a verdict judged with "
-                        f"{verdict.questions_version or 'no question set'}, but run "
-                        f"{store.run_id!r} was built with {version or 'no question set'}; "
-                        "a report cannot score two question sets as one"
-                    )
-                item = by_item.get(verdict.item_id)
-                label = labels.get(verdict.item_id)
-                if item is None or label is None:
-                    continue
-                if verdict.projection_hash != item.get("projection_hash"):
-                    continue  # judged a projection the run no longer has
-                key = (item["item_id"], verdict.drafter)
-                draft = draft_label(label, verdict.drafter, verdict.draft_hash)
-                if current and (key not in hashes or hashes[key] != verdict.draft_hash):
-                    draft = {}  # An old matching label/verdict is not the current draft.
-                scored.setdefault(verdict.backend, {})[key] = Scored(item, label, verdict, draft)
+    for name, rows in store.verdicts_by_file().items():
+        for row in rows:
+            verdict = Verdict(row)
+            if verdict.questions_version != version:
+                # Each question set has its own write gates and labels.
+                raise JudgeError(
+                    f"{name}.jsonl holds a verdict judged with "
+                    f"{verdict.questions_version or 'no question set'}, but run "
+                    f"{store.run_id!r} was built with {version or 'no question set'}; "
+                    "a report cannot score two question sets as one"
+                )
+            item = by_item.get(verdict.item_id)
+            label = labels.get(verdict.item_id)
+            if item is None or label is None:
+                continue
+            if verdict.projection_hash != item.get("projection_hash"):
+                continue  # judged a projection the run no longer has
+            key = (item["item_id"], verdict.drafter)
+            draft = draft_label(label, verdict.drafter, verdict.draft_hash)
+            if current and (key not in hashes or hashes[key] != verdict.draft_hash):
+                draft = {}  # An old matching label/verdict is not the current draft.
+            scored.setdefault(verdict.backend, {})[key] = Scored(item, label, verdict, draft)
     return items, scored
 
 
@@ -1376,8 +1375,8 @@ def build_report(store: RunStore, *, freeze: bool = False) -> str:
         )
         lines.append("")
 
-    labels = {row["item_id"]: row for row in store.read_jsonl(store.labels_path)}
-    drafts = store.read_drafts()
+    labels = store.labels()
+    drafts = store.drafts_by_item()
     notes = label_notes(items, labels, drafts, questions_version=version)
     if notes:
         lines.extend(["## Labels on their own (all labeled items)", "", *notes])
@@ -1416,5 +1415,5 @@ def build_report(store: RunStore, *, freeze: bool = False) -> str:
             ]
         )
     text = "\n".join(lines)
-    store.report_path.write_text(text, encoding="utf-8")
+    store.write_report(text)
     return text

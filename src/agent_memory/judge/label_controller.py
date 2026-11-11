@@ -114,9 +114,9 @@ class LabelController:
             raise JudgeError(
                 f"This run uses {version} and is read-only. Label a current-version run instead."
             )
-        self.items = store.read_jsonl(store.items_path)
-        self.draft_rows = store.read_drafts()
-        self.existing = {row["item_id"]: row for row in store.read_jsonl(store.labels_path)}
+        self.items = store.items()
+        self.draft_rows = store.drafts_by_item()
+        self.existing = store.labels()
         by_id = {item["item_id"]: item for item in self.items}
         self.backfill = not item_ids and not review
         if item_ids:
@@ -380,7 +380,7 @@ class LabelController:
 
     def _save(self) -> None:
         item_id, stamp = self.item["item_id"], utc_now_iso()
-        current = order_drafts(item_id, self.store.read_drafts().get(item_id, []), self.seed)
+        current = order_drafts(item_id, self.store.drafts_by_item().get(item_id, []), self.seed)
         if current != self.drafts:
             raise JudgeError(
                 "Drafts changed during labeling. Quit and reopen to label the new drafts."

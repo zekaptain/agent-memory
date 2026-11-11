@@ -226,7 +226,7 @@ class ReviewController:
     def _save(self) -> None:
         result = self.todo[self.index]
         iid = result["item_id"]
-        current = self.day.read_drafts().get(iid, [])
+        current = self.day.drafts_by_item().get(iid, [])
         if current != [self.drafts[iid]]:
             raise JudgeError("draft changed during review; quit and reopen the review")
         previous = self.previous.get(iid)

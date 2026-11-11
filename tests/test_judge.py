@@ -1659,7 +1659,7 @@ def test_store_refuses_default_home_and_protects_projections(tmp_path, monkeypat
     assert path.name == "item_with_slash.txt"
     assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
     assert store.read_projection("item/with/slash") == "secret state"
-    child = store.child("2026-11-01")
+    child = store.live_day("2026-11-01")
     assert child.root == store.live_dir / "2026-11-01"
     assert store.purge_projections() == 1
     with pytest.raises(JudgeError, match="no projection"):
@@ -2048,7 +2048,7 @@ def test_drafter_caps_output_and_draft_items_skips_bad_items(tmp_path, monkeypat
     monkeypatch.setattr(judge_http, "post_json", fake_openai)
     logs.clear()
     assert pipeline.draft_items(cfg, "syn", "llamacpp:x", store=store, log=logs.append).written == 4
-    by_item = store.read_drafts()
+    by_item = store.drafts_by_item()
     assert all(len(v) == 2 for v in by_item.values())
     assert all([d["drafter"] for d in v] == ["llamacpp:x", "ollama:m"] for v in by_item.values())
     declined = [
@@ -2108,7 +2108,7 @@ def test_decide_items_skips_failing_item_on_resume(tmp_path, monkeypatch):
         make_backend("rules"),
         seed,
         store.read_projection(seed["item_id"]),
-        store.read_drafts()[seed["item_id"]][0],
+        store.drafts_by_item()[seed["item_id"]][0],
         thresholds_from_run(store.read_run(), "rules"),
         run_id="syn",
     ).row

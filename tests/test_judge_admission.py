@@ -459,7 +459,7 @@ def test_drafter_unknown_ratings_have_independent_denominators(tmp_path):
         entry = label["drafts"]["ollama:m"]
         entry["rule_supported"] = entry["store_exact"] = entry["faithful"] = None
     text = "\n".join(
-        report.drafter_notes(labels, store.read_drafts(), questions_version=QUESTIONS_VERSION)
+        report.drafter_notes(labels, store.drafts_by_item(), questions_version=QUESTIONS_VERSION)
     )
     assert text.count("n/a (0 scored)") == 3
     assert "unknown" not in text

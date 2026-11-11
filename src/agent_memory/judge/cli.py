@@ -69,7 +69,7 @@ def _errors(errors: list[str]) -> None:
 
 def _store(cfg: Config, run: str, live: str | None) -> RunStore:
     store = RunStore(cfg, run)
-    return store.child(live) if live else store
+    return store.live_day(live) if live else store
 
 
 def _parse_since(value: str) -> datetime:
@@ -352,7 +352,7 @@ def status(ctx: typer.Context, run: RUN, live: LIVE_DAY = None) -> None:
     cfg = _config(ctx)
     store = _store(cfg, run, live)
     meta = store.read_run()
-    items = store.read_jsonl(store.items_path)
+    items = store.items()
     counts: dict[str, int] = {}
     for item in items:
         counts[item["stratum"]] = counts.get(item["stratum"], 0) + 1
@@ -363,16 +363,15 @@ def status(ctx: typer.Context, run: RUN, live: LIVE_DAY = None) -> None:
         closed[closed_by_of(item)] = closed.get(closed_by_of(item), 0) + 1
     table.add_row("closed by", ", ".join(f"{k} {v}" for k, v in sorted(closed.items())))
     drafts: dict[str, list[int]] = {}
-    for row in store.read_jsonl(store.drafts_path):
+    for row in store.drafts():
         slot = drafts.setdefault(str(row.get("drafter") or "unknown"), [0, 0])
         slot[0] += 1
         slot[1] += row.get("lesson") is None
     for name, (count, declined) in sorted(drafts.items()):
         table.add_row(f"drafts {escape(name)}", f"{count} ({declined} declined)")
-    table.add_row("labels", str(len(store.read_jsonl(store.labels_path))))
-    if store.verdicts_dir.exists():
-        for path in sorted(store.verdicts_dir.glob("*.jsonl")):
-            table.add_row(f"verdicts {escape(path.stem)}", str(len(store.read_jsonl(path))))
+    table.add_row("labels", str(len(store.labels())))
+    for name, rows in store.verdicts_by_file().items():
+        table.add_row(f"verdicts {escape(name)}", str(len(rows)))
     table.add_row("frozen", "yes" if meta.get("frozen") else "no")
     console.print(table)
 

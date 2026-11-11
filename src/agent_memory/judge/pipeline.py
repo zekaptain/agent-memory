@@ -287,7 +287,7 @@ def build_candidates(
             )
             if index % 25 == 0:
                 log(f"projected {index}/{len(chosen)}")
-    store.write_jsonl(store.items_path, items)
+    store.write_items(items)
     return CandidateSummary(
         pool=_count(pool),
         chosen=_count(chosen),
@@ -339,7 +339,7 @@ def draft_items(
     store = store or RunStore(cfg, run_id)
     run = store.read_run()
     require_current_questions(run)
-    existing = store.read_jsonl(store.drafts_path)
+    existing = store.drafts()
     versions = {str(row.get("drafter_version") or "drafter_v2") for row in existing}
     incompatible = sorted(versions - {DRAFTER_VERSION})
     if incompatible:
@@ -349,7 +349,7 @@ def draft_items(
         )
     drafter = make_drafter(drafter_spec)
     done = {row["item_id"] for row in existing if row.get("drafter") == drafter.name}
-    todo = [row for row in store.read_jsonl(store.items_path) if row["item_id"] not in done]
+    todo = [row for row in store.items() if row["item_id"] not in done]
     if limit is not None:
         todo = todo[:limit]
     summary = DraftSummary()
@@ -366,7 +366,7 @@ def draft_items(
             summary.failed += 1
             warn(f"draft {index}/{len(todo)} failed, skipped (rerun to retry): {exc}")
             continue
-        store.write_jsonl(store.drafts_path, [draft.to_dict()], append=True)
+        store.add_draft(draft.to_dict())
         summary.written += 1
         summary.declined += draft.declined
         snapshot = draft.model_snapshot or snapshot
@@ -425,8 +425,8 @@ def decide_items(
     store = store or RunStore(cfg, run_id)
     run = store.read_run()
     require_current_questions(run)
-    items = store.read_jsonl(store.items_path)
-    drafts = store.read_drafts()
+    items = store.items()
+    drafts = store.drafts_by_item()
     if record_events:
         require_judge_agent(cfg)
     expected = expected_verdicts(items, drafts)
@@ -434,8 +434,7 @@ def decide_items(
     for spec in backend_specs:
         backend = make_backend(spec)
         thresholds = thresholds_from_run(run, backend.name)
-        path = store.verdicts_path(backend.name)
-        existing = store.read_jsonl(path)
+        existing = store.verdicts(backend.name)
         # A verdict is final unless its item has since gained a draft or a new projection, in
         # which case it is superseded and judged again.
         kept = [
@@ -446,7 +445,7 @@ def decide_items(
             == expected[(v["item_id"], v.get("drafter"))]
         ]
         if len(kept) != len(existing):
-            store.write_jsonl(path, kept)
+            store.replace_verdicts(backend.name, kept)
         done = {(v["item_id"], v.get("drafter")) for v in kept}
         turns: dict[str, TurnAnswers] = {}
         for v in kept:
@@ -494,7 +493,7 @@ def decide_items(
                     who = f" draft {draft.get('drafter')}" if draft else ""
                     warn(f"{backend.name}: item {item['item_id']}{who} failed: {exc}")
                     continue
-                store.write_jsonl(path, [verdict.row], append=True)
+                store.add_verdict(backend.name, verdict.row)
                 count += 1
                 # Later drafts of this item copy these answers instead of paying again.
                 turn = verdict.turn_answers() or replace(turn, reused=True)
@@ -567,12 +566,12 @@ def live_step(
     require_judge_agent(cfg)
     day = day or datetime.now(UTC).strftime("%Y-%m-%d")
     imported = import_sessions(cfg, sessions_dir, since=since, log=log)
-    child = parent.child(day)
-    known = {row["item_id"] for row in parent.read_jsonl(parent.items_path)}
-    for other in sorted(parent.live_dir.glob("*/items.jsonl")) if parent.live_dir.exists() else []:
-        known.update(row["item_id"] for row in RunStore.read_jsonl(other))
+    child = parent.live_day(day)
+    known = {row["item_id"] for row in parent.items()}
+    for other in parent.live_days():
+        known.update(row["item_id"] for row in other.items())
     candidates = None
-    if not child.items_path.exists():
+    if not child.has_items():
         with MemoryClient.from_config(cfg) as client:
             session_ids = _session_ids_since(client, since)
         if not child.exists():
@@ -609,8 +608,4 @@ def purge_run(cfg: Config, run_id: str) -> int:
     """Delete every projection file for the run and its live days. Verdicts and labels stay."""
     ensure_experiment_home(cfg)
     store = RunStore(cfg, run_id)
-    removed = store.purge_projections()
-    if store.live_dir.exists():
-        for day in sorted(p for p in store.live_dir.iterdir() if p.is_dir()):
-            removed += store.child(day.name).purge_projections()
-    return removed
+    return store.purge_projections() + sum(day.purge_projections() for day in store.live_days())

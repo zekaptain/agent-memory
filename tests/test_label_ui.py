@@ -246,7 +246,9 @@ def test_backfill_declines_review_history_and_reports(tmp_path):
     assert rows[ids[1]]["drafts"]["second"]["declined"]
     assert rows[ids[0]]["drafts"]["ollama:m"]["grounded"] is False
     for item_id, row in rows.items():
-        assert not missing_steps(row, order_drafts(item_id, store.read_drafts()[item_id], 5), False)
+        assert not missing_steps(
+            row, order_drafts(item_id, store.drafts_by_item()[item_id], 5), False
+        )
     assert LabelController(store).done
     review = LabelController(store, item_ids=[ids[3]], review=True)
     assert review.step == "review"

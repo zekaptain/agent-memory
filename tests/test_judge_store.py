@@ -2,10 +2,12 @@
 
 import os
 import stat
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
 from agent_memory.judge import pipeline
+from agent_memory.judge.report import build_report
 from agent_memory.judge.store import JudgeError, RunStore
 from tests.test_judge import synthetic_run
 
@@ -88,3 +90,66 @@ def test_jsonl_rewrite_and_append(tmp_path):
     assert RunStore.write_jsonl(path, [{"n": 4}], append=True) == 1
     assert RunStore.read_jsonl(path) == [{"n": 3}, {"n": 4}]
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+def test_updates_of_a_run_made_at_once_all_land(tmp_path):
+    store = synthetic_run(tmp_path, n=1)
+    with ThreadPoolExecutor(8) as pool:
+        list(pool.map(lambda i: store.update_run(**{f"field_{i}": i}), range(40)))
+    run = store.read_run()
+    assert [run.get(f"field_{i}") for i in range(40)] == list(range(40))
+
+
+def test_run_files_are_private(tmp_path):
+    store = synthetic_run(tmp_path, n=1)
+    store.update_run(note="changed")
+    build_report(store)
+    RunStore.write_jsonl(store.root / "appended.jsonl", [{"n": 1}], append=True)
+    for path in [store.root, *store.root.rglob("*")]:
+        assert stat.S_IMODE(path.stat().st_mode) == (0o700 if path.is_dir() else 0o600), path
+
+
+def test_a_damaged_run_json_is_reported_without_its_content(tmp_path):
+    store = synthetic_run(tmp_path, n=1)
+    store.run_json.write_text('{"PRIVATE_CONTENT":')
+    with pytest.raises(JudgeError) as error:
+        store.read_run()
+    assert str(store.run_json) in str(error.value)
+    assert "PRIVATE_CONTENT" not in str(error.value)
+
+
+def test_a_rewrite_reaches_the_disk_before_it_replaces_the_file(tmp_path, monkeypatch):
+    order = []
+    fsync, replace = os.fsync, os.replace
+    monkeypatch.setattr(os, "fsync", lambda fd: (order.append("fsync"), fsync(fd))[1])
+    monkeypatch.setattr(os, "replace", lambda a, b: (order.append("replace"), replace(a, b))[1])
+    RunStore.write_jsonl(tmp_path / "labels.jsonl", [{"item_id": "a"}])
+    assert order == ["fsync", "replace"]
+    assert [path.name for path in tmp_path.iterdir()] == ["labels.jsonl"]
+
+
+def test_a_label_that_names_no_item_is_reported(tmp_path):
+    store = synthetic_run(tmp_path, n=1)
+    store.write_jsonl(store.labels_path, [{"failed": True, "note": "PRIVATE_CONTENT"}])
+    with pytest.raises(JudgeError, match="names no item") as error:
+        store.labels()
+    assert "PRIVATE_CONTENT" not in str(error.value)
+
+
+def test_verdict_files_and_live_days_are_listed_in_name_order(tmp_path):
+    store = synthetic_run(tmp_path, n=2)
+    assert list(store.verdicts_by_file()) == ["llm_ref", "rules"]
+    assert store.verdicts_by_file()["llm_ref"] == store.verdicts("llm:ref")
+    assert len(store.verdicts("rules")) == 2
+    # A file is read whatever it is called, as the copy a person leaves beside one always was.
+    copy = store.verdicts_dir / "rules copy.jsonl"
+    copy.write_bytes(store.verdicts_path("rules").read_bytes())
+    assert list(store.verdicts_by_file()) == ["llm_ref", "rules copy", "rules"]
+    assert store.verdicts_by_file()["rules copy"] == store.verdicts("rules")
+    copy.unlink()
+    assert store.live_days() == []
+    for day in ("2026-11-02", "2026-11-01"):
+        store.live_day(day).create({"live_day": day})
+    (store.live_dir / "stray.txt").write_text("not a day")
+    assert [day.root.name for day in store.live_days()] == ["2026-11-01", "2026-11-02"]
+    assert RunStore(store.cfg, "none-yet").verdicts_by_file() == {}
