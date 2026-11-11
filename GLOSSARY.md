@@ -239,8 +239,20 @@ A completed turn with no trigger, included so that judges are also tested on tur
 _Avoid_: Negative, baseline
 
 **Verdict**:
-A judge's recorded answers about one turn and its drafts, with the action that follows from them.
+A judge's recorded answers about one draft of one turn, including its answers about the turn itself.
 _Avoid_: Judgment, result, score
+
+**Action**:
+What follows from reading a verdict at a set of thresholds: write the lesson, send it to review, or discard it. The same verdict can give a different action at different thresholds.
+_Avoid_: Outcome, result
+
+**Turn questions**:
+The questions a judge answers about a turn itself. They are asked once for a turn, and every verdict of that turn carries the answers.
+_Avoid_: Stage A (kept only where old reports and stored verdicts already say it)
+
+**Draft questions**:
+The questions a judge answers about one draft of a turn.
+_Avoid_: Stage B (kept only where old reports already say it)
 
 **Unanswered question**:
 A question a judge was asked but gave no usable answer to. It is evidence of nothing, so no lesson is written on the strength of one.
