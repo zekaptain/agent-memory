@@ -14,7 +14,7 @@ from typing import Any
 from ... import endpoints
 from ...model_call import OPENROUTER_KEY_ENV
 from ..questions import Question
-from ..store import JudgeError
+from ..store import JudgeError, ServerUnreachable
 from .base import Answer, JudgeInput, answer_from_probabilities, require_remote
 
 OPENROUTER_URL = "https://openrouter.ai/api/alpha/decisions"
@@ -118,7 +118,7 @@ class JevBackend:
     def _key(self) -> str:
         key = self.api_key or os.environ.get(OPENROUTER_KEY_ENV)
         if not key:
-            raise JudgeError(
+            raise ServerUnreachable(
                 f"{OPENROUTER_KEY_ENV} is not set; the jev backend needs an OpenRouter key."
             )
         return key
@@ -131,6 +131,8 @@ class JevBackend:
             response, latency = endpoints.post_json(
                 self.url, body, headers={"Authorization": f"Bearer {key}"}, timeout=120
             )
+        except endpoints.Unreachable as exc:
+            raise ServerUnreachable(str(exc)) from None
         except endpoints.EgressError as exc:
             raise JudgeError(str(exc)) from None
         return parse_answers(response, questions, latency_ms=latency)

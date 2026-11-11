@@ -78,11 +78,11 @@ def test_decide_resumes_after_a_verdict_row_was_cut_off(tmp_path):
     path.write_bytes(data[:-40])  # The run was killed while it appended its last row.
     assert [row["item_id"] for row in store.read_jsonl(path)] == before[:-1]
 
-    written = pipeline.decide_items(
+    summary = pipeline.decide_items(
         store.cfg, store.run_id, ["rules"], store=store, record_events=False
     )
 
-    assert written == {"rules": 1}
+    assert summary.written == {"rules": 1}
     assert [row["item_id"] for row in store.read_jsonl(path)] == before
 
 
@@ -130,7 +130,7 @@ def test_a_second_decide_for_one_backend_is_refused_at_once(tmp_path, monkeypatc
                 decide()
         finally:
             release.set()
-        assert first.result(30) == {"rules": 3}
+        assert first.result(30).written == {"rules": 3}
     judged = [row["item_id"] for row in store.read_jsonl(path)]
     assert judged == [item["item_id"] for item in store.read_jsonl(store.items_path)]
 

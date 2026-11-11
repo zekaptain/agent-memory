@@ -19,7 +19,7 @@ from ... import model_call
 from ...endpoints import LLAMACPP_HOST, OLLAMA_HOST
 from ...model_call import Ask, LlamaCpp, Ollama, Server
 from ..questions import Question
-from ..store import JudgeError
+from ..store import JudgeError, ServerUnreachable
 from .base import Answer, JudgeInput, answer_from_probabilities
 
 MAX_JUDGE_TOKENS = 4096
@@ -140,6 +140,8 @@ class ReasoningJudge:
                 )
             else:
                 result = model_call.call(self.server, ask, who="judge")
+        except model_call.ModelUnreachable as exc:
+            raise ServerUnreachable(str(exc)) from None
         except model_call.ModelCallError as exc:
             raise JudgeError(str(exc)) from None
         return answers_from_judge_json(

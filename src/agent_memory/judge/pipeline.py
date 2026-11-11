@@ -33,6 +33,7 @@ from .questions import DEFAULT_THRESHOLDS, QUESTIONS_VERSION, thresholds_from_ru
 from .store import (
     JudgeError,
     RunStore,
+    ServerUnreachable,
     ensure_experiment_home,
     imports_log,
     sole_writer,
@@ -55,10 +56,48 @@ Log = Callable[[str], None]
 spooled batch). A caller with one channel passes only `log` and gets both on it."""
 CALIBRATION_SHARE = 0.6
 EVENT_BATCH = 25
+# A command stops after this many failures in a row that are not the items' own.
+STOP_AFTER = 3
 
 
 def _quiet(_: str) -> None:
     return None
+
+
+class _Failures:
+    """When the failures of one drafter or backend end a command.
+
+    A failed item is skipped, and the next command asks it again. The command stops after
+    `STOP_AFTER` failures in a row when the fault is not the items': the model server could
+    not be reached each time, or this drafter or backend has written nothing in the run yet.
+    So an item that fails every time cannot stop a run, and neither a server that is not
+    there nor an unfit model can use a run up."""
+
+    def __init__(self, name: str, *, wrote_before: bool) -> None:
+        self._name = name
+        self._wrote = wrote_before
+        self._in_a_row = 0
+        self._unreached = 0
+
+    def answered(self) -> None:
+        """The model server answered, usably or not."""
+        self._unreached = 0
+
+    def wrote(self) -> None:
+        self._wrote = True
+        self._in_a_row = self._unreached = 0
+
+    def failed(self, exc: JudgeError) -> str | None:
+        """Count a failure. Returns the error the command stops with, or None to go on."""
+        self._in_a_row += 1
+        self._unreached = self._unreached + 1 if isinstance(exc, ServerUnreachable) else 0
+        if self._unreached >= STOP_AFTER:
+            why = f"the model server could not be reached {STOP_AFTER} times in a row"
+        elif not self._wrote and self._in_a_row >= STOP_AFTER:
+            why = f"{STOP_AFTER} failures in a row and nothing written yet"
+        else:
+            return None
+        return f"{self._name}: stopped, {why}: {exc}"
 
 
 def require_judge_agent(cfg: Config) -> None:
@@ -370,34 +409,42 @@ def draft_items(
             todo = todo[:limit]
         summary = DraftSummary()
         snapshot = ""
+        failures = _Failures(drafter.name, wrote_before=bool(done))
+        stopped: str | None = None
         for index, item in enumerate(todo, start=1):
             state = drafter_rendering(store.read_projection(item["item_id"]))
             try:
                 draft = drafter.draft(item["item_id"], state)
             except JudgeError as exc:
-                # A drafter that has never produced anything in this run is probably
-                # misconfigured; once it has, a bad item is skipped and the next run retries it.
-                if not done and summary.written == 0:
-                    raise
                 summary.failed += 1
                 warn(f"draft {index}/{len(todo)} failed, skipped (rerun to retry): {exc}")
+                stopped = failures.failed(exc)
+                if stopped:
+                    break
                 continue
             store.add_draft(draft.to_dict())
+            failures.wrote()
             summary.written += 1
             summary.declined += draft.declined
             snapshot = draft.model_snapshot or snapshot
             what = "declined" if draft.declined else "drafted"
             log(f"{what} {index}/{len(todo)} ({draft.latency_ms / 1000:.1f}s)")
-        drafters = dict(run.get("drafters") or {})
-        previous = drafters.get(drafter.name) or {}
-        drafters[drafter.name] = {
-            "drafter_version": DRAFTER_VERSION,
-            "model_snapshot": snapshot or previous.get("model_snapshot", ""),
-            "drafts": len(done) + summary.written,
-            "declined": int(previous.get("declined", 0)) + summary.declined,
-            "drafted_at": utc_now_iso(),
-        }
-        store.update_run(drafter=drafter.name, drafter_version=DRAFTER_VERSION, drafters=drafters)
+        # A command that stops still accounts for the drafts it wrote before it did.
+        if summary.written or not stopped:
+            drafters = dict(run.get("drafters") or {})
+            previous = drafters.get(drafter.name) or {}
+            drafters[drafter.name] = {
+                "drafter_version": DRAFTER_VERSION,
+                "model_snapshot": snapshot or previous.get("model_snapshot", ""),
+                "drafts": len(done) + summary.written,
+                "declined": int(previous.get("declined", 0)) + summary.declined,
+                "drafted_at": utc_now_iso(),
+            }
+            store.update_run(
+                drafter=drafter.name, drafter_version=DRAFTER_VERSION, drafters=drafters
+            )
+        if stopped:
+            raise JudgeError(stopped)
     return summary
 
 
@@ -422,6 +469,14 @@ def expected_verdicts(
     return expected
 
 
+@dataclass
+class DecideSummary:
+    """Per backend: the verdicts written, and the failures that left a verdict unwritten."""
+
+    written: dict[str, int] = field(default_factory=dict)
+    failed: dict[str, int] = field(default_factory=dict)
+
+
 def decide_items(
     cfg: Config,
     run_id: str,
@@ -432,10 +487,9 @@ def decide_items(
     record_events: bool = True,
     log: Log = _quiet,
     warn: Log | None = None,
-) -> dict[str, int]:
+) -> DecideSummary:
     """Run each backend over every (item, draft) without a current verdict. The turn questions
-    are asked once per item and copied into every row of that item. Returns rows written per
-    backend."""
+    are asked once per item and copied into every row of that item."""
     warn = warn or log
     ensure_experiment_home(cfg)
     store = store or RunStore(cfg, run_id)
@@ -449,7 +503,7 @@ def decide_items(
     # A backend named twice is run once. Every verdict file this command will write is held
     # before any model is called, so a second command is refused before it costs anything.
     backends = list({b.name: b for b in map(make_backend, backend_specs)}.values())
-    written: dict[str, int] = {}
+    summary = DecideSummary()
     with ExitStack() as held:
         for backend in backends:
             held.enter_context(sole_writer(store.verdicts_path(backend.name)))
@@ -480,6 +534,8 @@ def decide_items(
             pending_records: list[Record] = []
             count = 0
             failed = 0
+            failures = _Failures(backend.name, wrote_before=bool(kept))
+            stopped: str | None = None
             for index, item in enumerate(todo, start=1):
                 state = store.read_projection(item["item_id"])
                 waiting: list[Mapping[str, Any] | None] = [
@@ -493,14 +549,14 @@ def decide_items(
                 try:
                     if turn is None:
                         turn = ask_turn(backend, item, state)
+                        failures.answered()
                 except JudgeError as exc:
-                    # A backend that has never produced a verdict in this run is probably
-                    # misconfigured, so fail fast. Once it has, a bad item is skipped and the
-                    # next decide picks it up again.
-                    if not kept and count == 0:
-                        raise
+                    # The item is skipped, and the next decide asks it again.
                     failed += 1
                     warn(f"{backend.name}: item {item['item_id']} failed: {exc}")
+                    stopped = failures.failed(exc)
+                    if stopped:
+                        break
                     continue
                 for draft in waiting:
                     try:
@@ -508,13 +564,15 @@ def decide_items(
                             backend, item, state, draft, thresholds, run_id=run_id, turn=turn
                         )
                     except JudgeError as exc:
-                        if not kept and count == 0:
-                            raise
                         failed += 1
                         who = f" draft {draft.get('drafter')}" if draft else ""
                         warn(f"{backend.name}: item {item['item_id']}{who} failed: {exc}")
+                        stopped = failures.failed(exc)
+                        if stopped:
+                            break
                         continue
                     store.add_verdict(backend.name, verdict.row)
+                    failures.wrote()
                     count += 1
                     # Later drafts of this item copy these answers instead of paying again.
                     turn = verdict.turn_answers() or replace(turn, reused=True)
@@ -529,15 +587,21 @@ def decide_items(
                         f"{backend.name} {index}/{len(todo)}{who}: {verdict.recorded.action} "
                         f"({verdict.latency_ms / 1000:.1f}s)"
                     )
+                if stopped:
+                    break
+            # A command that stops still records the verdicts it wrote before it did.
             if pending_records:
                 _record(cfg, pending_records, warn)
+            if stopped:
+                raise JudgeError(stopped)
             if failed:
                 warn(
                     f"{backend.name}: {failed} verdict(s) failed and were not written; "
                     "rerun to retry"
                 )
-            written[backend.name] = count
-    return written
+            summary.written[backend.name] = count
+            summary.failed[backend.name] = failed
+    return summary
 
 
 def _record(cfg: Config, records: list[Record], warn: Log) -> None:
@@ -565,6 +629,7 @@ class LiveSummary:
     candidates: CandidateSummary | None
     drafted: int
     decided: dict[str, int]
+    failed: int = 0
 
 
 def live_step(
@@ -619,12 +684,19 @@ def live_step(
             exclude_item_ids=sorted(known),
             log=log,
         )
-    drafted = 0
+    drafted = failed = 0
     for spec in drafter_specs:
-        drafted += draft_items(cfg, run_id, spec, store=child, log=log, warn=warn).written
+        drafts = draft_items(cfg, run_id, spec, store=child, log=log, warn=warn)
+        drafted += drafts.written
+        failed += drafts.failed
     decided = decide_items(cfg, run_id, backends, store=child, log=log, warn=warn)
     return LiveSummary(
-        day=day, imported=imported, candidates=candidates, drafted=drafted, decided=decided
+        day=day,
+        imported=imported,
+        candidates=candidates,
+        drafted=drafted,
+        decided=decided.written,
+        failed=failed + sum(decided.failed.values()),
     )
 
 

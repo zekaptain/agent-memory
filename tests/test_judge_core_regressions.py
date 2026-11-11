@@ -54,7 +54,7 @@ def test_the_turn_is_charged_only_to_first_persisted_verdict(tmp_path, monkeypat
     monkeypatch.setattr(RulesBackend, "decide", paid)
     monkeypatch.setattr(pipeline, "_record", lambda cfg, batch, log: records.extend(batch))
     monkeypatch.setattr(pipeline, "require_judge_agent", lambda cfg: None)
-    written = pipeline.decide_items(store.cfg, store.run_id, ["rules"], store=store)
+    written = pipeline.decide_items(store.cfg, store.run_id, ["rules"], store=store).written
     assert written == {"rules": 2 if first == "failed" else 3}
     rows = [row for row in store.read_jsonl(path) if row["item_id"] == item_id]
     assert [row["stage_a_reused"] for row in rows] == [False] + [True] * (len(rows) - 1)
@@ -89,7 +89,7 @@ def test_the_turn_is_charged_only_to_first_persisted_verdict(tmp_path, monkeypat
     store.write_jsonl(
         store.drafts_path, [{"item_id": item_id, "drafter": "d", "lesson": "D"}], append=True
     )
-    written = pipeline.decide_items(store.cfg, store.run_id, ["rules"], store=store)
+    written = pipeline.decide_items(store.cfg, store.run_id, ["rules"], store=store).written
     assert written["rules"] == (2 if len(rows) == 2 else 1)
     assert not any(asked_turn for _, asked_turn, _ in calls)
     resumed = store.read_jsonl(path)[-written["rules"] :]
@@ -97,7 +97,8 @@ def test_the_turn_is_charged_only_to_first_persisted_verdict(tmp_path, monkeypat
     assert all(record.payload["judge"]["latency_ms"] == 18.0 for record in records)
     assert all(record.payload["judge"]["cost_usd"] == pytest.approx(0.006) for record in records)
     calls.clear()
-    assert pipeline.decide_items(store.cfg, store.run_id, ["rules"], store=store) == {"rules": 0}
+    again = pipeline.decide_items(store.cfg, store.run_id, ["rules"], store=store)
+    assert again.written == {"rules": 0}
     assert calls == []
 
 
@@ -317,7 +318,7 @@ def test_completed_resume_checks_expected_keys_only_once(tmp_path, monkeypatch):
     monkeypatch.setattr(RulesBackend, "decide", unexpected)
     assert pipeline.decide_items(
         store.cfg, store.run_id, ["rules"], store=store, record_events=False
-    ) == {"rules": 0}
+    ).written == {"rules": 0}
     assert expected.visits == len(expected)
 
 

@@ -219,10 +219,10 @@ def test_decide_records_the_unanswered_verdict_once_and_does_not_ask_again(tmp_p
         store.verdicts_path(name).unlink()
     prompts = reply_with(monkeypatch, {"generalizable": OMITTED})
     logs: list[str] = []
-    written = pipeline.decide_items(
+    summary = pipeline.decide_items(
         store.cfg, "syn", ["llm:synthetic"], store=store, record_events=False, log=logs.append
     )
-    assert written == {"llm:synthetic": 2}
+    assert summary.written == {"llm:synthetic": 2}
     assert len(prompts) == 4  # Turn and draft questions once per item: no second attempt.
     rows = store.read_jsonl(store.verdicts_path("llm:synthetic"))
     assert [(r["action"], r["reasons"]) for r in rows] == [
@@ -233,7 +233,7 @@ def test_decide_records_the_unanswered_verdict_once_and_does_not_ask_again(tmp_p
     again = pipeline.decide_items(
         store.cfg, "syn", ["llm:synthetic"], store=store, record_events=False
     )
-    assert again == {"llm:synthetic": 0}
+    assert again.written == {"llm:synthetic": 0}
     assert len(prompts) == 4
 
 

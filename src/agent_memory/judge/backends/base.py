@@ -11,7 +11,7 @@ from typing import Any, Protocol
 from ... import endpoints
 from ..lesson import Claim
 from ..questions import Question, unanswered
-from ..store import JudgeError
+from ..store import JudgeError, ServerUnreachable
 
 REMOTE_ENV = endpoints.REMOTE_ENV
 
@@ -119,7 +119,7 @@ def require_remote(what: str) -> None:
     try:
         endpoints.require_egress("https://hosted.invalid", what)
     except endpoints.EgressError as exc:
-        raise JudgeError(str(exc)) from None
+        raise ServerUnreachable(str(exc)) from None
 
 
 _SPEC = re.compile(r"^(?P<kind>[a-z]+)(?::(?P<arg>.+))?$")

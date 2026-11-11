@@ -44,6 +44,12 @@ class JudgeError(AgentMemoryError):
     """A judge command cannot proceed for an expected reason."""
 
 
+class ServerUnreachable(JudgeError):
+    """No model server was asked: nothing accepted the connection, or the request may not
+    leave this machine. The fault cannot be the item's, so the next item will fare no better.
+    A timeout or a rejection is not this: either may be the item's doing."""
+
+
 def ensure_experiment_home(cfg: Config) -> None:
     """Refuse to run against the production ledger. The experiment imports and writes freely."""
     if cfg.home.expanduser().resolve() == DEFAULT_HOME.expanduser().resolve():

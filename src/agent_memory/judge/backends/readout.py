@@ -14,7 +14,7 @@ from typing import Any
 from ... import endpoints
 from ...endpoints import OLLAMA_HOST
 from ..questions import Question
-from ..store import JudgeError
+from ..store import JudgeError, ServerUnreachable
 from .base import Answer, JudgeInput, answer_from_probabilities, softmax
 
 LETTERS = string.ascii_uppercase
@@ -112,6 +112,8 @@ class ReadoutBackend:
             body["top_logprobs"] = self.top_logprobs
         try:
             return endpoints.post_json(f"{self.host}/api/chat", body)
+        except endpoints.Unreachable as exc:
+            raise ServerUnreachable(str(exc)) from None
         except endpoints.EgressError as exc:
             raise JudgeError(str(exc)) from None
 

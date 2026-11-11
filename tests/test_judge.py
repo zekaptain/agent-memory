@@ -56,7 +56,12 @@ from agent_memory.judge.questions import (
     thresholds_from_run,
 )
 from agent_memory.judge.report import build_report
-from agent_memory.judge.store import JudgeError, RunStore, ensure_experiment_home
+from agent_memory.judge.store import (
+    JudgeError,
+    RunStore,
+    ServerUnreachable,
+    ensure_experiment_home,
+)
 from agent_memory.judge.triggers import (
     Candidate,
     TurnEvent,
@@ -68,7 +73,7 @@ from agent_memory.judge.triggers import (
     tool_error_facts,
     trigger_flags,
 )
-from agent_memory.judge.verdict import Verdict, judge
+from agent_memory.judge.verdict import Verdict
 from agent_memory.model_call import LlamaCpp, Ollama
 from tests.conftest import FIXTURES
 
@@ -708,10 +713,10 @@ def test_jev_refuses_without_opt_in_and_key(monkeypatch):
         endpoints, "post_json", lambda *a, **k: calls.append(a) or (JEV_RESPONSE, 1.0)
     )
     inp = JudgeInput(item_id="i", state="S", facts={}, flags=())
-    with pytest.raises(JudgeError, match=REMOTE_ENV):
+    with pytest.raises(ServerUnreachable, match=REMOTE_ENV):
         JevBackend().decide(inp, [BY_ID["failed"]])
     monkeypatch.setenv(REMOTE_ENV, "1")
-    with pytest.raises(JudgeError, match="OPENROUTER_API_KEY"):
+    with pytest.raises(ServerUnreachable, match="OPENROUTER_API_KEY"):
         JevBackend().decide(inp, [BY_ID["failed"]])
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
     answers = JevBackend().decide(inp, [BY_ID["failed"]])
@@ -2104,13 +2109,164 @@ def test_drafter_caps_output_and_draft_items_skips_bad_items(tmp_path, monkeypat
     assert (summary.written, summary.failed) == (0, 1)
     assert any("skipped" in line for line in logs)
 
-    # A failure on the very first item of a fresh run is treated as configuration and raised.
+    # A model server that cannot be reached ends a fresh run after three items: not at the
+    # first, and not after all four.
     store.drafts_path.unlink()
-    with pytest.raises(JudgeError, match="down"):
+    unanswered: list[Any] = []
+
+    def down(url, body, **kwargs):
+        unanswered.append(body)
+        raise endpoints.Unreachable("down")
+
+    monkeypatch.setattr(endpoints, "post_json", down)
+    with pytest.raises(JudgeError, match="could not be reached 3 times in a row: down"):
         pipeline.draft_items(cfg, "syn", "ollama:m", store=store)
+    assert len(unanswered) == 3
 
 
-def test_decide_items_skips_failing_item_on_resume(tmp_path, monkeypatch):
+def test_draft_stops_after_three_failures_and_keeps_what_it_wrote(tmp_path, monkeypatch):
+    from agent_memory.judge import pipeline
+
+    store = synthetic_run(tmp_path, n=6)
+    store.drafts_path.unlink()
+    bodies: list[Any] = []
+
+    def one_then_down(url, body, **kwargs):
+        bodies.append(body)
+        if len(bodies) > 1:
+            raise endpoints.Unreachable("http://x: connection refused")
+        reply = json.dumps(lesson_reply("Run tests first.", cited=(1,)))
+        return {"model": "m", "message": {"content": reply}}, 12.0
+
+    monkeypatch.setattr(endpoints, "post_json", one_then_down)
+    warnings: list[str] = []
+    with pytest.raises(
+        JudgeError,
+        match="ollama:m: stopped, the model server could not be reached 3 times in a row",
+    ):
+        pipeline.draft_items(store.cfg, "syn", "ollama:m", store=store, warn=warnings.append)
+    assert len(bodies) == 4  # Two of the six items were never asked for.
+    assert len(warnings) == 3
+    assert len(store.read_jsonl(store.drafts_path)) == 1
+    # The run still says what this drafter has written.
+    assert store.read_run()["drafters"]["ollama:m"]["drafts"] == 1
+
+    # A drafter whose every draft is cut off has the server's ear and nothing to show. With
+    # nothing written yet it stops as well, after three items of two attempts each.
+    store.drafts_path.unlink()
+    bodies.clear()
+
+    def cut_off(url, body, **kwargs):
+        bodies.append(body)
+        return {"model": "m", "message": {"content": "{"}, "done_reason": "length"}, 5.0
+
+    monkeypatch.setattr(endpoints, "post_json", cut_off)
+    with pytest.raises(JudgeError, match="3 failures in a row and nothing written yet"):
+        pipeline.draft_items(store.cfg, "syn", "ollama:m", store=store)
+    assert [b["options"]["num_predict"] for b in bodies] == [700, 2100] * 3
+
+
+def _raising(fault: Exception):
+    def post(*args: Any, **kwargs: Any):
+        raise fault
+
+    return post
+
+
+_TURN = JudgeInput(item_id="i", state="S", facts={}, flags=())
+
+
+@pytest.mark.parametrize(
+    "ask",
+    [
+        lambda: ollama_judge("m").decide(_TURN, [BY_ID["failed"]]),
+        lambda: llamacpp_judge("m").decide(_TURN, [BY_ID["failed"]]),
+        lambda: ReadoutBackend("m").decide(_TURN, [BY_ID["failed"]]),
+        lambda: JevBackend(api_key="k").decide(_TURN, [BY_ID["failed"]]),
+        lambda: make_drafter("ollama:m").draft("i", "S"),
+    ],
+    ids=["llm", "llamacpp", "readout", "jev", "drafter"],
+)
+def test_only_a_server_that_was_not_reached_counts_against_the_server(monkeypatch, ask):
+    monkeypatch.setenv(REMOTE_ENV, "1")
+    monkeypatch.setattr(endpoints, "get_json", _raising(endpoints.EgressError("down")))
+    monkeypatch.setattr(
+        endpoints, "post_json", _raising(endpoints.Unreachable("http://x: connection refused"))
+    )
+    with pytest.raises(ServerUnreachable, match="connection refused"):
+        ask()
+    # A server that was too slow or said no was reached, and the item may be why.
+    for fault in (
+        endpoints.EgressError("http://x: timed out after 300s"),
+        endpoints.HttpStatusError("http://x: HTTP 400: context too long", 400),
+        endpoints.HttpStatusError("http://x: HTTP 500: out of memory", 500),
+        endpoints.EgressError("http://x: response is not JSON"),
+    ):
+        monkeypatch.setattr(endpoints, "post_json", _raising(fault))
+        with pytest.raises(JudgeError) as raised:
+            ask()
+        assert not isinstance(raised.value, ServerUnreachable), fault
+
+
+def test_three_slow_items_do_not_stop_the_drafts_behind_them(tmp_path, monkeypatch):
+    """A timeout may be the item's doing, a long turn. Counted against the model server,
+    three such items at the head of a run's unfinished work stopped every rerun there."""
+    from agent_memory.judge import pipeline
+
+    store = synthetic_run(tmp_path, n=6)
+    store.drafts_path.unlink()
+
+    def timing_out(*slow: int):
+        calls: list[Any] = []
+
+        def post(url, body, **kwargs):
+            calls.append(body)
+            if len(calls) in slow:
+                raise endpoints.EgressError("http://x: timed out after 300s")
+            reply = json.dumps(lesson_reply("Run tests first.", cited=(1,)))
+            return {"model": "m", "message": {"content": reply}}, 12.0
+
+        return post
+
+    def draft(**more: Any):
+        return pipeline.draft_items(store.cfg, "syn", "ollama:m", store=store, **more)
+
+    # The first command is cut short after the three slow items.
+    monkeypatch.setattr(endpoints, "post_json", timing_out(2, 3, 4))
+    first = draft(limit=4)
+    assert (first.written, first.failed) == (1, 3)
+    # The next one meets them first, skips them again, and drafts the two behind them.
+    monkeypatch.setattr(endpoints, "post_json", timing_out(1, 2, 3))
+    second = draft()
+    assert (second.written, second.failed) == (2, 3)
+    assert store.read_run()["drafters"]["ollama:m"]["drafts"] == 3
+
+
+REAL_RULES_DECIDE = RulesBackend.decide
+
+
+def scripted_rules(monkeypatch, store: RunStore, script: str) -> list[str]:
+    """Make the rules backend treat the run's items, in order, as the script says: `ok`
+    answers, `own` fails for a reason of the item's own, and `down` cannot reach the model
+    server. Returns the ids of the items it is asked about, once each and in order."""
+    plan = dict(zip([i["item_id"] for i in store.items()], script.split(), strict=True))
+    asked: list[str] = []
+
+    def decide(self, inp, questions):
+        if inp.item_id not in asked:
+            asked.append(inp.item_id)
+        outcome = plan[inp.item_id]
+        if outcome == "down":
+            raise ServerUnreachable("http://x: connection refused")
+        if outcome == "own":
+            raise JudgeError("judge ran out of tokens; JSON incomplete: ''")
+        return REAL_RULES_DECIDE(self, inp, questions)
+
+    monkeypatch.setattr(RulesBackend, "decide", decide)
+    return asked
+
+
+def test_decide_skips_an_item_that_fails_and_says_so(tmp_path, monkeypatch):
     from agent_memory.judge import pipeline
 
     store = synthetic_run(tmp_path, n=3)
@@ -2118,34 +2274,12 @@ def test_decide_items_skips_failing_item_on_resume(tmp_path, monkeypatch):
     cfg = Config(home=tmp_path / "exp")
     items = store.read_jsonl(store.items_path)
     bad = items[0]["item_id"]
-    real_decide = RulesBackend.decide
-
-    def flaky(self, inp, questions):
-        if inp.item_id == bad:
-            raise JudgeError("judge ran out of tokens; JSON incomplete: ''")
-        return real_decide(self, inp, questions)
-
-    monkeypatch.setattr(RulesBackend, "decide", flaky)
-    # Fresh run, first item fails: configuration, raised.
-    with pytest.raises(JudgeError, match="ran out of tokens"):
-        pipeline.decide_items(cfg, "syn", ["rules"], store=store, record_events=False)
-    # One good verdict exists, so the same failure is now skipped and reported.
-    seed = items[2]
-    verdict = judge(
-        make_backend("rules"),
-        seed,
-        store.read_projection(seed["item_id"]),
-        store.drafts_by_item()[seed["item_id"]][0],
-        thresholds_from_run(store.read_run(), "rules"),
-        run_id="syn",
-    ).row
-    assert verdict["drafter"] == "ollama:m"
-    assert verdict["draft_hash"] == draft_hash("Lesson 2.")
-    assert set(verdict["answers"]) == {q.id for q in ALL_QUESTIONS}
-    store.write_jsonl(store.verdicts_path("rules"), [verdict])
+    # The first item of a fresh run fails for a reason of its own. That used to end the
+    # command, and every rerun after it at the same item.
+    scripted_rules(monkeypatch, store, "own ok ok")
     logs: list[str] = []
     warnings: list[str] = []
-    written = pipeline.decide_items(
+    summary = pipeline.decide_items(
         cfg,
         "syn",
         ["rules"],
@@ -2154,13 +2288,150 @@ def test_decide_items_skips_failing_item_on_resume(tmp_path, monkeypatch):
         log=logs.append,
         warn=warnings.append,
     )
-    assert written == {"rules": 1}
+    assert summary.written == {"rules": 2}
+    assert summary.failed == {"rules": 1}
     assert any(f"item {bad} failed" in line for line in warnings)
     assert any("1 verdict(s) failed" in line for line in warnings)
     assert not any("failed" in line for line in logs)
     verdicts = store.read_jsonl(store.verdicts_path("rules"))
-    assert len(verdicts) == 2
-    assert bad not in {v["item_id"] for v in verdicts}
+    assert [v["item_id"] for v in verdicts] == [items[1]["item_id"], items[2]["item_id"]]
+    last = verdicts[-1]
+    assert last["drafter"] == "ollama:m"
+    assert last["draft_hash"] == draft_hash("Lesson 2.")
+    assert set(last["answers"]) == {q.id for q in ALL_QUESTIONS}
+    # The next command asks the skipped item again, and only that one.
+    asked = scripted_rules(monkeypatch, store, "ok ok ok")
+    again = pipeline.decide_items(cfg, "syn", ["rules"], store=store, record_events=False)
+    assert (again.written, again.failed) == ({"rules": 1}, {"rules": 0})
+    assert asked == [bad]
+
+
+@pytest.mark.parametrize(
+    ("script", "stops", "asked", "written"),
+    [
+        # The model server cannot be reached three times in a row: it is gone, whatever the
+        # items are.
+        ("down down down ok ok", "could not be reached 3 times in a row", 3, 0),
+        ("ok down down down ok", "could not be reached 3 times in a row", 4, 1),
+        # A backend that has written nothing in the run and fails three times running is
+        # unfit or misconfigured, whatever the three reasons are.
+        ("own own own ok ok", "3 failures in a row and nothing written yet", 3, 0),
+        ("own down own ok ok", "3 failures in a row and nothing written yet", 3, 0),
+        # Once it has written a verdict, an item's own failure never stops the run.
+        ("ok own own own own", None, 5, 1),
+        ("own own ok own own", None, 5, 1),
+        # An answer of any kind shows the server is there, so the count starts again.
+        ("ok down down own down down", None, 6, 1),
+        ("ok down down ok down down", None, 6, 2),
+    ],
+)
+def test_decide_stops_only_when_the_fault_is_not_the_items(
+    tmp_path, monkeypatch, script, stops, asked, written
+):
+    from agent_memory.judge import pipeline
+
+    store = synthetic_run(tmp_path, n=len(script.split()))
+    store.verdicts_path("rules").unlink()
+    seen = scripted_rules(monkeypatch, store, script)
+
+    def decide():
+        return pipeline.decide_items(store.cfg, "syn", ["rules"], store=store, record_events=False)
+
+    if stops is None:
+        summary = decide()
+        assert summary.written == {"rules": written}
+        assert summary.failed == {"rules": len(script.split()) - written}
+    else:
+        with pytest.raises(JudgeError, match=stops) as stopped:
+            decide()
+        assert str(stopped.value).startswith("rules: stopped, ")
+    # No item after the one that stopped the run is asked, and what was written stays.
+    assert len(seen) == asked
+    assert len(store.read_jsonl(store.verdicts_path("rules"))) == written
+
+
+def test_a_stopped_decide_still_records_the_verdicts_it_wrote(tmp_path, monkeypatch):
+    from agent_memory.judge import pipeline
+
+    store = synthetic_run(tmp_path, n=5)
+    store.verdicts_path("rules").unlink()
+    scripted_rules(monkeypatch, store, "ok ok down down down")
+    records: list[Any] = []
+    monkeypatch.setattr(pipeline, "_record", lambda cfg, batch, warn: records.extend(batch))
+    monkeypatch.setattr(pipeline, "require_judge_agent", lambda cfg: None)
+    with pytest.raises(JudgeError, match="rules: stopped"):
+        pipeline.decide_items(store.cfg, "syn", ["rules"], store=store)
+    # A decision event for each verdict on disk, though the command ended in an error.
+    assert len(records) == len(store.read_jsonl(store.verdicts_path("rules"))) == 2
+
+
+def test_judge_commands_exit_1_when_an_item_was_skipped(tmp_path, monkeypatch, capsys):
+    from agent_memory.cli import main
+
+    monkeypatch.delenv("AGENT_MEMORY_HOME", raising=False)
+    store = synthetic_run(tmp_path, n=3)
+    store.verdicts_path("rules").unlink()
+    home = str(tmp_path / "exp")
+    decide = ["--home", home, "judge", "decide", "--run", "syn", "--backend", "rules"]
+    scripted_rules(monkeypatch, store, "ok own ok")
+    assert main([*decide, "--no-events"]) == 1
+    out, err = capsys.readouterr()
+    # The run was not cut short: the items either side of the failed one have verdicts.
+    assert len(store.read_jsonl(store.verdicts_path("rules"))) == 2
+    assert "new verdicts" in out
+    assert "1 verdict(s) failed" in err
+    scripted_rules(monkeypatch, store, "ok ok ok")
+    assert main([*decide, "--no-events"]) == 0
+    assert len(store.read_jsonl(store.verdicts_path("rules"))) == 3
+
+    store.drafts_path.unlink()
+    bodies: list[Any] = []
+
+    def second_times_out(url, body, **kwargs):
+        bodies.append(body)
+        if len(bodies) == 2:
+            raise endpoints.EgressError("http://x: timed out after 300s")
+        reply = json.dumps(lesson_reply("Run tests first.", cited=(1,)))
+        return {"model": "m", "message": {"content": reply}}, 12.0
+
+    monkeypatch.setattr(endpoints, "post_json", second_times_out)
+    draft = ["--home", home, "judge", "draft", "--run", "syn", "--drafter", "ollama:m"]
+    capsys.readouterr()
+    assert main(draft) == 1
+    assert "drafted 2 item(s) with ollama:m; 1 failed" in capsys.readouterr().out
+    assert main(draft) == 0
+    assert len(store.read_jsonl(store.drafts_path)) == 3
+
+
+def test_live_exits_1_when_an_item_was_skipped(tmp_path, monkeypatch, capsys):
+    from agent_memory.cli import main
+    from agent_memory.judge import pipeline
+
+    monkeypatch.delenv("AGENT_MEMORY_HOME", raising=False)
+    store = synthetic_run(tmp_path)
+    build_report(store, freeze=True)
+    day = store.live_day("2026-01-02")
+    day.create(
+        {
+            "parent_run": "syn",
+            "live_day": "2026-01-02",
+            "frozen": store.read_run()["frozen"],
+            "questions_version": QUESTIONS_VERSION,
+        }
+    )
+    items = store.items()[:3]
+    day.write_items(items)
+    for item in items:
+        day.write_projection(item["item_id"], store.read_projection(item["item_id"]))
+    monkeypatch.setattr(pipeline, "import_sessions", lambda *a, **k: pipeline.ImportSummary())
+    monkeypatch.setattr(pipeline, "require_judge_agent", lambda cfg: None)
+    monkeypatch.setattr(pipeline, "_record", lambda cfg, batch, warn: None)
+    scripted_rules(monkeypatch, day, "ok own ok")
+    live = ["judge", "live", "--run", "syn", "--since", "2026-01-01", "--day", "2026-01-02"]
+    assert main(["--home", str(tmp_path / "exp"), *live]) == 1
+    out = " ".join(capsys.readouterr().out.split())
+    assert "verdicts {'rules': 2}; 1 failed, rerun to retry" in out
+    assert len(day.read_jsonl(day.verdicts_path("rules"))) == 2
 
 
 def test_decide_items_judges_each_draft_and_reuses_turn_answers(tmp_path, monkeypatch):
@@ -2189,8 +2460,8 @@ def test_decide_items_judges_each_draft_and_reuses_turn_answers(tmp_path, monkey
         return real_decide(self, inp, questions)
 
     monkeypatch.setattr(RulesBackend, "decide", counting)
-    written = pipeline.decide_items(cfg, "syn", ["rules"], store=store, record_events=False)
-    assert written == {"rules": 5}
+    summary = pipeline.decide_items(cfg, "syn", ["rules"], store=store, record_events=False)
+    assert summary.written == {"rules": 5}
     assert sorted(turn_calls) == sorted(ids)  # once per item, not per draft
     rows = store.read_jsonl(store.verdicts_path("rules"))
     by_key = {(r["item_id"], r["drafter"]): r for r in rows}
@@ -2245,9 +2516,8 @@ def test_decide_items_judges_each_draft_and_reuses_turn_answers(tmp_path, monkey
         [{"item_id": ids[2], "lesson": "Late.", "drafter": "llamacpp:x"}],
         append=True,
     )
-    assert pipeline.decide_items(cfg, "syn", ["rules"], store=store, record_events=False) == {
-        "rules": 1
-    }
+    again = pipeline.decide_items(cfg, "syn", ["rules"], store=store, record_events=False)
+    assert again.written == {"rules": 1}
     assert turn_calls == []
     rows = store.read_jsonl(store.verdicts_path("rules"))
     assert len(rows) == 6
@@ -2260,16 +2530,14 @@ def test_decide_items_judges_each_draft_and_reuses_turn_answers(tmp_path, monkey
         if d["item_id"] == ids[0] and d["drafter"] == "ollama:m":
             d["lesson"] = "Rewritten."
     store.write_jsonl(store.drafts_path, drafts)
-    assert pipeline.decide_items(cfg, "syn", ["rules"], store=store, record_events=False) == {
-        "rules": 1
-    }
+    again = pipeline.decide_items(cfg, "syn", ["rules"], store=store, record_events=False)
+    assert again.written == {"rules": 1}
     rows = store.read_jsonl(store.verdicts_path("rules"))
     assert len(rows) == 6
     redone = next(r for r in rows if (r["item_id"], r["drafter"]) == (ids[0], "ollama:m"))
     assert redone["draft_hash"] == draft_hash("Rewritten.")
-    assert pipeline.decide_items(cfg, "syn", ["rules"], store=store, record_events=False) == {
-        "rules": 0
-    }
+    again = pipeline.decide_items(cfg, "syn", ["rules"], store=store, record_events=False)
+    assert again.written == {"rules": 0}
 
 
 def test_draft_refuses_mixed_versions_before_request_or_write(tmp_path, monkeypatch):

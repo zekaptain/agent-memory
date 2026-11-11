@@ -67,6 +67,13 @@ def _errors(errors: list[str]) -> None:
         err_console.print(error, markup=False, highlight=False, style="red")
 
 
+def _exit_1_if(failed: int) -> None:
+    """A command that skipped items has done all it could and written the rest, but it is
+    not finished: say so to whatever runs next."""
+    if failed:
+        raise typer.Exit(1)
+
+
 def _store(cfg: Config, run: str, live: str | None) -> RunStore:
     store = RunStore(cfg, run)
     return store.live_day(live) if live else store
@@ -187,12 +194,15 @@ def draft(
     """Write a candidate lesson (or a decline) for every item, per drafter. Resumable."""
     cfg = _config(ctx)
     store = _store(cfg, run, live)
+    failed = 0
     for spec in drafter or ["ollama:gemma4:26b"]:
         summary = draft_items(cfg, run, spec, limit=limit, store=store, log=_log, warn=_warn)
         line = f"drafted {summary.written} item(s) with {spec}"
         if summary.failed:
             line += f"; {summary.failed} failed, rerun to retry"
         console.print(line, markup=False, highlight=False)
+        failed += summary.failed
+    _exit_1_if(failed)
 
 
 @judge_app.command()
@@ -215,7 +225,7 @@ def decide(
     """Run one or more backends over the items. Resumable per backend."""
     cfg = _config(ctx)
     store = _store(cfg, run, live)
-    written = decide_items(
+    summary = decide_items(
         cfg,
         run,
         backend,
@@ -228,9 +238,10 @@ def decide(
     table = Table(show_header=True, show_edge=False)
     table.add_column("backend")
     table.add_column("new verdicts", justify="right")
-    for name, count in written.items():
+    for name, count in summary.written.items():
         table.add_row(name, str(count))
     console.print(table)
+    _exit_1_if(sum(summary.failed.values()))
 
 
 @judge_app.command()
@@ -339,11 +350,13 @@ def live(
     console.print(
         f"live day {summary.day}: imported {summary.imported.files} file(s), "
         + (f"{summary.candidates.items} new item(s), " if summary.candidates else "")
-        + f"drafted {summary.drafted}, verdicts {summary.decided}",
+        + f"drafted {summary.drafted}, verdicts {summary.decided}"
+        + (f"; {summary.failed} failed, rerun to retry" if summary.failed else ""),
         markup=False,
         highlight=False,
     )
     _errors(summary.imported.errors)
+    _exit_1_if(summary.failed)
 
 
 @judge_app.command()

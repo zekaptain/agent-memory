@@ -69,15 +69,14 @@ def test_import_candidates_decide_and_ledger_events(live_cfg, live_client, sessi
     with pytest.raises(JudgeError, match="already has items"):
         build_candidates(live_cfg, "t1", n=4)
 
-    written = decide_items(live_cfg, "t1", ["rules"])
-    assert written == {"rules": 4}
+    assert decide_items(live_cfg, "t1", ["rules"]).written == {"rules": 4}
     verdicts = store.read_jsonl(store.verdicts_path("rules"))
     assert {v["item_id"] for v in verdicts} == {i["item_id"] for i in items}
     by_item = {v["item_id"]: v for v in verdicts}
     assert by_item[t3["item_id"]]["answers"]["failed"]["value"] == "yes"
     assert by_item[t3["item_id"]]["answers"]["category"]["value"] == "tool_misuse"
     assert "grounded" not in by_item[t3["item_id"]]["answers"]  # no drafts yet
-    assert decide_items(live_cfg, "t1", ["rules"]) == {"rules": 0}  # resumable
+    assert decide_items(live_cfg, "t1", ["rules"]).written == {"rules": 0}  # resumable
 
     _, rows = live_client.query(
         "SELECT e.content, CAST(e.payload AS JSON)::VARCHAR, s.agent_id, s.project, s.scope "
@@ -96,7 +95,7 @@ def test_import_candidates_decide_and_ledger_events(live_cfg, live_client, sessi
         for text in (content, payload):
             assert "memory.duckdb is locked" not in text
             assert "No, that's wrong" not in text
-    assert decide_items(live_cfg, "t1", ["rules"], record_events=False) == {"rules": 0}
+    assert decide_items(live_cfg, "t1", ["rules"], record_events=False).written == {"rules": 0}
 
     # A draft arriving later supersedes the turn-only verdict for that item and adds a
     # second decision event; the other items stay as they were.
@@ -116,7 +115,7 @@ def test_import_candidates_decide_and_ledger_events(live_cfg, live_client, sessi
         store.drafts_path,
         [draft.to_dict()],
     )
-    assert decide_items(live_cfg, "t1", ["rules"]) == {"rules": 1}
+    assert decide_items(live_cfg, "t1", ["rules"]).written == {"rules": 1}
     verdicts = store.read_jsonl(store.verdicts_path("rules"))
     assert len(verdicts) == 4
     redone = next(v for v in verdicts if v["item_id"] == t3["item_id"])
@@ -143,7 +142,7 @@ def test_import_candidates_decide_and_ledger_events(live_cfg, live_client, sessi
         "SELECT count(*) FROM events WHERE e.kind = 'decision'".replace("e.", "")
     )
     assert count[0] == 5
-    assert decide_items(live_cfg, "t1", ["rules"]) == {"rules": 0}
+    assert decide_items(live_cfg, "t1", ["rules"]).written == {"rules": 0}
 
     # CLI status on the same run, then purge.
     code = main(
@@ -222,7 +221,7 @@ def test_judge_requires_initialized_agent_before_work(tmp_path, monkeypatch, cap
     server = db.MemoryServer(cfg, export_interval_hours=0)
     server.start()
     try:
-        assert decide_items(cfg, "legacy", ["rules"]) == {"rules": 0}
+        assert decide_items(cfg, "legacy", ["rules"]).written == {"rules": 0}
     finally:
         server.stop()
 

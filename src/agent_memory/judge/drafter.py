@@ -29,7 +29,7 @@ from typing import Any
 from .. import model_call
 from ..model_call import Ask, LlamaCpp, Ollama, OpenRouter, Schema, Server
 from .lesson import LESSON_KINDS, LESSON_SCHEMA, Lesson, parse_lesson, render_lesson
-from .store import JudgeError
+from .store import JudgeError, ServerUnreachable
 
 DRAFTER_VERSION = "drafter_v3"
 DRAFTER_KINDS = ("ollama", "llamacpp", "openrouter")
@@ -135,6 +135,8 @@ class Drafter:
         )
         try:
             result = model_call.call(self.server, ask, who="drafter", wider=RETRY_DRAFT_TOKENS)
+        except model_call.ModelUnreachable as exc:
+            raise ServerUnreachable(str(exc)) from None
         except model_call.ModelCallError as exc:
             raise JudgeError(str(exc)) from None
         return Draft.from_lesson(
