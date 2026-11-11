@@ -13,9 +13,9 @@ Start with `README.md` for usage, `docs/architecture.md` for the design,
 Storage and capture (Phases 0 and 1), the relation graph, the judge
 experiment, production admission, and the lifecycle, coverage, and
 attribution hardening are implemented. Do not confuse planned harness
-integrations with
-shipped adapters: `adapters/` currently implements Droid and Vibe; the wider
-harness roster includes MCP-only use and future hook work.
+integrations with shipped adapters: `adapters/` implements Droid only, the
+one harness checked against real payloads; the wider harness roster
+includes MCP-only use and future hook work.
 
 Read the relevant spec before changing a subsystem:
 
@@ -154,6 +154,11 @@ Entry points are `mem` (`agent_memory.cli:main`) and `mem-mcp`
   resume, a request to compact). One that a message can raise several
   times, each saying something else, such as a notification, is keyed on
   the time the hook ran.
+- Write an adapter from payloads and transcripts recorded from the
+  harness itself, never from its documentation alone. Droid's real
+  payloads contradicted the hook mapping written from its documentation,
+  and the Vibe adapter, written the same way and never checked, was
+  removed.
 - Session and event rows come from `capture/session.py`, whoever writes
   them: the capture writer, the MCP tools, `mem graph`, `mem review`, and
   admission. A new writer opens a `LedgerSession` and builds its events

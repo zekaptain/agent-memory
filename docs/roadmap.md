@@ -15,7 +15,7 @@ As of 2026-11-11.
 | Phase 0.5: trial of ai-memory | Not started | below |
 | Phase 1a: capture path | Done | [phase-1-spec.md](phase-1-spec.md) |
 | Phase 1b: in-session tools | Done | [phase-1-spec.md](phase-1-spec.md) |
-| Phase 2: harness adapters | Droid hooks and transcript import and Vibe hooks are built. The Vibe transcript adapter, omp, and Amp are not. Hook installation is manual. | below |
+| Phase 2: harness adapters | Droid hooks and transcript import are built and checked against real payloads. Vibe, omp, and Amp have no adapter; one for Vibe, written from its documentation, was removed on 2026-11-11. Hook installation is manual. | below |
 | Phase 3: audit tooling | Not started. `mem audit check` exists, but as a preflight for migrations, not as the commands below. | below |
 | Phase 4: memory quality | Partly built: the relation graph's first step and lesson admission (migration 0007). | below, [admission-spec.md](admission-spec.md) |
 | Phase 5: Markdown projection | Not started | below |
@@ -57,7 +57,9 @@ harness exposes (see "Verified harness behavior" below):
   `mem ingest --transcript <path>`, which brings in replies, Droid's tool
   calls and compactions, and merges entries a hook already recorded by
   their id. Vibe has no session or prompt hooks at all, so its session and
-  user rows also come from the transcript.
+  user rows also come from the transcript. Only the Droid half is built.
+  What is said of Vibe here and in the table below comes from its
+  documentation, not from a payload it sent.
 - *In-process extension + spool* (omp, Amp). A TypeScript module subscribes to
   the lifecycle events, appends JSONL to `spool/`, and runs `mem ingest` at
   turn end and shutdown. Writing a file keeps the agent loop unblocked and
@@ -68,6 +70,35 @@ harness exposes (see "Verified harness behavior" below):
 
 Junie through MCP alone, marked partial. Redaction and `capture_error`
 events live in `mem event` and `mem ingest`, so all adapters get them.
+
+*One harness with an adapter.* Decided on 2026-11-11: Droid is the one
+harness with an adapter until another harness is in daily use. A second
+adapter is written from payloads and transcripts recorded from that
+harness, as Droid's was corrected from its own.
+
+The next candidate is the runtime of OpenRouter's Ori, which was looked
+at as a way to capture several harnesses at once (Ori 0.15.6, its help
+and its local stores; no session was run). Ori uses "harness" for two
+things:
+
+- A *launcher* (`ori droid`, `ori pi`, and 15 more) starts the harness's
+  own CLI with OpenRouter models and credentials and passes its
+  arguments through. Nothing in Ori's help or stores shows it keeping a
+  record of a session started this way: the session stays the
+  harness's, with its own hooks and transcript. A Droid session started
+  with `ori droid` should be captured as any Droid session is. Not
+  checked: that Droid's hooks run unchanged there.
+- A *runtime harness* is what Ori's own agent (`ori code`) runs a turn
+  with. Ori records every session its runtime runs in one format,
+  whichever registered harness ran the turn, under `.ori/logs/sessions`
+  and as a JSONL event stream (`ori code --output jsonl`). One is
+  registered by default, `ori` itself, and "external launcher names are
+  not automatically runtime harnesses."
+
+So an Ori adapter would capture the work done in `ori code` and nothing
+else, and it would make an OpenRouter login a condition of that capture.
+Reading its real records takes a billable model call, which has not
+been made.
 
 Out of scope: Letta Code. Deferred: Delta (Zed).
 
@@ -229,8 +260,10 @@ Proposed in the audit of 2026-11. None of these is approved.
 
 - Finish capture: a hook installer that imports the transcript at `Stop`
   and once more after a session's last turn (at `SessionEnd`, or when
-  the session is next started or resumed), the Vibe transcript adapter,
-  and a session captured end to end through installed hooks.
+  the session is next started or resumed), and a session captured end to
+  end through installed hooks.
+- An adapter for Ori's runtime, as the second harness (see "One harness
+  with an adapter" under Phase 2).
 - Build `mem why` and `mem session` (Phase 3) as recorded reads, each a
   new strategy for the recall path.
 - Run the memory usefulness experiment.

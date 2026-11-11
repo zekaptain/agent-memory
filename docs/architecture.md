@@ -28,8 +28,9 @@ experiment](judge-experiment-spec.md), and [admission](admission-spec.md).
 | JetBrains Junie  | C    | MCP only              | Only what the agent logs through MCP tools. Sessions are `capture_completeness = 'partial'`. |
 
 The tier is stored on `agents` and describes capability, not observed
-coverage. Only Droid transcript import and Droid/Vibe hook payload adapters
-are shipped; the wider table describes planned integrations.
+coverage. Only the Droid adapter is shipped (hook payloads and transcript
+import), and it is the only one checked against real payloads; the rest of
+the table describes planned integrations.
 `capture_observations` supplies bounded coverage evidence.
 `session_summary` keeps recorded completeness separate from observed coverage.
 Any registered agent can use the `mem-mcp` tools today. The adapters still
@@ -76,7 +77,7 @@ Specified in [phase-1-spec.md](phase-1-spec.md). One
 normalised *capture record* (JSONL) feeds a shared pipeline: redaction, blob
 spill over 16 KiB, deterministic ids (`uuid5` over agent, harness session,
 kind, and source key), pre-read plus insert in one transaction, or the spool
-when the server is down. `mem event --harness droid|vibe` takes one hook
+when the server is down. `mem event --harness droid` takes one hook
 payload on stdin; `mem ingest --transcript` imports a Droid session file
 (every entry type mapped; thinking opt-in). For Droid the transcript is the
 record of replies, tool calls, and compactions: a Droid hook names no tool
@@ -84,9 +85,8 @@ call, so `mem event` records none. `mem ingest --spool` replays, and
 `mem serve` drains the spool at startup. A record the ledger rejects, or a
 spool line it cannot read, becomes a `capture_error` event and is kept under
 `spool/failed/` while the rest of its batch is written. A real 1000-event
-transcript imports in about 0.8 s and re-imports in 50 ms. The Vibe
-transcript adapter is a stub until a real file exists (see
-[roadmap.md](roadmap.md#phases)).
+transcript imports in about 0.8 s and re-imports in 50 ms. No other
+harness has an adapter (see [roadmap.md](roadmap.md#phases)).
 
 ## In-session tools
 

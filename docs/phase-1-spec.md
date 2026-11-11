@@ -28,10 +28,9 @@ One normalised intermediate, the *capture record*, so every harness shares
 the same redaction, blob handling, id derivation, insert, and spool code.
 
 - `mem event --harness <id>`: reads one hook payload (JSON) from stdin and
-  converts it into capture records. Used by shell-hook harnesses (Droid,
-  Vibe).
+  converts it into capture records. Used by shell-hook harnesses (Droid).
 - `mem ingest --harness <id> --transcript <path>`: converts a transcript
-  file into capture records. Used at turn end by Droid and Vibe.
+  file into capture records. Used at turn end by Droid.
 - `mem ingest --spool`: reads capture records already written to `spool/`
   (by `mem event` during an outage, or by in-process extensions for omp and
   Amp) and writes them to the ledger.
@@ -99,8 +98,8 @@ Namespace `AGENT_MEMORY_NS = uuid5(NAMESPACE_URL, "agent-memory")`.
 Replaying the same record produces the same ids, so replay is a no-op.
 
 `agent_memory.capture.identity` chooses the source keys and MCP session
-identity; `capture.ids` hashes those choices. Both Droid capture paths and
-Vibe tool hooks use the shared builders. A keyed Droid prompt uses the bare
+identity; `capture.ids` hashes those choices. Both Droid capture paths use
+the shared builders. A keyed Droid prompt uses the bare
 message ID. Without one, its hook uses `prompt:unkeyed:<ts>` and marks
 `payload.dedupe` as `"unkeyed"`; it makes no hook/transcript dedupe claim.
 Replies keep their entry IDs, thinking appends `#thinking`, and tool calls
@@ -211,12 +210,8 @@ and transcript entry `id` is recorded in
 [archive/plan-history.md](archive/plan-history.md), separately from the
 synthetic tests.
 
-**Vibe**: `~/.vibe/logs/session/` exists locally but holds no transcript yet.
-The adapter ships as a stub that raises `UnsupportedTranscript` with the path,
-and gets its mapping in Phase 2 once a real file is available. `from_hook`
-handles `pre_tool`/`post_tool`/`post_agent` as documented (session row
-created from `session_id`, `cwd`; `tool_call`/`tool_result` keyed on
-`tool_call_id`).
+**Vibe**: no adapter. One written from Vibe's documentation was removed;
+see "The Vibe adapter is removed" under "As built".
 
 **omp, Amp**: no transcript adapter; their extensions write capture records
 directly (Phase 2). `mem ingest --spool` is the whole integration.
@@ -225,7 +220,7 @@ directly (Phase 2). `mem ingest --spool` is the whole integration.
 
 ### Hook adapter (`mem event`)
 
-Common stdin fields across Droid and Vibe (`session_id`, `cwd`,
+The stdin fields every Droid hook sends (`session_id`, `cwd`,
 `hook_event_name`, `transcript_path`) map to the `session` block.
 `capture.identity` owns the keys. Two are shared with transcript import:
 a prompt's message ID, and the session ID for the start of a new session
@@ -241,11 +236,10 @@ Mapping:
 | SessionStart | `session_start` | payload `source` (startup/resume/clear/compact); a `startup` is the event the transcript's `session_start` entry records; the `sessions` row is created once |
 | SessionEnd | `session_end` | payload `reason` and the `message_id` of the session's last message. Droid ends a session left idle, so a session can end more than once |
 | UserPromptSubmit | `user_msg` | content = prompt |
-| PreToolUse / pre_tool | skipped by default | `--record-pre-tool` records a note, for debugging |
-| PostToolUse (Droid) | none | the payload names no call; the transcript records the call and its result |
-| post_tool (Vibe) | `tool_call` + `tool_result` | keyed on `tool_call_id`; result parented to call |
+| PreToolUse | skipped by default | `--record-pre-tool` records a note, for debugging |
+| PostToolUse | none | the payload names no call; the transcript records the call and its result |
 | PreCompact | `note` | content = `custom_instructions`; payload `trigger` and the anchor `message_id`. The `compaction` event comes from the transcript |
-| Stop / post_agent | none | the Phase 2 hook script runs `mem ingest --transcript` after this |
+| Stop | none | the Phase 2 hook script runs `mem ingest --transcript` after this |
 | SubagentStop, Notification | `note` | payload = stdin minus transcript text |
 
 Any hook event not in the table becomes a `note` with the raw payload, so new
@@ -254,7 +248,7 @@ harness events are never silently lost.
 ### CLI shapes
 
 ```
-mem event  --harness droid|vibe [--spool-only] [--keep-raw] [--record-pre-tool]
+mem event  --harness droid [--spool-only] [--keep-raw] [--record-pre-tool]
 mem ingest --harness droid --transcript PATH [--since-key KEY] [--include-thinking]
            [--spool-only]
 mem ingest --spool [--purge-done DAYS]
@@ -405,10 +399,9 @@ src/agent_memory/
     observations.py  # observed capture boundaries (added with hardening)
     attribution.py   # answer attribution from captured tool results
   adapters/
-    __init__.py    # registry: {"droid": DroidAdapter, "vibe": VibeAdapter}
+    __init__.py    # registry: {"droid": DroidAdapter}
     base.py        # Adapter protocol
     droid.py
-    vibe.py
   mcp_server/
     __init__.py    # MCPServer construction, console script entry
     __main__.py    # python -m agent_memory.mcp_server
@@ -861,8 +854,9 @@ compactions for one.
   `message_id`. One message can raise several of them, and keyed on its
   id the second would have been dropped as a duplicate. The `message_id`
   stays in the event's attribution.
-- Vibe is unchanged. Its `post_tool` payload is documented to carry
-  `tool_call_id`, and it has no transcript import yet.
+- Vibe was left unchanged: its `post_tool` payload is documented to
+  carry `tool_call_id`. Its adapter has since been removed; see "The
+  Vibe adapter is removed" below.
 
 No `UserPromptSubmit`, `Stop`, `SessionStart`, `SessionEnd`, or
 `SubagentStop` ran in that session while the probe was recording. The
@@ -965,3 +959,30 @@ ended. Each of the 1,513 payloads has one.
   hook that records nothing would spend on every tool call.
 
 Regressions are in `tests/test_adapters.py`.
+
+### The Vibe adapter is removed (2026-11-11)
+
+The Vibe adapter is gone: `adapters/vibe.py`, the names `vibe` and
+`mistral-vibe` in the registry, and its tests. `mem event --harness
+vibe` exits 1 and `mem ingest --harness vibe` exits 2, and each names
+the harness an adapter exists for.
+
+It had been written from Vibe's hook documentation and never run against
+a payload Vibe sent. Droid's hook mapping was written the same way, and
+the first real payloads showed it recording a tool call, a compaction,
+and the start of a session twice. Nothing suggested the Vibe adapter
+would do better. It could not read a transcript, and no session had been
+captured through it.
+
+- `mistral-vibe` stays a registered agent, as migration 0001 made it, so
+  an agent in Vibe can still use the `mem-mcp` tools.
+- An adapter for any harness starts from payloads and transcripts
+  recorded from that harness, as the three sections above did for Droid.
+- Droid is now the one harness with an adapter. The `Adapter` protocol
+  and the registry stay, though a seam with one adapter is a
+  hypothetical one: `--harness` is part of every hook command, and a
+  second adapter is the next candidate in
+  [roadmap.md](roadmap.md#phases).
+
+Regressions are in `tests/test_adapters.py` and
+`tests/test_cli_capture.py`.
