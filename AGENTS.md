@@ -176,7 +176,8 @@ do not delete existing homes or runs to resolve a workflow mistake.
 - Preserve seeded sampling, calibration/held-out separation, versioned
   projections/questions/drafters, hashes, and resumable per-item/per-drafter
   outputs. Older question-set runs remain read-only for draft/decide/label,
-  but their reports must still reproduce the historical results.
+  but their reports must still reproduce the historical results. A report
+  refuses a run whose verdicts were judged with another question set.
 - Finish drafting before a long decide run. Do not change its drafts
   underneath it. Labeling and deciding can run independently, but freeze
   thresholds only after the intended calibration labels are complete.

@@ -1359,3 +1359,17 @@ files found none of these marks, and the reports of the two labelled runs
 with a silent default cannot be told apart from a real answer and is left
 as it is. Regressions are in `tests/test_judge_unanswered.py`, with
 mocked HTTP and synthetic runs.
+
+### One question set per report, as built (2026-11-11)
+
+A verdict's write gates depend on the question set it was judged with.
+`mem judge report` used to read every verdict of a run through the run's
+own `questions_version`, whatever the verdict itself recorded. It now
+refuses a run that holds a verdict judged with another question set, or
+with none recorded, and names the verdict file. Nothing is frozen and no
+report is written.
+
+No command produces such a run: draft, decide and label refuse a run built
+under an older question set, and a run's version does not change. Every
+verdict in the stored runs (exp1 to exp4) carries its run's version, and
+the reports of exp2 and exp3 rebuild byte for byte from copies.

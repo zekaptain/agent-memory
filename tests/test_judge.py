@@ -1886,6 +1886,16 @@ def synthetic_run(tmp_path: Path, *, n: int = 20, v1: bool = False) -> RunStore:
     return store
 
 
+def as_questions_version(store: RunStore, version: str) -> None:
+    """Make a synthetic run one built under `version`: the run and every verdict it holds."""
+    store.update_run(questions_version=version)
+    for path in sorted(store.verdicts_dir.glob("*.jsonl")):
+        rows = store.read_jsonl(path)
+        for row in rows:
+            row["questions_version"] = version
+        store.write_jsonl(path, rows)
+
+
 def test_report_locks_held_out_until_freeze(tmp_path):
     store = synthetic_run(tmp_path)
     text = build_report(store)
@@ -2312,7 +2322,7 @@ def test_questions_v2_reports_but_mutating_commands_are_read_only(tmp_path):
     from agent_memory.judge import pipeline
 
     store = synthetic_run(tmp_path)
-    store.update_run(questions_version="questions_v2")
+    as_questions_version(store, "questions_v2")
     assert "## Claims" not in build_report(store)
     assert "questions_v2" in build_report(store, freeze=True)
     assert "criterion 6" in build_report(store)
@@ -2327,6 +2337,25 @@ def test_questions_v2_reports_but_mutating_commands_are_read_only(tmp_path):
         with pytest.raises(JudgeError, match="questions_v2"):
             call()
     assert [path.read_bytes() for path in paths] == before
+
+
+def test_report_refuses_verdicts_judged_with_another_question_set(tmp_path):
+    """Each question set has its own write gates, so one report cannot score two as one."""
+    store = synthetic_run(tmp_path)
+    path = store.verdicts_path("rules")
+    rows = store.read_jsonl(path)
+    rows[-1]["questions_version"] = "questions_v2"
+    store.write_jsonl(path, rows)
+    run_before = store.run_json.read_bytes()
+    for freeze in (False, True):
+        with pytest.raises(JudgeError, match=r"rules\.jsonl.*questions_v2.*questions_v4"):
+            build_report(store, freeze=freeze)
+    assert store.run_json.read_bytes() == run_before  # Nothing was frozen on the way out.
+    assert not store.report_path.exists()
+    rows[-1].pop("questions_version")
+    store.write_jsonl(path, rows)
+    with pytest.raises(JudgeError, match="no question set"):
+        build_report(store)
 
 
 def test_per_claim_labels_round_trip_partial_backfill_and_changes():

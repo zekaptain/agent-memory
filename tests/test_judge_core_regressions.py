@@ -14,7 +14,7 @@ from agent_memory.judge.drafter import draft_hash
 from agent_memory.judge.provenance import Caller
 from agent_memory.judge.questions import STAGE_A
 from agent_memory.judge.store import JudgeError
-from tests.test_judge import _rows, synthetic_run
+from tests.test_judge import _rows, as_questions_version, synthetic_run
 
 
 @pytest.mark.parametrize("first", ["draft", "decline", "failed"])
@@ -149,7 +149,7 @@ def test_freeze_without_calibration_overlap_leaves_cascade_unavailable(tmp_path,
 @pytest.mark.parametrize("version", ["questions_v1", "questions_v2", "questions_v3"])
 def test_existing_frozen_reports_keep_their_cuts_and_output(tmp_path, monkeypatch, version):
     store = synthetic_run(tmp_path, v1=version == "questions_v1")
-    store.update_run(questions_version=version)
+    as_questions_version(store, version)
     monkeypatch.setattr(report, "utc_now_iso", lambda: "2026-01-01T00:00:00+00:00")
     expected = report.build_report(store, freeze=True)
     paths = [store.run_json, store.items_path, store.labels_path, store.verdicts_path("rules")]

@@ -187,10 +187,12 @@ Key = tuple[str, str | None]
 
 
 def load_scored(store: RunStore) -> tuple[list[dict[str, Any]], dict[str, dict[Key, Scored]]]:
-    """Items, and per backend every labeled verdict row keyed by (item, drafter)."""
+    """Items, and per backend every labeled verdict row keyed by (item, drafter). Every
+    verdict must have been judged with the run's question set."""
     items = store.read_jsonl(store.items_path)
     labels = {row["item_id"]: row for row in store.read_jsonl(store.labels_path)}
-    current = store.read_run().get("questions_version") == QUESTIONS_VERSION
+    version = store.read_run().get("questions_version")
+    current = version == QUESTIONS_VERSION
     hashes = (
         {
             (item_id, row.get("drafter")): draft_hash(row.get("lesson"))
@@ -205,6 +207,14 @@ def load_scored(store: RunStore) -> tuple[list[dict[str, Any]], dict[str, dict[K
     if store.verdicts_dir.exists():
         for path in sorted(store.verdicts_dir.glob("*.jsonl")):
             for verdict in store.read_jsonl(path):
+                if verdict.get("questions_version") != version:
+                    # Each question set has its own write gates and labels.
+                    raise JudgeError(
+                        f"{path.name} holds a verdict judged with "
+                        f"{verdict.get('questions_version') or 'no question set'}, but run "
+                        f"{store.run_id!r} was built with {version or 'no question set'}; "
+                        "a report cannot score two question sets as one"
+                    )
                 item = by_item.get(verdict["item_id"])
                 label = labels.get(verdict["item_id"])
                 if item is None or label is None:
