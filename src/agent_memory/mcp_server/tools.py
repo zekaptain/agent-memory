@@ -6,7 +6,6 @@ import contextlib
 import json
 import os
 import re
-import time
 import uuid
 from collections import defaultdict
 from collections.abc import Sequence
@@ -25,7 +24,7 @@ from ..capture.redact import Redactor
 from ..capture.spool import Spool
 from ..config import Config, ConfigError
 from ..db import AgentMemoryError, MemoryClient, sql_literal
-from ..graph import GRAPH_STRATEGY, MAX_HOPS, Relation, hop_sql, normalize_entity, relations_sql
+from ..graph import MAX_HOPS, Relation, RelationWalk, normalize_entity, relations_sql
 from ..graph.sql import ROW as GRAPH_ROW
 from ..graph.sql import sources_sql
 from ..lifecycle import (
@@ -38,6 +37,7 @@ from ..lifecycle import (
     validate_interval,
 )
 from . import ranking
+from .recall import Recalled, Strategy, run_recall
 
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 TRUST_LEVELS = ("user", "agent", "tool")
@@ -205,80 +205,35 @@ class MemoryTools:
     ) -> dict[str, Any]:
         limit = max(1, min(limit, MAX_LIMIT))
         scopes = self._scopes(scopes)
-        original_query = query
+        asked = query
         query = self.redactor().text(query or "")[0]
         types = self.redactor().value(list(types) if types is not None else None)[0]
-        normalized = ranking.normalize_query(query or "")
-        strategy = ranking.FTS_STRATEGY if normalized else ranking.RECENT_STRATEGY
+        got = self._recall(ranking.for_query(query, scopes, types, limit), asked)
+        if got.reason is not None:
+            return {"degraded": True, "reason": got.reason, "retrieval_id": None, "items": []}
+        return {
+            "degraded": False,
+            "retrieval_id": got.retrieval_id,
+            "request_event_id": got.request_event_id,
+            "strategy": got.strategy,
+            "candidates": got.candidates,
+            "items": got.items,
+            "hint": "Pass retrieval_id (and the memory_ids you relied on) to cite when you answer.",
+        }
+
+    def _recall(self, strategy: Strategy, asked: str | None) -> Recalled:
+        """Recall in this session. An unreachable ledger gives a result with a reason
+        rather than an error, so the agent can carry on without memory."""
         try:
             client = self._client_or_raise()
-            maintain_corrections(client)
-            started = time.perf_counter()
-            sql = (
-                ranking.fts_sql(normalized, scopes, types)
-                if normalized
-                else ranking.recent_sql(scopes, types, limit)
-            )
-            _, rows = client.query(sql)
-            latency_ms = (time.perf_counter() - started) * 1000
-            items = _rank(rows, strategy, limit)
-            event = self._event(
+            return run_recall(
                 client,
-                "memory_recall",
-                original_query,
-                {"scopes": scopes, "types": list(types) if types else None, "limit": limit},
-            )
-            retrieval_id = client.new_ids()[0]
-            client.insert(
-                {
-                    "events": [event],
-                    "retrievals": [
-                        {
-                            "retrieval_id": retrieval_id,
-                            "session_id": self.session_id,
-                            "request_event_id": event["event_id"],
-                            "query_text": query,
-                            "scopes": scopes,
-                            "strategy": strategy,
-                            "sql_used": sql,
-                            "params": {"normalized": normalized, "types": types, "limit": limit},
-                            "candidates": len(rows),
-                            "returned": len(items),
-                            "token_estimate": sum(len(i["content"]) // 4 for i in items),
-                            "latency_ms": latency_ms,
-                        }
-                    ],
-                    "retrieval_items": [
-                        {
-                            "retrieval_id": retrieval_id,
-                            "rank": rank,
-                            "memory_id": item["memory_id"],
-                            "score": item["score"],
-                            "score_components": item["score_components"],
-                            "injected": True,
-                            "status_at_recall": item["status"],
-                        }
-                        for rank, item in enumerate(items, start=1)
-                    ],
-                }
+                strategy,
+                lambda request: self._event(client, "memory_recall", asked, request),
             )
         except (AgentMemoryError, ConfigError, duckdb.Error) as exc:
             self._reset()
-            return {
-                "degraded": True,
-                "reason": f"{type(exc).__name__}: {exc}",
-                "retrieval_id": None,
-                "items": [],
-            }
-        return {
-            "degraded": False,
-            "retrieval_id": retrieval_id,
-            "request_event_id": event["event_id"],
-            "strategy": strategy,
-            "candidates": len(rows),
-            "items": [{k: v for k, v in item.items() if k not in ("status",)} for item in items],
-            "hint": "Pass retrieval_id (and the memory_ids you relied on) to cite when you answer.",
-        }
+            return Recalled(strategy.name, reason=f"{type(exc).__name__}: {exc}")
 
     def remember(
         self,
@@ -623,7 +578,7 @@ class MemoryTools:
         limit: int = DEFAULT_GRAPH_LIMIT,
         types: Sequence[str] | None = None,
     ) -> dict[str, Any]:
-        original_entity = entity
+        asked = entity
         entity = self.redactor().text(entity or "")[0]
         types = self.redactor().value(list(types) if types is not None else None)[0]
         entity_norm = normalize_entity(entity or "")
@@ -631,89 +586,31 @@ class MemoryTools:
             raise ToolError("entity is required")
         hops = max(1, min(int(hops), MAX_HOPS))
         limit = max(1, min(int(limit), MAX_GRAPH_LIMIT))
-        scopes = self._scopes(scopes)
-        try:
-            client = self._client_or_raise()
-            maintain_corrections(client)
-            started = time.perf_counter()
-            sql = hop_sql(entity_norm, hops, scopes, types)
-            _, rows = client.query(sql)
-            latency_ms = (time.perf_counter() - started) * 1000
-            items = _graph_items(rows)[:limit]
-            event = self._event(
-                client,
-                "memory_recall",
-                original_entity,
-                {
-                    "graph": {"entity_norm": entity_norm, "hops": hops},
-                    "scopes": scopes,
-                    "types": list(types) if types else None,
-                    "limit": limit,
-                },
-            )
-            retrieval_id = client.new_ids()[0]
-            client.insert(
-                {
-                    "events": [event],
-                    "retrievals": [
-                        {
-                            "retrieval_id": retrieval_id,
-                            "session_id": self.session_id,
-                            "request_event_id": event["event_id"],
-                            "query_text": entity,
-                            "scopes": scopes,
-                            "strategy": GRAPH_STRATEGY,
-                            "sql_used": sql,
-                            "params": {
-                                "entity_norm": entity_norm,
-                                "hops": hops,
-                                "types": types,
-                                "limit": limit,
-                            },
-                            "candidates": len(rows),
-                            "returned": len(items),
-                            "token_estimate": sum(len(i["content"]) // 4 for i in items),
-                            "latency_ms": latency_ms,
-                        }
-                    ],
-                    "retrieval_items": [
-                        {
-                            "retrieval_id": retrieval_id,
-                            "rank": rank,
-                            "memory_id": item["memory_id"],
-                            "score": item["score"],
-                            "score_components": item["score_components"],
-                            "injected": True,
-                            "status_at_recall": item["status"],
-                        }
-                        for rank, item in enumerate(items, start=1)
-                    ],
-                }
-            )
-        except (AgentMemoryError, ConfigError, duckdb.Error) as exc:
-            self._reset()
+        walk = RelationWalk(entity, entity_norm, hops, self._scopes(scopes), types, limit)
+        got = self._recall(walk, asked)
+        if got.reason is not None:
             return {
                 "degraded": True,
-                "reason": f"{type(exc).__name__}: {exc}",
+                "reason": got.reason,
                 "retrieval_id": None,
                 "items": [],
                 "triples": [],
             }
         names: dict[str, str] = {}
-        for item in items:
+        for item in got.items:
             names.setdefault(normalize_entity(item["subject"]), item["subject"])
             names.setdefault(normalize_entity(item["object"]), item["object"])
         return {
             "degraded": False,
-            "retrieval_id": retrieval_id,
-            "request_event_id": event["event_id"],
-            "strategy": GRAPH_STRATEGY,
+            "retrieval_id": got.retrieval_id,
+            "request_event_id": got.request_event_id,
+            "strategy": got.strategy,
             "entity": entity,
             "entity_norm": entity_norm,
             "hops": hops,
-            "candidates": len(rows),
-            "items": [{k: v for k, v in item.items() if k != "status"} for item in items],
-            "triples": [item["triple"] for item in items],
+            "candidates": got.candidates,
+            "items": got.items,
+            "triples": [item["triple"] for item in got.items],
             "entities": sorted(names.values(), key=str.casefold),
             "hint": "Answer from these edges and pass retrieval_id (and the memory_ids you "
             "relied on) to cite.",
@@ -926,88 +823,6 @@ class MemoryTools:
             out["memory_id"] = action["memory_id"]
             out["action"] = action["action"]
         return out
-
-
-def _rank(rows: Sequence[tuple], strategy: str, limit: int) -> list[dict[str, Any]]:
-    items: list[dict[str, Any]] = []
-    for row in rows:
-        (
-            memory_id,
-            mtype,
-            key,
-            content,
-            scope,
-            confidence,
-            importance,
-            trust,
-            created,
-            expires,
-            status,
-            bm25,
-        ) = row
-        if strategy == ranking.FTS_STRATEGY:
-            components = ranking.score(
-                float(bm25 or 0), float(importance), float(confidence), scope
-            )
-            total = components.pop("score")
-        else:
-            components = {"importance": float(importance)}
-            total = float(importance)
-        items.append(
-            {
-                "memory_id": str(memory_id),
-                "type": mtype,
-                "key": key,
-                "content": content,
-                "scope": scope,
-                "confidence": float(confidence),
-                "importance": float(importance),
-                "trust_level": trust,
-                "created_at": created,
-                "expires_at": expires,
-                "score": total,
-                "score_components": components,
-                "status": status,
-            }
-        )
-    # Equal scores go newest first, the order the candidate SQL already uses.
-    items.sort(key=lambda i: str(i["created_at"] or ""), reverse=True)
-    items.sort(key=lambda i: -float(i["score"]))
-    return items[:limit]
-
-
-def _graph_items(rows: Sequence[tuple]) -> list[dict[str, Any]]:
-    items: list[dict[str, Any]] = []
-    for row in rows:
-        record = dict(zip(GRAPH_ROW, row, strict=True))
-        relation = Relation.from_metadata(json.loads(record["metadata"]))
-        if relation is None:
-            continue
-        depth = int(record["depth"])
-        items.append(
-            {
-                "memory_id": str(record["memory_id"]),
-                "subject": relation.subject,
-                "predicate": relation.predicate,
-                "object": relation.object,
-                "subject_type": relation.subject_type,
-                "object_type": relation.object_type,
-                "aliases": list(relation.aliases),
-                "triple": relation.triple,
-                "key": record["key"],
-                "content": record["content"],
-                "scope": record["scope"],
-                "confidence": float(record["confidence"]),
-                "importance": float(record["importance"]),
-                "trust_level": record["trust_level"],
-                "created_at": record["created_at"],
-                "depth": depth,
-                "score": 1.0 / (1 + depth),
-                "score_components": {"depth": float(depth)},
-                "status": record["status"],
-            }
-        )
-    return items
 
 
 def _rename_in_text(content: str, old: Relation, new: Relation) -> str:

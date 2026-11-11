@@ -1,11 +1,13 @@
-"""SQL builders for recall. Every string the agent supplies goes through sql_literal; the
-server's policy strips literals before classifying the statement, so query text cannot
-change what the statement does."""
+"""The two recall strategies that answer a query, with their SQL and scoring. Every string
+the agent supplies goes through sql_literal; the server's policy strips literals before
+classifying the statement, so query text cannot change what the statement does."""
 
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
+from typing import Any
 
 from ..db import sql_literal
 
@@ -60,3 +62,134 @@ def score(bm25: float, importance: float, confidence: float, scope: str) -> dict
         "scope_boost": scope_boost,
         "score": bm25 * (0.6 + 0.4 * importance) * (0.5 + 0.5 * confidence) * scope_boost,
     }
+
+
+@dataclass(frozen=True)
+class TextMatch:
+    """Recall by the query's words: bm25 weighted by importance, confidence and scope."""
+
+    query_text: str
+    normalized: str
+    scopes: Sequence[str]
+    types: Sequence[str] | None
+    limit: int
+
+    @property
+    def name(self) -> str:
+        return FTS_STRATEGY
+
+    @property
+    def sql(self) -> str:
+        return fts_sql(self.normalized, self.scopes, self.types)
+
+    @property
+    def params(self) -> dict[str, Any]:
+        return {"normalized": self.normalized, "types": self.types, "limit": self.limit}
+
+    @property
+    def request(self) -> dict[str, Any]:
+        return _request(self.scopes, self.types, self.limit)
+
+    def items(self, rows: Sequence[tuple]) -> list[dict[str, Any]]:
+        return _items(rows, self.limit, _weighted)
+
+
+@dataclass(frozen=True)
+class Recent:
+    """Recall without words to match: the most important memories, newest first."""
+
+    query_text: str
+    scopes: Sequence[str]
+    types: Sequence[str] | None
+    limit: int
+
+    @property
+    def name(self) -> str:
+        return RECENT_STRATEGY
+
+    @property
+    def sql(self) -> str:
+        return recent_sql(self.scopes, self.types, self.limit)
+
+    @property
+    def params(self) -> dict[str, Any]:
+        return {"normalized": "", "types": self.types, "limit": self.limit}
+
+    @property
+    def request(self) -> dict[str, Any]:
+        return _request(self.scopes, self.types, self.limit)
+
+    def items(self, rows: Sequence[tuple]) -> list[dict[str, Any]]:
+        return _items(rows, self.limit, _by_importance)
+
+
+def for_query(
+    query: str, scopes: Sequence[str], types: Sequence[str] | None, limit: int
+) -> TextMatch | Recent:
+    """The strategy for a query: its words when it has any, otherwise what is recent."""
+    normalized = normalize_query(query)
+    if normalized:
+        return TextMatch(query, normalized, scopes, types, limit)
+    return Recent(query, scopes, types, limit)
+
+
+def _request(scopes: Sequence[str], types: Sequence[str] | None, limit: int) -> dict[str, Any]:
+    return {"scopes": scopes, "types": list(types) if types else None, "limit": limit}
+
+
+def _weighted(
+    bm25: float | None, importance: float, confidence: float, scope: str
+) -> tuple[float, dict[str, float]]:
+    components = score(float(bm25 or 0), importance, confidence, scope)
+    return components.pop("score"), components
+
+
+def _by_importance(
+    bm25: float | None, importance: float, confidence: float, scope: str
+) -> tuple[float, dict[str, float]]:
+    return importance, {"importance": importance}
+
+
+def _items(
+    rows: Sequence[tuple],
+    limit: int,
+    scored: Callable[[float | None, float, float, str], tuple[float, dict[str, float]]],
+) -> list[dict[str, Any]]:
+    """Rows in the order of _COLUMNS plus bm25, as items ranked by score."""
+    items: list[dict[str, Any]] = []
+    for (
+        memory_id,
+        mtype,
+        key,
+        content,
+        scope,
+        confidence,
+        importance,
+        trust,
+        created,
+        expires,
+        status,
+        bm25,
+    ) in rows:
+        total, components = scored(bm25, float(importance), float(confidence), scope)
+        items.append(
+            {
+                "memory_id": str(memory_id),
+                "type": mtype,
+                "key": key,
+                "content": content,
+                "scope": scope,
+                "confidence": float(confidence),
+                "importance": float(importance),
+                "trust_level": trust,
+                "created_at": created,
+                "expires_at": expires,
+                "score": total,
+                "score_components": components,
+                "status": status,
+            }
+        )
+    # Equal scores go newest first, the order the candidate SQL already uses.
+    items.sort(key=lambda i: str(i["created_at"] or ""), reverse=True)
+    items.sort(key=lambda i: -float(i["score"]))
+    return items[:limit]
