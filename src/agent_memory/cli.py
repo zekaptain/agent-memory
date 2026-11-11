@@ -33,6 +33,7 @@ from .db import (
 from .graph.cli import graph_app
 from .judge.cli import judge_app
 from .mcp_server.tools import ToolError
+from .review import review_app
 
 app = typer.Typer(
     name="mem",
@@ -493,6 +494,7 @@ app.add_typer(spool_app, name="spool")
 app.add_typer(judge_app, name="judge")
 app.add_typer(graph_app, name="graph")
 app.add_typer(admit_app, name="admit")
+app.add_typer(review_app, name="review")
 
 
 @spool_app.command("status")
