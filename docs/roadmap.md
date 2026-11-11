@@ -135,8 +135,10 @@ Verified against the code in the audit of 2026-11 and still open.
   `lifecycle.py`). Auto mode is not in use.
 - One admission item that fails stops the items and the days after it
   (`admission/run.py`).
-- When the first item of a `decide` run fails for a reason that will
-  repeat, every rerun stops at that item (`judge/pipeline.py`).
+- A model server that accepts a connection and never answers is not told
+  apart from a slow item. `mem judge draft` and `decide` then wait out
+  the timeout twice for every remaining item and skip each one
+  (`endpoints.py`, `judge/pipeline.py`).
 - `mem judge report --freeze` does not check that the calibration labels
   are complete.
 - The Parquet export copies tables one after another while clients write,
@@ -188,8 +190,8 @@ above these were deepened on 2026-11-11: the ledger session
 
 - May an agent approve its own quarantined memory, or assert
   `trust_level = 'user'`?
-- Should the first failing item of a judge run stop the run, or be
-  recorded and skipped?
+- Should timeouts in a row stop a judge command? A timeout can be the
+  item's doing, so today only an unreachable model server stops one.
 - Are the `readout` and `jev` backends and the `actionable` question still
   wanted? May the unreachable v4 fallbacks and `Question.stage` go?
 - Should `--freeze` require complete calibration labels? May a run be

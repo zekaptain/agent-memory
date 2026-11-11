@@ -222,6 +222,13 @@ do not delete existing homes or runs to resolve a workflow mistake.
   attempts, the ability to run a failed item again, and latency/cost
   accounting across attempts. Repeating a seeded request with the same
   insufficient budget is not a fix.
+- A draft or verdict that fails is skipped, and the next command asks it
+  again; `draft`, `decide`, and `live` then exit 1. A command stops early
+  only when the fault cannot be the items': after three failures in a row
+  with the model server unreachable, or from a drafter or backend that has
+  written nothing in the run yet. Do not let one item's failure end a run,
+  and do not count a timeout or an HTTP rejection against the server:
+  either can be the item's doing.
 - Prefer local backends. Hosted judge/drafter calls require explicit user
   permission and `AGENT_MEMORY_JUDGE_ALLOW_REMOTE=1`; redaction does not make
   session text public. Mock model HTTP in regression tests rather than

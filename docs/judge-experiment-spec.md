@@ -413,6 +413,9 @@ All under `mem judge`, all refusing the default home:
 `--live DAY` on `draft`, `decide`, `label`, `report`, and `status` targets a
 live-week sub-run.
 
+`draft`, `decide`, and `live` skip an item that fails and exit 1 when
+they skipped any; see "A failed item is skipped" under As built.
+
 ## Layout
 
 `src/agent_memory/judge/`: `store.py` (the run's files, the rules that
@@ -1152,3 +1155,52 @@ rows are unchanged. What changed:
 merges of the blocks that worked; see "Entity resolution keeps what
 worked" in [phase-1-spec.md](phase-1-spec.md). Regressions are in
 `tests/test_model_call.py`, `test_judge.py`, and `test_graph.py`.
+
+### A failed item is skipped, as built (2026-11-11)
+
+`draft`, `decide`, and `live` skip an item whose draft or verdict fails
+and write nothing for it, so the next command asks it again. Until now
+that held only once a drafter or backend had written something in the
+run. Before that, the first failure ended the command. When the failure
+was the item's own (a turn too long for the model, a reply cut off every
+time), every rerun ended at the same item and the run could not be
+finished.
+
+A command now stops early only when the fault cannot be the items'. It
+stops after three failures in a row when:
+
+- the model server could not be reached each time: nothing accepted the
+  connection, or the request was not allowed to leave the machine (the
+  egress opt-in is off, or a hosted key is missing); or
+- this drafter or backend has written nothing in the run yet, whatever
+  the three failures were. A model that cannot produce one usable row in
+  three tries is unfit or misconfigured.
+
+A reply of any kind starts the first count again, and a written row
+starts both. A timeout, an HTTP rejection, and a reply that cannot be
+used all count as the item's failure, because each can be the item's
+doing: a long turn times out, and a prompt past the context window is
+rejected. Counted against the server, three such items at the head of a
+run's unfinished work would stop every rerun before it reached the items
+behind them. `endpoints.py` raises `Unreachable` for a server that was
+not asked, `model_call.py` passes it on as `ModelUnreachable`, and the
+judge's backends and drafter as `ServerUnreachable`.
+
+A command that stops says why and repeats the last error, for example
+`llm:gemma4:26b: stopped, the model server could not be reached 3 times
+in a row: ...`. Before it stops it records what it wrote: the drafter's
+entry in `run.json`, and the decision events of the verdicts on disk.
+The drafters or backends named after the one that stopped are not run,
+and `live` does not go on to judge after a drafter stopped.
+
+`draft`, `decide`, and `live` exit 1 when any item was skipped. They do
+so after doing all the rest, and nothing written is taken back; the exit
+code tells whatever runs next that the step is not finished. They exit 0
+only when nothing is left to retry. `decide_items` returns the verdicts
+written and the failures for each backend (`DecideSummary`) where it
+returned the written counts alone.
+
+Not covered: a model server that accepts the connection and never
+answers. Each remaining item then waits out its timeout, twice, and is
+skipped. Regressions are in `tests/test_judge.py`, `test_endpoints.py`,
+and `test_model_call.py`.

@@ -125,6 +125,14 @@ Replace `MODEL_ID` with your server's model ID or alias. Finish every
 intended drafter before starting the full judging pass. Rerunning `draft`
 skips completed items and retries missing or failed ones.
 
+An item whose draft fails is skipped with a warning, and the command
+goes on to the next item. When it has skipped any, it exits 1 after
+writing the rest, so a script can tell that drafting is not finished.
+Run `draft` again to retry the skipped items. The command stops early in
+two cases only, each after three failures in a row: the model server
+cannot be reached, or the drafter has not written a draft in this run
+yet. The error says which, and what the last failure was.
+
 Run one `draft` at a time on a run. A second one started while the first
 is at work is refused at once, whichever drafters it names. To use two
 drafters, name both in one command.
@@ -150,8 +158,12 @@ drafters, expect multiple verdict rows per item.
   in the experiment ledger. Without it, keep the experiment server running.
 
 Rerunning the same command skips current verdicts and retries missing or
-failed ones. Read warnings as well as the final counts: a command can
-finish after skipping failed items.
+failed ones. A failed item is skipped with a warning, and a command that
+skipped any exits 1 after judging the rest; run it again to retry them.
+`decide` stops early in the same two cases as `draft`: three failures in
+a row because the model server cannot be reached, or from a backend that
+has not written a verdict in this run yet. The backends named after the
+one that stopped are not run.
 
 Two `decide` commands can run on one run at the same time when they name
 different backends. A `decide` that names a backend another `decide` is
@@ -320,7 +332,8 @@ specifications you calibrated.
 Rerunning an existing day resumes its fixed item list; it does not append
 new turns. Choose a new `--day` for another batch. Keep `--since` at the
 live period's start if you want to include unseen turns from earlier
-sessions in that period.
+sessions in that period. `live` exits 1 when a draft or verdict of the
+day failed and was skipped; rerun the same day to retry it.
 
 Inspect, label, and report the batch with `--live DAY`:
 
