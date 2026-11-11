@@ -17,7 +17,7 @@ from agent_memory.capture.pipeline import deliver, replay_spool
 from agent_memory.capture.record import SessionInfo, now
 from agent_memory.capture.redact import Redactor
 from agent_memory.capture.spool import Spool
-from agent_memory.capture.writer import Writer, WriterError
+from agent_memory.capture.writer import Writer
 from agent_memory.db import MemoryClient, MemoryServer, sql_literal
 from agent_memory.mcp_server.tools import MemoryTools
 from tests.test_writer import rec
@@ -378,8 +378,9 @@ def test_writer_rejects_parent_cycles_before_inserting(live_cfg, live_client, si
         )
         for i in range(size)
     ]
-    with pytest.raises(WriterError, match="cycl"):
-        writer.write(records)
+    result = writer.write(records)
+    assert [r.index for r in result.rejected] == list(range(size))
+    assert all("cycl" in r.reason for r in result.rejected)
     sid = ids.session_id(records[0].agent_id, records[0].harness_session_id)
     assert live_client.query(
         f"SELECT count(*) FROM sessions WHERE session_id = {sql_literal(sid)}"

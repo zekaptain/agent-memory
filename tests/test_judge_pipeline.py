@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 import shutil
+from dataclasses import replace
 
 import pytest
 
+from agent_memory.adapters.droid import DroidAdapter
 from agent_memory.cli import main
 from agent_memory.judge.drafter import Draft
 from agent_memory.judge.lesson import Claim, Lesson
@@ -255,3 +257,36 @@ def test_cli_decide_without_remote_opt_in(live_cfg, capsys, monkeypatch):
     err = capsys.readouterr().err
     assert code == 1
     assert "AGENT_MEMORY_JUDGE_ALLOW_REMOTE" in err
+
+
+def test_import_writes_what_the_ledger_accepts_and_retries_the_file(
+    live_cfg, tmp_path, monkeypatch
+):
+    project = tmp_path / "-Users-tester-code-demo"
+    project.mkdir()
+    shutil.copy(FIXTURES / "droid_session_judge.jsonl", project / "judge-session-refused.jsonl")
+    real = DroidAdapter.from_transcript
+
+    def with_a_refused_record(adapter, path, **options):
+        records = real(adapter, path, **options)
+        refused = replace(
+            records[0],
+            kind="memory_write",
+            source_key="refused",
+            memory={"content": ""},
+            observation=None,
+        )
+        return [*records, refused]
+
+    with monkeypatch.context() as patch:
+        patch.setattr(DroidAdapter, "from_transcript", with_a_refused_record)
+        first = import_sessions(live_cfg, tmp_path)
+    assert first.files == 0
+    assert first.inserted > 0
+    (error,) = first.errors
+    assert "judge-session-refused.jsonl: 1 of" in error
+    assert "no content" in error
+    # The file was not logged as imported, so the next import reads it again.
+    second = import_sessions(live_cfg, tmp_path)
+    assert (second.files, second.skipped_files, second.inserted) == (1, 0, 0)
+    assert second.errors == []

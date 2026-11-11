@@ -11,7 +11,6 @@ import pytest
 
 from agent_memory.capture.pipeline import replay_spool
 from agent_memory.capture.spool import Spool
-from agent_memory.capture.writer import Writer
 from agent_memory.db import AgentMemoryError, MemoryClient, MemoryServer
 from agent_memory.lifecycle import maintain_corrections
 from agent_memory.mcp_server.tools import MemoryTools, ToolError
@@ -298,20 +297,19 @@ def test_replay_lost_commit_ack_remains_pending_then_idempotent(down_cfg, monkey
     successor = tool.remember("queued correction", "fact", supersedes=mid)["memory_id"]
     server = MemoryServer(down_cfg, export_interval_hours=0)
     server.start()
-    once = Writer._write_once
+    insert = MemoryClient.insert
     lost = False
 
-    def lost_ack(writer, records, tiers):
+    def lost_ack(client, rows_by_table):
         nonlocal lost
-        result = once(writer, records, tiers)
+        insert(client, rows_by_table)
         if not lost:
             lost = True
             raise AgentMemoryError("synthetic lost commit acknowledgement")
-        return result
 
     try:
         with monkeypatch.context() as patch:
-            patch.setattr(Writer, "_write_once", lost_ack)
+            patch.setattr(MemoryClient, "insert", lost_ack)
             with pytest.raises(AgentMemoryError, match="lost commit"):
                 replay_spool(down_cfg)
         assert Spool(down_cfg.spool_dir).pending()

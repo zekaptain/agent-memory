@@ -258,6 +258,7 @@ def smoke(
 
 
 HARNESS_HELP = "Which harness produced the input: " + " or ".join(HARNESS_NAMES) + "."
+REASONS_SHOWN = 5
 
 
 def _drain_spool(cfg: Config) -> None:
@@ -275,20 +276,41 @@ def _drain_spool(cfg: Config) -> None:
         )
 
 
-def _report_delivery(delivery: Delivery, what: str) -> None:
-    if delivery.written is not None:
-        w = delivery.written
-        print(
-            f"{what}: {w.sessions} session(s), {w.events} event(s), {w.memories} memory(ies), "
-            f"{w.actions} action(s) inserted; {w.skipped} already present"
-        )
+def _report_delivery(delivery: Delivery, what: str, *, summary: bool = True) -> None:
+    """Say where the records went. Problems go to stderr; `summary` adds the outcome on
+    stdout, which a harness would pass on to the agent if the command ran as a hook."""
+    w = delivery.written
+    if w is not None:
+        if summary:
+            print(
+                f"{what}: {w.sessions} session(s), {w.events} event(s), {w.memories} memory(ies), "
+                f"{w.actions} action(s) inserted; {w.skipped} already present"
+            )
         if w.unresolved_parents:
             print(f"  {len(w.unresolved_parents)} result(s) without a known call", file=sys.stderr)
-    elif delivery.spooled:
+        if w.rejected:
+            kept = ", ".join(str(p) for p in delivery.failed_paths)
+            print(f"{what}: {len(w.rejected)} record(s) rejected, kept in {kept}", file=sys.stderr)
+            reasons = list(dict.fromkeys(r.reason for r in w.rejected))
+            for reason in reasons[:REASONS_SHOWN]:
+                print(f"  {reason}", file=sys.stderr)
+            if len(reasons) > REASONS_SHOWN:
+                print(f"  and {len(reasons) - REASONS_SHOWN} more reason(s)", file=sys.stderr)
+        for warning in w.warnings:
+            print(f"  {warning}", file=sys.stderr)
+    if delivery.spooled:
         reason = f" ({delivery.error})" if delivery.error else ""
-        print(f"{what}: spooled to {', '.join(str(p) for p in delivery.spooled)}{reason}")
-    if not delivery.ok:
-        raise typer.Exit(1)
+        print(
+            f"{what}: spooled to {', '.join(str(p) for p in delivery.spooled)}{reason}",
+            file=sys.stdout if summary else sys.stderr,
+        )
+
+
+def _hook_failure(message: str) -> typer.Exit:
+    """`mem event` runs as a harness hook, where exit code 2 blocks the agent and stdout is
+    added to its context. A failure is one line on stderr and exit code 1."""
+    print(f"mem event: {message}", file=sys.stderr)
+    return typer.Exit(1)
 
 
 @app.command()
@@ -305,26 +327,34 @@ def event(
         bool, typer.Option("--record-pre-tool", help="Also record pre-tool hooks as notes.")
     ] = False,
 ) -> None:
-    """Record one hook payload read as JSON from stdin. Exits 0 once it is saved anywhere."""
+    """Record one hook payload read as JSON from stdin.
+
+    Made to run as a harness hook: it prints nothing on stdout and reports problems on
+    stderr. Exits 0 once every record is kept somewhere (the ledger, the spool, or
+    spool/failed/ for a record the ledger rejected) and 1 when nothing could be kept. It
+    never exits 2, which a harness reads as an instruction to block the agent.
+    """
     cfg = _config(ctx)
     try:
         payload = json.loads(sys.stdin.read())
     except json.JSONDecodeError as exc:
-        raise typer.BadParameter(f"stdin is not JSON: {exc}") from None
+        raise _hook_failure(f"stdin is not JSON: {exc}") from None
     if not isinstance(payload, dict):
-        raise typer.BadParameter("stdin must hold one JSON object")
+        raise _hook_failure("stdin must hold one JSON object")
     try:
         adapter = get_adapter(harness, record_pre_tool=record_pre_tool)
         records = adapter.from_hook(payload)
     except ValueError as exc:
-        raise typer.BadParameter(str(exc)) from None
+        raise _hook_failure(str(exc)) from None
     if keep_raw:
         records = [replace(r, raw=payload) for r in records]
     if not records:
-        print(f"{payload.get('hook_event_name')}: nothing to record")
         return
-    delivery = deliver(cfg, records, spool_only=spool_only, keep_raw=keep_raw)
-    _report_delivery(delivery, str(payload.get("hook_event_name")))
+    try:
+        delivery = deliver(cfg, records, spool_only=spool_only, keep_raw=keep_raw)
+    except Exception as exc:
+        raise _hook_failure(f"nothing could be kept: {type(exc).__name__}: {exc}") from None
+    _report_delivery(delivery, str(payload.get("hook_event_name")), summary=False)
 
 
 @app.command()
@@ -358,7 +388,7 @@ def ingest(
         typer.Option(help="With --spool, delete replayed files older than this many days."),
     ] = None,
 ) -> None:
-    """Import a transcript, or replay the spool. Exits 0 once the records are saved anywhere."""
+    """Import a transcript, or replay the spool. Exits 0 once the records are kept anywhere."""
     cfg = _config(ctx)
     if spool == (transcript is not None):
         raise typer.BadParameter("pass exactly one of --transcript PATH or --spool")
@@ -451,7 +481,9 @@ def audit_check(
         raise typer.Exit(report.exit_code)
 
 
-spool_app = typer.Typer(help="Inspect the spool of records waiting for the server.")
+spool_app = typer.Typer(
+    help="Inspect the spool of records waiting for the server, and those it rejected."
+)
 app.add_typer(spool_app, name="spool")
 app.add_typer(judge_app, name="judge")
 app.add_typer(graph_app, name="graph")
@@ -460,17 +492,36 @@ app.add_typer(admit_app, name="admit")
 
 @spool_app.command("status")
 def spool_status(ctx: typer.Context) -> None:
-    """Pending files and lines per harness."""
-    cfg = _config(ctx)
-    rows = Spool(cfg.spool_dir).status()
+    """Files and lines per agent: pending replay, or rejected by the ledger."""
+    spool = Spool(_config(ctx).spool_dir)
+    rows = [("pending", s) for s in spool.status()] + [("rejected", s) for s in spool.rejected()]
     if not rows:
         print("spool is empty")
         return
     out = [
-        (s.agent_id, s.files, s.lines, time.strftime("%Y-%m-%d %H:%M", time.localtime(s.oldest)))
-        for s in rows
+        (
+            s.agent_id,
+            state,
+            s.files,
+            s.lines,
+            time.strftime("%Y-%m-%d %H:%M", time.localtime(s.oldest)),
+        )
+        for state, s in rows
     ]
-    print(render_table(["agent", "files", "lines", "oldest"], out, 0))
+    print(render_table(["agent", "state", "files", "lines", "oldest"], out, 0))
+
+
+@spool_app.command("retry")
+def spool_retry(ctx: typer.Context) -> None:
+    """Return rejected records to the spool, so that the next replay tries them again."""
+    files, lines = Spool(_config(ctx).spool_dir).retry_failed()
+    if not lines:
+        print("no rejected records")
+        return
+    print(
+        f"returned {lines} rejected record(s) from {files} file(s) to the spool; "
+        "replay them with `mem ingest --spool`"
+    )
 
 
 def render_table(columns: Sequence[str], rows: Sequence[Sequence[Any]], max_width: int) -> str:
@@ -494,13 +545,29 @@ def render_table(columns: Sequence[str], rows: Sequence[Sequence[Any]], max_widt
     return "\n".join(lines)
 
 
+def _subcommand(args: Sequence[str]) -> str | None:
+    """The first word that is neither a root option nor the value of one."""
+    is_value = False
+    for arg in args:
+        if is_value:
+            is_value = False
+        elif arg in ("--home", "--port"):
+            is_value = True
+        elif not arg.startswith("-"):
+            return arg
+    return None
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the CLI and return its exit code. Expected failures print one line, not a traceback."""
+    args = list(sys.argv[1:] if argv is None else argv)
     try:
-        app(args=argv, prog_name="mem")
+        app(args=args, prog_name="mem")
     except SystemExit as exc:
         if exc.code is None or isinstance(exc.code, int):
-            return exc.code or 0
+            code = exc.code or 0
+            # A usage error exits 2, which a harness reads from a hook as "block the agent".
+            return 1 if code == 2 and _subcommand(args) == "event" else code
         print(exc.code, file=sys.stderr)
         return 1
     except (AgentMemoryError, ConfigError) as exc:

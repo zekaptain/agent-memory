@@ -66,6 +66,22 @@ _Avoid_: Queue, buffer, outbox
 Delivering spooled capture records to the ledger.
 _Avoid_: Drain, flush
 
+**Delivery**:
+Handing capture records to the ledger, or to the spool when the ledger cannot be reached. Every record ends up written, spooled, or rejected; none is dropped.
+_Avoid_: Ingest, send, write (for the whole act)
+
+**Rejected record**:
+A capture record the ledger refuses, or one that refers to a refused record. It is kept aside with its reason and is delivered again only after a retry.
+_Avoid_: Failed record, bad line, poison record, dropped record
+
+**Retry**:
+Returning rejected records to the spool on request, so that the next replay delivers them again.
+_Avoid_: Replay (which delivers what the spool already holds), requeue, resend
+
+**Capture error**:
+The event that records a rejection in the ledger, so that the gap it leaves in a session is visible.
+_Avoid_: Failure, exception
+
 **Blob**:
 Event content too large to keep inline, stored once and referenced from the event.
 _Avoid_: Attachment, file

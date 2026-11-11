@@ -33,9 +33,17 @@ the same redaction, blob handling, id derivation, insert, and spool code.
   (by `mem event` during an outage, or by in-process extensions for omp and
   Amp) and writes them to the ledger.
 
-Both commands exit 0 whenever the record was preserved somewhere (ledger or
-spool). They exit non-zero only when the input itself is unreadable. Hooks
-must never block or fail a harness because the memory server is down.
+Both commands exit 0 whenever every record was kept somewhere: in the
+ledger, in the spool, or under `spool/failed/` for a record the ledger
+rejected. Hooks must never block or fail a harness because the memory server
+is down or a record is bad.
+
+`mem event` runs as a hook, and a harness acts on a hook's exit code and
+stdout. It prints nothing on stdout (a harness can add it to the agent's
+context) and reports problems on stderr. It exits 1 when the input is
+unreadable or nothing could be kept, and never 2, which a harness reads as
+an instruction to block the agent; usage errors exit 1 as well.
+`mem ingest` prints a summary on stdout and exits 2 on a usage error.
 
 ### Capture record (schema v1)
 
@@ -148,17 +156,21 @@ Layout: `spool/<agent_id>/<harness_session_id>.jsonl`, appended with
 `O_APPEND` so concurrent hooks for one session interleave by line.
 
 - `mem event` tries the server first with a short deadline (default 2 s,
-  `AGENT_MEMORY_DEADLINE`). On any connection or write failure it appends the
-  records to the spool and exits 0, printing one line to stderr.
+  `AGENT_MEMORY_DEADLINE`). When the ledger is unavailable or too slow it
+  appends the records to the spool and exits 0, printing one line to stderr.
 - `mem ingest --spool` walks the spool, replays each file in line order
   inside one transaction per file, then moves the file to
   `spool/done/<agent_id>/<harness_session_id>.<ts>.jsonl`. `--purge-done
   <days>` deletes old done files; nothing is deleted by default.
-- A line that fails to parse or to insert is recorded as a `capture_error`
-  event (content: the error, payload: the raw line truncated to 4 KiB,
-  source_key: `sha256(line)`), the line is kept in
-  `spool/failed/<agent_id>/<file>`, and replay continues. This is the only
-  place `capture_error` is written.
+- A line that fails to parse, or a record the ledger rejects, is recorded as
+  a `capture_error` event (content: the reason, payload: the raw line
+  truncated to 4 KiB, source_key: `sha256(line)`), the line is kept in
+  `spool/failed/<agent_id>/<harness_session_id>.jsonl`, and the rest is
+  written. Records that refer to a rejected record are rejected with it.
+  The same happens when a record is rejected on the direct path, without
+  passing through the spool.
+- `mem spool retry` moves every kept line back to the spool. Nothing
+  retries a rejected record on its own.
 - `mem ingest --spool` is also what omp and Amp extensions call at turn end
   (Phase 2); in Phase 1 the spool is tested with hand-written records.
 - `mem serve` runs `mem ingest --spool` logic once at startup, so an outage
@@ -237,7 +249,8 @@ harness events are never silently lost.
 mem event  --harness droid|vibe [--spool-only] [--keep-raw]
 mem ingest --harness droid --transcript PATH [--since-key KEY] [--include-thinking]
 mem ingest --spool [--purge-done DAYS]
-mem spool  status            # files, lines, oldest record per harness
+mem spool  status            # files, lines, oldest record per agent: pending and rejected
+mem spool  retry             # return rejected records to the spool
 ```
 
 `--since-key` lets a hook pass the last message id it knows about so
@@ -395,7 +408,9 @@ All with the real Quack server fixture from Phase 0.
 - redact: fixture-driven positives and negatives per rule; count matches.
 - blobs: threshold, idempotent write, `content_hash` of the full text.
 - writer: idempotent replay (insert twice, row counts unchanged); dependency
-  order with parented events in one batch; partial-failure rollback.
+  order with parented events in one batch; a rejected record and its
+  dependents set aside while the rest lands; two writers racing on a new
+  session.
 - spool: append during simulated outage (server stopped), replay after
   restart, done/failed layout, `capture_error` for a bad line, redaction on
   replay.
@@ -525,10 +540,11 @@ replay 50 ms).
   all parent depths before inserting and rejects cycles. Queued memories
   and actions deduplicate within a batch as events already did. The
   duplicate-key retry and separate parent-before-child statements remain.
-- Record-by-record recovery also orders parent and queued-memory
+- Recovery from a rejected record also orders parent and queued-memory
   dependencies. A failed parent or cycle keeps its dependent records in
   `failed/` rather than permanently inserting them without their links.
-  Unrelated valid records still replay.
+  Unrelated valid records still replay. (The writer does this itself since
+  the capture delivery change below.)
 - Failed local staging removes its temporary table. Failed exports remove
   their own partial directory and unpublished link, leaving the previous
   `latest` snapshot intact.
@@ -567,8 +583,8 @@ Replay resolves dependencies across the claimed spool snapshot rather than
 relying on file modification times. This preserves cross-session queued
 corrections and reviews, including interleaved files whose records form an
 acyclic dependency graph. Interrupted and newly appended files for the same
-session get distinct claim paths. As before, failed validation is terminal,
-while a transport interruption leaves claimed files available for retry.
+session get distinct claim paths. As before, a record that fails validation
+is rejected, while a transport interruption leaves claimed files pending.
 
 `why_answer` preserves raw link and placeholder identities, exposes resolved
 attribution, and retains zero-result FTS and graph searches. A miss has
@@ -576,3 +592,54 @@ attribution, and retains zero-result FTS and graph searches. A miss has
 status snapshots are never recalculated. Returned, captured in context when
 observed, and declared used are distinct evidence, not causal attribution
 to a model's reasoning.
+
+### Capture delivery (2026-11-10)
+
+Two defects prompted this. Two hooks that started one session at the same
+time could lose a record: the second commit failed with a conflict, which
+the direct path treated as final and dropped. And `mem event` exited 2 on
+unreadable input and printed a success line on stdout; a harness blocks the
+agent on exit 2 and can add a hook's stdout to the agent's context.
+
+- `Writer.write` returns what it wrote together with the records the ledger
+  rejected, each with its position in the batch and the reason. It raises
+  only when the ledger is unavailable. A failed answer-binding pass is
+  returned as a warning; the write it follows has already committed.
+- A write that loses a race is repeated. Another capturer can commit the
+  same session or event between the pre-read and the commit, which DuckDB
+  reports as a `TransactionException` at commit or as a duplicate-key
+  `ConstraintException` at insert. The writer reads again and retries up to
+  three times. A conflict that outlasts the retries counts as an
+  unavailable ledger, so the batch is spooled.
+- The writer isolates a record at fault. It orders the batch so that every
+  reference (parent event, memory source, superseded or reviewed memory)
+  comes before its referrer, halves a failing batch until the record at
+  fault is alone, rejects that record and every record that refers to it,
+  and writes the rest. An exception nobody expected is handled the same
+  way when one record causes it, with the exception type in the reason.
+  The session row and the transcript observation are still derived from
+  the whole batch. Replay no longer has its own record-by-record recovery.
+- `deliver` keeps the deadline and the choice between ledger and spool. It
+  files rejected records under `spool/failed/` and writes one
+  `capture_error` event per rejected record; if the ledger does not take
+  that event in time, the event is spooled. `deliver` raises when it could
+  keep nothing, and it no longer checks memory intervals before writing:
+  an invalid interval is rejected like any other bad record. MCP `remember`
+  still validates the interval before queueing.
+- `Record.from_dict` checks that `payload`, `memory`, `action`, `raw`,
+  `observation`, and `attribution` are objects and that `role`, `content`,
+  `parent_key`, and `parent_kind` are strings. A spool line with the wrong
+  shape is now a parse error. Before, it raised inside the writer and left
+  the claimed files in `spool/replaying/` on every replay.
+- `mem event` follows the hook contract in the pipeline section above.
+  `mem spool status` lists rejected records, and `mem spool retry` returns
+  them to the spool.
+- `mem judge import` writes the records of a transcript that the ledger
+  accepts, reports the file as failed with the first reason, and leaves it
+  out of the imports log so that the next import reads it again.
+
+Verified: ruff, pyrefly, 803 tests, `mem smoke` 16/16, and 25 rounds of
+three concurrent `mem event` processes against a running `mem serve` with no
+record lost, spooled, or rejected. The same 1000-record batch takes 440 ms
+to write (414 ms before) and 68 ms to write again (63 ms before); one hook
+record takes 16 ms, as before.

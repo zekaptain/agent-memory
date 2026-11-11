@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import re
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from graphlib import CycleError, TopologicalSorter
@@ -13,7 +14,7 @@ from typing import Any
 import duckdb
 
 from ..db import AgentMemoryError, MemoryClient, sql_literal
-from ..lifecycle import LifecycleError, LifecyclePlan
+from ..lifecycle import LifecycleError, LifecyclePlan, is_validation_error
 from . import blobs, ids
 from .attribution import reconcile_answers
 from .observations import pending_observations
@@ -36,8 +37,21 @@ _ROLE_FOR_KIND = {
 }
 
 
+# How often a write is repeated after another capturer committed the same rows first.
+RACE_RETRIES = 3
+
+
 class WriterError(AgentMemoryError):
-    """Records could not be turned into rows (unknown agent, bad reference)."""
+    """A record could not be turned into rows (a bad reference, a memory without content)."""
+
+
+@dataclass(frozen=True)
+class Rejection:
+    """A capture record the ledger refused, with its position in the batch given to `write`."""
+
+    index: int
+    record: Record
+    reason: str
 
 
 @dataclass
@@ -48,16 +62,27 @@ class WriteResult:
     actions: int = 0
     skipped: int = 0
     unresolved_parents: list[str] = field(default_factory=list)
+    rejected: list[Rejection] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
 
     @property
     def inserted(self) -> int:
         return self.sessions + self.events + self.memories + self.actions
 
+    def add(self, part: WriteResult) -> None:
+        self.sessions += part.sessions
+        self.events += part.events
+        self.memories += part.memories
+        self.actions += part.actions
+        self.skipped += part.skipped
+        self.unresolved_parents.extend(part.unresolved_parents)
+
 
 class Writer:
-    """Pre-reads what the ledger already has, builds the missing rows, inserts them in one
-    transaction. Deterministic ids make a replay a no-op; a concurrent capturer that wins
-    the race only costs one retry."""
+    """Pre-reads what the ledger already has, builds the missing rows, and inserts them in one
+    transaction. Deterministic ids make a replay a no-op, and a concurrent capturer that
+    commits first only costs another read. A record the ledger refuses is set aside so that
+    the rest of its batch still lands."""
 
     def __init__(
         self,
@@ -101,37 +126,94 @@ class Writer:
     # Writing
 
     def write(self, records: Sequence[Record]) -> WriteResult:
-        if not records:
-            return WriteResult()
-        records = [self.redactor.record(rec, keep_raw=self.keep_raw) for rec in records]
-        tiers = self.agent_tiers()
-        for rec in records:
-            if rec.agent_id not in tiers:
-                raise WriterError(f"unknown agent {rec.agent_id!r}")
-        try:
-            return self._write_once(records, tiers)
-        except duckdb.ConstraintException as exc:
-            if "Duplicate key" not in str(exc):
-                raise
-            # Another capturer inserted the same rows between our read and write.
-            return self._write_once(records, tiers)
+        """Write every record the ledger accepts and report the rest as rejected.
 
-    def _write_once(self, records: Sequence[Record], tiers: dict[str, str]) -> WriteResult:
+        A record the ledger refuses is rejected with the reason, along with every record
+        that refers to it; the others are still written. Raises only when the ledger is
+        unavailable (AgentMemoryError, duckdb.Error, or OSError). Deterministic ids make it
+        safe to hand over the same batch again later.
+        """
+        result = WriteResult()
+        if not records:
+            return result
+        batch = [self.redactor.record(rec, keep_raw=self.keep_raw) for rec in records]
+        groups: dict[tuple[str, str], list[Record]] = {}
+        for rec in batch:
+            groups.setdefault((rec.agent_id, rec.harness_session_id), []).append(rec)
+        dependencies, unreadable = _dependencies(batch)
+        order, cyclic = _dependency_order(dependencies)
+        rejected = {index: self._reason(exc) for index, exc in unreadable.items()}
+        rejected.update(dict.fromkeys(cyclic, "cyclic record references"))
+        tiers = self.agent_tiers()
+        for index, rec in enumerate(batch):
+            if rec.agent_id not in tiers:
+                rejected[index] = f"unknown agent {rec.agent_id!r}"
+
+        def attempt(chunk: list[int]) -> None:
+            for index in chunk:
+                if dependencies[index] & rejected.keys():
+                    rejected[index] = "a referenced record was rejected"
+            chunk = [index for index in chunk if index not in rejected]
+            if not chunk:
+                return
+            part = [batch[index] for index in sorted(chunk)]
+            try:
+                result.add(_retrying(lambda: self._write_once(part, groups, batch)))
+            except Exception as exc:
+                if _ledger_unavailable(exc):
+                    raise
+                if len(chunk) == 1:
+                    rejected[chunk[0]] = self._reason(exc)
+                    return
+                # No error names the record that caused it, so halve until one is left.
+                # References precede their referrers, so the first half never needs the second.
+                half = len(chunk) // 2
+                attempt(chunk[:half])
+                attempt(chunk[half:])
+
+        attempt(order)
+        result.rejected = [
+            Rejection(index, batch[index], rejected[index]) for index in sorted(rejected)
+        ]
+        # Evidence is already durable. A later delivery can finish this derived binding
+        # step, even when the original capture committed before its connection failed.
+        sessions = [ids.session_id(*key) for key in groups]
+        try:
+            _retrying(lambda: reconcile_answers(self.client, sessions))
+        except Exception as exc:
+            if _ledger_unavailable(exc):
+                raise
+            result.warnings.append(f"answer binding failed: {self._reason(exc)}")
+        return result
+
+    def _reason(self, exc: Exception) -> str:
+        expected = isinstance(exc, (AgentMemoryError, duckdb.Error))
+        return self.redactor.text(str(exc) if expected else f"{type(exc).__name__}: {exc}")[0]
+
+    def _write_once(
+        self,
+        records: Sequence[Record],
+        groups: Mapping[tuple[str, str], Sequence[Record]],
+        batch: Sequence[Record],
+    ) -> WriteResult:
+        """Write `records` in one transaction. `groups` and `batch` describe the whole batch
+        they come from, so a session row and its coverage do not depend on how it was split."""
         result = WriteResult()
         rows: list[tuple[str, list[dict[str, Any]]]] = []
 
         # Sessions
-        groups: dict[tuple[str, str], list[Record]] = {}
-        for rec in records:
-            groups.setdefault((rec.agent_id, rec.harness_session_id), []).append(rec)
-        session_of = {key: ids.session_id(*key) for key in groups}
+        session_of = {
+            (rec.agent_id, rec.harness_session_id): ids.session_id(
+                rec.agent_id, rec.harness_session_id
+            )
+            for rec in records
+        }
         have_sessions = self._existing("sessions", "session_id", session_of.values())
-        session_rows = []
-        for key, recs in groups.items():
-            sid = session_of[key]
-            if sid in have_sessions:
-                continue
-            session_rows.append(self._session_row(sid, key[0], recs, tiers[key[0]]))
+        session_rows = [
+            self._session_row(sid, key[0], groups[key])
+            for key, sid in session_of.items()
+            if sid not in have_sessions
+        ]
         if session_rows:
             rows.append(("sessions", session_rows))
             result.sessions = len(session_rows)
@@ -265,23 +347,19 @@ class Writer:
         # Default observation cursors are derived from stable capture identities,
         # which the record redactor intentionally does not rewrite.
         observations = [
-            self.redactor.value(row)[0] for row in pending_observations(self.client, records)
+            self.redactor.value(row)[0]
+            for row in pending_observations(self.client, records, batch=batch)
         ]
         if observations:
             rows.append(("capture_observations", observations))
 
         if rows:
             self.client.insert(rows)
-        # Evidence is already durable. A retry can finish this derived binding
-        # step even if the original capture committed before its connection failed.
-        reconcile_answers(self.client, list(session_of.values()))
         return result
 
     # Row builders
 
-    def _session_row(
-        self, sid: str, agent_id: str, recs: Sequence[Record], tier: str
-    ) -> dict[str, Any]:
+    def _session_row(self, sid: str, agent_id: str, recs: Sequence[Record]) -> dict[str, Any]:
         info = SessionInfo()
         for rec in sorted(recs, key=lambda r: (r.kind != "session_start", r.ts)):
             if rec.session:
@@ -351,6 +429,91 @@ class Writer:
             "created_by_session": sid,
             "metadata": spec.get("metadata"),
         }
+
+
+def _retrying[T](action: Callable[[], T]) -> T:
+    """Repeat a write that lost a race. Another capturer can commit the same session or event
+    between our pre-read and our commit; reading again finds its rows and skips them."""
+    retries = RACE_RETRIES
+    while True:
+        try:
+            return action()
+        except duckdb.Error as exc:
+            # A conflict found at commit is a TransactionException; one found at insert is a
+            # ConstraintException that names a duplicate key.
+            lost_race = isinstance(exc, duckdb.TransactionException) or (
+                isinstance(exc, duckdb.ConstraintException) and "Duplicate key" in str(exc)
+            )
+            if not lost_race or not retries:
+                raise
+            retries -= 1
+
+
+def _ledger_unavailable(exc: Exception) -> bool:
+    """True when no record caused the failure, so handing the batch over again later can work."""
+    if isinstance(exc, (WriterError, LifecycleError)):
+        return False
+    if isinstance(exc, duckdb.Error):
+        # A commit conflict that outlasts its retries is contention, not a bad record.
+        return isinstance(exc, duckdb.TransactionException) or not is_validation_error(exc)
+    return isinstance(exc, (AgentMemoryError, OSError))
+
+
+def _dependencies(
+    batch: Sequence[Record],
+) -> tuple[dict[int, set[int]], dict[int, Exception]]:
+    """For each position in the batch, the positions of the records it refers to: its parent
+    event, the events a memory names as sources, and the memories a correction or review
+    names. Also returns the positions whose references could not be read, with the error."""
+    events = {
+        ids.event_id(rec.agent_id, rec.harness_session_id, rec.kind, rec.source_key): index
+        for index, rec in enumerate(batch)
+    }
+    memories = {
+        ids.memory_id(rec.agent_id, rec.harness_session_id, rec.source_key): index
+        for index, rec in enumerate(batch)
+        if rec.memory
+    }
+
+    def references(rec: Record) -> set[int]:
+        found: set[int | None] = set()
+        if rec.parent_key and (kind := rec.effective_parent_kind):
+            found.add(
+                events.get(ids.event_id(rec.agent_id, rec.harness_session_id, kind, rec.parent_key))
+            )
+        named: list[Any] = []
+        if rec.action:
+            named += [rec.action.get("memory_id"), rec.action.get("related_memory_id")]
+        if rec.memory:
+            named.append(rec.memory.get("supersedes"))
+            found.update(events.get(source) for source in rec.memory.get("source_event_ids") or [])
+        found.update(memories.get(name) for name in named if isinstance(name, str))
+        return {index for index in found if index is not None}
+
+    dependencies: dict[int, set[int]] = {}
+    unreadable: dict[int, Exception] = {}
+    for index, rec in enumerate(batch):
+        try:
+            # A record never waits for itself; writing it reports a self-reference.
+            dependencies[index] = references(rec) - {index}
+        except Exception as exc:
+            dependencies[index] = set()
+            unreadable[index] = exc
+    return dependencies, unreadable
+
+
+def _dependency_order(dependencies: Mapping[int, set[int]]) -> tuple[list[int], list[int]]:
+    """Positions ordered so that every reference comes before its referrer, followed by the
+    positions that a reference cycle keeps out of that order."""
+    sorter = TopologicalSorter(dependencies)
+    # After a CycleError the sorter still hands out every position that no cycle blocks.
+    with contextlib.suppress(CycleError):
+        sorter.prepare()
+    order: list[int] = []
+    while ready := sorter.get_ready():
+        order.extend(ready)
+        sorter.done(*ready)
+    return order, sorted(dependencies.keys() - set(order))
 
 
 def _merge(base: SessionInfo, extra: SessionInfo) -> SessionInfo:

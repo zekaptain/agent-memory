@@ -22,11 +22,19 @@ def fingerprint(value: Any) -> str:
     ).hexdigest()
 
 
-def observation_rows(records: Sequence[Record]) -> list[dict[str, Any]]:
-    """Build rows from already-redacted records, with stable import identities."""
+def observation_rows(
+    records: Sequence[Record], *, batch: Sequence[Record] | None = None
+) -> list[dict[str, Any]]:
+    """Build rows from already-redacted records, with stable import identities.
+
+    `batch` is the delivery the records were taken from. A session that the batch observed
+    as a whole stays covered by that observation, however the batch is split for writing.
+    """
     found: dict[str, dict[str, Any]] = {}
     observed_sessions = {
-        (rec.agent_id, rec.harness_session_id) for rec in records if rec.observation is not None
+        (rec.agent_id, rec.harness_session_id)
+        for rec in (records if batch is None else batch)
+        if rec.observation is not None
     }
     for rec in records:
         observation: dict[str, Any] | None = rec.observation
@@ -88,9 +96,11 @@ def observation_rows(records: Sequence[Record]) -> list[dict[str, Any]]:
     return list(found.values())
 
 
-def pending_observations(client: MemoryClient, records: Sequence[Record]) -> list[dict[str, Any]]:
+def pending_observations(
+    client: MemoryClient, records: Sequence[Record], *, batch: Sequence[Record] | None = None
+) -> list[dict[str, Any]]:
     """Pre-read deterministic identities in bounded batches before staged insertion."""
-    rows = observation_rows(records)
+    rows = observation_rows(records, batch=batch)
     existing: set[str] = set()
     for start in range(0, len(rows), 500):
         wanted = ", ".join(sql_literal(row["observation_id"]) for row in rows[start : start + 500])

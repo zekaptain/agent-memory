@@ -37,6 +37,14 @@ def _lock(path: Path, *, blocking: bool = True) -> Generator[bool]:
         yield True
 
 
+def _append(path: Path, lines: Iterable[str]) -> None:
+    """Append whole lines under the file's lock, which moving the file away also takes."""
+    with _lock(path.with_suffix(".lock")):
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write("".join(line + "\n" for line in lines))
+
+
 @dataclass(frozen=True)
 class SpoolFile:
     path: Path
@@ -49,7 +57,7 @@ class SpoolStatus:
     agent_id: str
     files: int
     lines: int
-    oldest: float | None  # mtime of the oldest pending file
+    oldest: float | None  # mtime of the oldest file
 
 
 class Spool:
@@ -75,10 +83,7 @@ class Spool:
                 rec.to_json()
             )
         for path, lines in by_file.items():
-            with _lock(path.with_suffix(".lock")):
-                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-                with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                    fh.write("".join(line + "\n" for line in lines))
+            _append(path, lines)
         return list(by_file)
 
     def pending(self) -> list[SpoolFile]:
@@ -145,16 +150,32 @@ class Spool:
         shutil.move(file.path, target)
         return target
 
-    def write_failed(self, file: SpoolFile, lines: Iterable[str]) -> Path | None:
+    def write_failed(
+        self, agent_id: str, harness_session_id: str, lines: Iterable[str]
+    ) -> Path | None:
+        """Keep the lines of rejected records beside the spool, one file per session."""
         lines = list(lines)
         if not lines:
             return None
-        target = self.failed_dir / file.agent_id / file.path.name
-        target.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write("".join(line + "\n" for line in lines))
+        target = self.failed_dir / _safe(agent_id) / f"{_safe(harness_session_id)}.jsonl"
+        _append(target, lines)
         return target
+
+    def retry_failed(self) -> tuple[int, int]:
+        """Return every rejected record to the spool, so that the next replay tries it again.
+        Returns the number of files and lines moved."""
+        files = lines = 0
+        for file in self._failed():
+            with _lock(file.path.with_suffix(".lock")):
+                if not file.path.exists():
+                    continue
+                moved = [line for _, line in self.lines(file.path)]
+                if moved:
+                    _append(self.path_for(file.agent_id, file.harness_session_id), moved)
+                    files += 1
+                    lines += len(moved)
+                file.path.unlink()
+        return files, lines
 
     def purge_done(self, older_than_days: float) -> list[Path]:
         cutoff = time.time() - older_than_days * 86400
@@ -167,8 +188,26 @@ class Spool:
         return removed
 
     def status(self) -> list[SpoolStatus]:
+        """Records waiting for the ledger, per agent."""
+        return self._summary(self.pending())
+
+    def rejected(self) -> list[SpoolStatus]:
+        """Records the ledger refused, kept until someone returns them to the spool."""
+        return self._summary(self._failed())
+
+    def _failed(self) -> list[SpoolFile]:
+        if not self.failed_dir.exists():
+            return []
+        return [
+            # Files kept by earlier versions carry the name of the claim they came from.
+            SpoolFile(path, agent_dir.name, _CLAIM_SUFFIX.sub("", path.stem))
+            for agent_dir in sorted(p for p in self.failed_dir.iterdir() if p.is_dir())
+            for path in sorted(agent_dir.glob("*.jsonl"))
+        ]
+
+    def _summary(self, found: Iterable[SpoolFile]) -> list[SpoolStatus]:
         per_agent: dict[str, list[SpoolFile]] = {}
-        for file in self.pending():
+        for file in found:
             per_agent.setdefault(file.agent_id, []).append(file)
         out = []
         for agent, files in sorted(per_agent.items()):

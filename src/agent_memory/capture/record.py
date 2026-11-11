@@ -32,6 +32,10 @@ EVENT_KINDS = frozenset(
 # The kind a parent_key points at, when the child kind implies it.
 PARENT_KIND = {"tool_result": "tool_call"}
 
+# Shapes a serialized record must have; JSON written by anything else can hold any value.
+_OBJECT_FIELDS = ("payload", "memory", "action", "raw", "observation", "attribution")
+_TEXT_FIELDS = ("role", "content", "parent_key", "parent_kind")
+
 
 class RecordError(ValueError):
     """A capture record is malformed."""
@@ -108,12 +112,20 @@ class Record:
         version = data.get("v", RECORD_VERSION)
         if version != RECORD_VERSION:
             raise RecordError(f"unsupported record version {version!r}")
+        for name in _OBJECT_FIELDS:
+            if not isinstance(data.get(name), dict | None):
+                raise RecordError(f"{name} must be an object")
+        for name in _TEXT_FIELDS:
+            if not isinstance(data.get(name), str | None):
+                raise RecordError(f"{name} must be a string")
         try:
             session = data.get("session")
             info = None
             if session is not None:
                 if not isinstance(session, dict):
                     raise RecordError("session must be an object")
+                if not isinstance(session.get("metadata"), dict | None):
+                    raise RecordError("session.metadata must be an object")
                 info = SessionInfo(
                     cwd=session.get("cwd"),
                     model=session.get("model"),

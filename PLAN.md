@@ -271,8 +271,9 @@ kind, and source key), pre-read plus insert in one transaction, or the spool
 when the server is down. `mem event --harness droid|vibe` takes one hook
 payload on stdin; `mem ingest --transcript` imports a Droid session file
 (every entry type mapped; thinking opt-in); `mem ingest --spool` replays, and
-`mem serve` drains the spool at startup. Bad spool lines become
-`capture_error` events and are kept under `spool/failed/`. A real 1000-event
+`mem serve` drains the spool at startup. A record the ledger rejects, or a
+spool line it cannot read, becomes a `capture_error` event and is kept under
+`spool/failed/` while the rest of its batch is written. A real 1000-event
 transcript imports in about 0.8 s and re-imports in 50 ms. The Vibe
 transcript adapter is a stub until a real file exists (Phase 2).
 
@@ -344,10 +345,11 @@ read-only view.
   interval; it does not stop the server. A file copy of `memory.duckdb` is
   only consistent while the server is stopped.
 - Health: `mem smoke --live` runs read-only checks against the running server.
-  `mem spool status` shows what is waiting for the server; `mem ingest
-  --spool` replays it (the server also does this at startup). Lines that
-  failed replay are kept under `spool/failed/` and recorded as
-  `capture_error` events.
+  `mem spool status` shows what is waiting for the server and what it
+  rejected; `mem ingest --spool` replays the waiting records (the server
+  also does this at startup). Rejected records are kept under
+  `spool/failed/` and recorded as `capture_error` events; `mem spool retry`
+  returns them to the spool.
 - Redaction runs in the capture pipeline (`agent_memory.capture.redact`),
   before the spool and before the ledger, and again at replay so a rule added
   later still covers queued records. The server token is always a rule.

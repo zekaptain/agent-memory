@@ -123,8 +123,12 @@ Entry points are `mem` (`agent_memory.cli:main`) and `mem-mcp`
   permissions, and the server's external-access/configuration lockdown.
 - Capture IDs are deterministic so transcript reimports, overlapping hooks,
   retries, and spool replay do not duplicate events. A server outage should
-  queue redacted records rather than break the agent's hook. Add regression
-  coverage for replay, partial failures, and parent/result linkage.
+  queue redacted records rather than break the agent's hook. Delivery never
+  drops a record: one the ledger rejects is kept under `spool/failed/` with
+  a `capture_error` event while the rest of its batch is written. `mem
+  event` runs as a hook, so it prints nothing on stdout and never exits 2.
+  Add regression coverage for replay, partial failures, and parent/result
+  linkage.
 - Tool-derived memories start quarantined. Recall and graph traversal use
   active memories and record retrieval provenance, including misses.
   Preserve `retrieval_items`, citations, and `why_answer` coverage.

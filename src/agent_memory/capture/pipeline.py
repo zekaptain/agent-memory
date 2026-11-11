@@ -2,26 +2,21 @@
 
 from __future__ import annotations
 
-import contextlib
 import hashlib
 import json
 import os
 import threading
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
-
-import duckdb
+from typing import Any
 
 from ..config import Config, ConfigError
-from ..db import AgentMemoryError, MemoryClient
-from ..lifecycle import is_validation_error, validate_interval
-from . import ids
+from ..db import MemoryClient
 from .record import Record, RecordError, now
 from .redact import Redactor, redactor_for
 from .spool import Spool, SpoolFile
-from .writer import Writer, WriterError, WriteResult
+from .writer import Rejection, Writer, WriteResult
 
 DEFAULT_DEADLINE = 2.0
 
@@ -36,13 +31,13 @@ def deadline_from_env() -> float:
 
 @dataclass
 class Delivery:
-    written: WriteResult | None = None
-    spooled: list[Path] = field(default_factory=list)
-    error: str | None = None
+    """Where the records handed to `deliver` went. Each one is in the ledger, in the spool,
+    or, when the ledger rejected it, in a file under spool/failed/."""
 
-    @property
-    def ok(self) -> bool:
-        return self.written is not None or bool(self.spooled)
+    written: WriteResult | None = None  # None when the ledger was not reached
+    spooled: list[Path] = field(default_factory=list)
+    failed_paths: list[Path] = field(default_factory=list)
+    error: str | None = None  # why records went to the spool
 
 
 def make_redactor(cfg: Config) -> Redactor:
@@ -51,6 +46,15 @@ def make_redactor(cfg: Config) -> Redactor:
     except ConfigError:
         token = None
     return redactor_for(token)
+
+
+@dataclass
+class _Attempt:
+    """What the writing thread got done before the deadline."""
+
+    written: WriteResult | None = None
+    unreported: list[Record] = field(default_factory=list)
+    error: str | None = None
 
 
 def deliver(
@@ -63,45 +67,60 @@ def deliver(
 ) -> Delivery:
     """Write records now if the server answers within the deadline, else append to the spool.
 
+    Nothing handed over is dropped. A record the ledger rejects is kept under spool/failed/
+    and noted in the ledger as a capture error, while the rest of the batch is written.
     Spooled records are redacted again at replay, so the spool holds redacted text too.
+    Raises only when the records could not be kept anywhere.
     """
     if not records:
         return Delivery(written=WriteResult())
     spool = Spool(cfg.spool_dir)
     redactor = make_redactor(cfg)
-    try:
-        for rec in records:
-            if rec.memory:
-                validate_interval(rec.memory)
-    except ValueError as exc:
-        return Delivery(error=redactor.text(str(exc))[0])
+    error = None
     if not spool_only:
-        outcome: dict[str, object] = {}
+        attempt = _Attempt()
 
-        def attempt() -> None:
+        def write() -> None:
             try:
                 with MemoryClient.from_config(cfg) as client:
                     writer = Writer(client, cfg.blob_dir, redactor, keep_raw=keep_raw)
-                    outcome["written"] = writer.write(records)
+                    written = writer.write(records)
+                    attempt.unreported = [
+                        _capture_error(r.record, r.record.to_json(), r.reason)
+                        for r in written.rejected
+                    ]
+                    attempt.written = written
+                    if attempt.unreported:
+                        writer.write(attempt.unreported)
+                        attempt.unreported = []
             except Exception as exc:
-                outcome["terminal"] = is_validation_error(exc) or isinstance(exc, WriterError)
-                outcome["error"] = f"{type(exc).__name__}: {exc}"
+                attempt.error = f"{type(exc).__name__}: {exc}"
 
-        worker = threading.Thread(target=attempt, daemon=True)
+        worker = threading.Thread(target=write, daemon=True)
         worker.start()
         worker.join(deadline if deadline is not None else deadline_from_env())
         if worker.is_alive():
-            outcome.setdefault("error", "timed out waiting for the server")
-        written = outcome.get("written")
-        if isinstance(written, WriteResult):
-            return Delivery(written=written)
-        error = redactor.text(str(outcome.get("error") or "server unavailable"))[0]
-        if outcome.get("terminal"):
-            return Delivery(error=error)
-    else:
-        error = None
+            attempt.error = attempt.error or "timed out waiting for the server"
+        error = redactor.text(attempt.error)[0] if attempt.error else None
+        if attempt.written is not None:
+            return Delivery(
+                written=attempt.written,
+                # A capture error the ledger did not take in time is replayed like any record.
+                spooled=spool.append(redactor.record(rec) for rec in attempt.unreported),
+                failed_paths=_keep_rejected(spool, attempt.written.rejected),
+                error=error,
+            )
+        error = error or "server unavailable"
     paths = spool.append(redactor.record(rec, keep_raw=keep_raw) for rec in records)
     return Delivery(spooled=paths, error=error)
+
+
+def _keep_rejected(spool: Spool, rejected: Sequence[Rejection]) -> list[Path]:
+    lines: dict[tuple[str, str], list[str]] = {}
+    for rejection in rejected:
+        rec = rejection.record
+        lines.setdefault((rec.agent_id, rec.harness_session_id), []).append(rec.to_json())
+    return [path for key, kept in lines.items() if (path := spool.write_failed(*key, kept))]
 
 
 @dataclass
@@ -115,8 +134,9 @@ class ReplayResult:
 
 
 def replay_spool(cfg: Config, *, keep_raw: bool = False) -> ReplayResult:
-    """Replay every pending spool file in order. A bad line becomes a capture_error event and
-    is kept under spool/failed/; the rest of the file still lands."""
+    """Replay every pending spool file in order. A line that cannot be read, or a record the
+    ledger rejects, becomes a capture_error event and is kept under spool/failed/; the rest
+    still lands. When the ledger is unavailable this raises and the files stay pending."""
     spool = Spool(cfg.spool_dir)
     result = ReplayResult()
     with spool.replay_lock() as acquired:
@@ -135,145 +155,68 @@ def replay_spool(cfg: Config, *, keep_raw: bool = False) -> ReplayResult:
 def _replay_files(
     spool: Spool, writer: Writer, files: list[SpoolFile], result: ReplayResult
 ) -> None:
-    """Resolve record dependencies across the claimed snapshot, not file mtimes."""
+    """Write the claimed snapshot as one batch, so that a record can refer to one in another
+    file whatever the files' mtimes."""
     records: list[Record] = []
+    origin: list[tuple[SpoolFile, int]] = []
     errors: list[Record] = []
     bad_by_file: dict[Path, list[str]] = {file.path: [] for file in files}
-    record_files: dict[int, tuple[SpoolFile, int]] = {}
+
+    def fail(
+        file: SpoolFile, number: int, line: str, reason: str, session: Record | SpoolFile
+    ) -> None:
+        bad_by_file[file.path].append(line)
+        errors.append(_capture_error(session, line, reason, file=file.path.name, line=number))
+        result.errors.append(f"{file.path.name} line {number}: {reason}")
+
     for file in files:
         sanitized: list[str] = []
         for number, line in spool.lines(file.path):
             try:
                 record = writer.redactor.record(Record.from_json(line), keep_raw=writer.keep_raw)
-                records.append(record)
-                record_files[id(record)] = (file, number)
-                sanitized.append(record.to_json())
             except RecordError as exc:
                 try:
-                    rejected = json.loads(line)
+                    unread = json.loads(line)
                 except json.JSONDecodeError:
-                    rejected = {
-                        "unparseable_line_sha256": hashlib.sha256(line.encode()).hexdigest()
-                    }
-                line = json.dumps(writer.redactor.value(rejected)[0], ensure_ascii=False)
+                    unread = {"unparseable_line_sha256": hashlib.sha256(line.encode()).hexdigest()}
+                line = json.dumps(writer.redactor.value(unread)[0], ensure_ascii=False)
                 sanitized.append(line)
-                bad_by_file[file.path].append(line)
-                errors.append(_capture_error(file, number, line, str(exc)))
+                fail(file, number, line, writer.redactor.text(str(exc))[0], file)
+                continue
+            records.append(record)
+            origin.append((file, number))
+            sanitized.append(record.to_json())
         spool.rewrite(file, sanitized)
-    try:
-        written = writer.write(records + errors)
-    except (AgentMemoryError, duckdb.Error) as exc:
-        if not (is_validation_error(exc) or isinstance(exc, WriterError)):
-            raise
-        # Insert as a whole failed: try record by record so one bad row cannot hold the rest.
-        written, bad_records = _write_individually(
-            writer, records, files[0], errors, record_files=record_files
-        )
-        for rec in bad_records:
-            file, _ = record_files[id(rec)]
-            bad_by_file[file.path].append(rec.to_json())
-        if bad_records:
-            result.errors.append(f"claimed replay: {type(exc).__name__}: {exc}")
+    written = writer.write(records)
+    for rejection in written.rejected:
+        file, number = origin[rejection.index]
+        fail(file, number, rejection.record.to_json(), rejection.reason, rejection.record)
+    result.errors.extend(written.warnings)
+    if errors:
+        reported = writer.write(errors)
+        written.add(reported)
+        result.errors.extend(f"capture error not recorded: {r.reason}" for r in reported.rejected)
     result.files += len(files)
     result.inserted += written.inserted
     result.skipped += written.skipped
     for file in files:
         bad = bad_by_file[file.path]
         result.failed_lines += len(bad)
-        failed = spool.write_failed(file, bad)
-        if failed:
-            result.failed_paths.append(failed)
+        kept = spool.write_failed(file.agent_id, file.harness_session_id, bad)
+        if kept and kept not in result.failed_paths:
+            result.failed_paths.append(kept)
         spool.mark_done(file)
 
 
-def _write_individually(
-    writer: Writer,
-    records: list[Record],
-    file: SpoolFile,
-    errors: list[Record],
-    *,
-    record_files: dict[int, tuple[SpoolFile, int]] | None = None,
-) -> tuple[WriteResult, list[Record]]:
-    total = WriteResult()
-    bad: list[Record] = []
-    by_key = {
-        (r.agent_id, r.harness_session_id, r.kind, r.source_key): i for i, r in enumerate(records)
-    }
-    memories = {
-        ids.memory_id(r.agent_id, r.harness_session_id, r.source_key): i
-        for i, r in enumerate(records)
-        if r.memory
-    }
-    events = {
-        ids.event_id(r.agent_id, r.harness_session_id, r.kind, r.source_key): i
-        for i, r in enumerate(records)
-    }
-    dependencies: dict[int, set[int]] = {}
-    for index, rec in enumerate(records):
-        parent = None
-        if rec.parent_key and (kind := rec.effective_parent_kind):
-            parent = by_key.get((rec.agent_id, rec.harness_session_id, kind, rec.parent_key))
-        dependencies[index] = {parent} if parent is not None else set()
-        references = []
-        if rec.action:
-            references.extend([rec.action.get("memory_id"), rec.action.get("related_memory_id")])
-        if rec.memory:
-            references.append(rec.memory.get("supersedes"))
-            for source in rec.memory.get("source_event_ids") or []:
-                if (source_index := events.get(source)) is not None and source_index != index:
-                    dependencies[index].add(source_index)
-        for memory_id in references:
-            if isinstance(memory_id, str) and (memory := memories.get(memory_id)) is not None:
-                dependencies[index].add(memory)
-    graph = TopologicalSorter(dependencies)
-    with contextlib.suppress(CycleError):
-        graph.prepare()
-    failed: set[int] = set()
-    visited: set[int] = set()
-
-    def reject(index: int, reason: str) -> None:
-        failed.add(index)
-        bad.append(records[index])
-        source, number = (record_files or {}).get(id(records[index]), (file, index + 1))
-        errors.append(_capture_error(source, number, records[index].to_json(), reason))
-
-    while ready := graph.get_ready():
-        for index in ready:
-            visited.add(index)
-            if dependencies[index] & failed:
-                reject(index, "a referenced record could not be replayed")
-                continue
-            try:
-                _accumulate(total, writer.write([records[index]]))
-            except (AgentMemoryError, duckdb.Error) as exc:
-                if not (is_validation_error(exc) or isinstance(exc, WriterError)):
-                    raise
-                reject(index, str(exc))
-        graph.done(*ready)
-    for index in sorted(set(dependencies) - visited):
-        reject(index, "cyclic record references")
-    if errors:
-        with contextlib.suppress(AgentMemoryError, duckdb.Error):
-            _accumulate(total, writer.write(errors))
-    return total, bad
-
-
-def _accumulate(total: WriteResult, part: WriteResult) -> None:
-    total.sessions += part.sessions
-    total.events += part.events
-    total.memories += part.memories
-    total.actions += part.actions
-    total.skipped += part.skipped
-    total.unresolved_parents.extend(part.unresolved_parents)
-
-
-def _capture_error(file: SpoolFile, number: int, line: str, error: str) -> Record:
+def _capture_error(session: Record | SpoolFile, raw: str, reason: str, **source: Any) -> Record:
+    """The note the ledger keeps about text it did not take, in the session the text belongs
+    to. It is keyed by that text, so failing on the same text again adds nothing."""
     return Record(
-        agent_id=file.agent_id,
-        harness_session_id=file.harness_session_id,
+        agent_id=session.agent_id,
+        harness_session_id=session.harness_session_id,
         kind="capture_error",
         ts=now(),
-        source_key=hashlib.sha256(line.encode()).hexdigest(),
-        content=error[:4096],
-        payload={"file": file.path.name, "line": number, "raw": line[:4096]},
+        source_key=hashlib.sha256(raw.encode()).hexdigest(),
+        content=reason[:4096],
+        payload={**source, "raw": raw[:4096]},
     )

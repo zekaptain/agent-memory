@@ -152,10 +152,19 @@ def import_sessions(
                 # Reported once, grouped, by the caller; a line per file would repeat it.
                 summary.errors.append(f"{path.name}: {type(exc).__name__}: {exc}")
                 continue
-            summary.files += 1
             summary.records += len(records)
             summary.inserted += result.inserted
             summary.skipped_rows += result.skipped
+            for warning in result.warnings:
+                log(f"{path.name}: {warning}")
+            if result.rejected:
+                # Left out of the imports log, so the next import tries the file again.
+                summary.errors.append(
+                    f"{path.name}: {len(result.rejected)} of {len(records)} record(s) rejected "
+                    f"(the rest were written): {result.rejected[0].reason}"
+                )
+                continue
+            summary.files += 1
             RunStore.write_jsonl(
                 imports_log(cfg),
                 [
@@ -692,10 +701,16 @@ def decide_items(
 
 def _record(cfg: Config, records: list[Record], warn: Log) -> None:
     delivery = deliver(cfg, records, deadline=60.0)
-    if delivery.spooled:
+    if delivery.written is None:
         warn(
             f"ledger unavailable; {len(records)} decision event(s) spooled, replayed when "
             "`mem serve` next starts on this home"
+        )
+    elif delivery.written.rejected:
+        rejected = delivery.written.rejected
+        warn(
+            f"the ledger rejected {len(rejected)} decision event(s), kept in "
+            f"{', '.join(str(p) for p in delivery.failed_paths)}: {rejected[0].reason}"
         )
 
 

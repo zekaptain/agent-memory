@@ -145,11 +145,15 @@ For `mem event`, use `--keep-raw` to retain the full payload or
 `--record-pre-tool` to record pre-tool hooks as well.
 See the [capture spec](docs/phase-1-spec.md) for payload and adapter details.
 
+`mem event` is made to run as a hook. It prints nothing on stdout, because a
+harness can add a hook's stdout to the agent's context, and it reports
+problems on stderr. It exits 0 once every record is kept somewhere and 1
+when nothing could be kept. It never exits 2, which a harness reads as an
+instruction to block the agent.
+
 ### Recover queued records
 
 If the server is down, capture saves records under `spool/` instead.
-The command exits 0 once the records are saved in the ledger or the spool.
-
 Starting `mem serve` replays pending records. You can also check and replay
 them yourself:
 
@@ -159,6 +163,17 @@ uv run mem ingest --spool
 ```
 
 Add `--purge-done DAYS` to the replay command to remove old replayed files.
+
+A record the ledger rejects does not hold up the rest of its batch. It is
+kept under `spool/failed/`, and the ledger records the reason as a
+`capture_error` event in the same session. `mem spool status` lists rejected
+records next to pending ones. Once the cause is fixed, return them to the
+spool and replay:
+
+```sh
+uv run mem spool retry
+uv run mem ingest --spool
+```
 
 Before saving, capture redacts known secret patterns, including API keys,
 tokens, JWTs, private keys, URL credentials, and password assignments.
@@ -322,7 +337,8 @@ duckdb -c "FROM '$HOME/.agent-memory/export/latest/events.parquet' LIMIT 5"
   token                   Quack bearer token, mode 0600
   export/<timestamp>/     Parquet snapshots, one file per table
   export/latest           symlink to the newest snapshot
-  spool/<agent>/*.jsonl   records waiting for the server; done/ and failed/ after replay
+  spool/<agent>/*.jsonl   records waiting for the server; done/ after replay
+  spool/failed/<agent>/   records the ledger rejected, kept until mem spool retry
   blobs/<xx>/<sha256>.txt event content over 16 KiB, content-addressed
 ```
 

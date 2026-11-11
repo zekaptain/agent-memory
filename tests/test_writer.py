@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -10,8 +11,8 @@ import pytest
 from agent_memory.capture import blobs, ids
 from agent_memory.capture.record import Record, SessionInfo
 from agent_memory.capture.redact import Redactor
-from agent_memory.capture.writer import Writer, WriterError
-from agent_memory.db import sql_literal
+from agent_memory.capture.writer import Writer
+from agent_memory.db import AgentMemoryError, MemoryClient, sql_literal
 
 NOW = datetime(2026, 10, 25, 12, 0, tzinfo=UTC)
 
@@ -195,31 +196,159 @@ def test_partial_tier_sessions_are_marked(writer, live_client):
     assert got == [("amp", "partial"), ("jetbrains-junie", "partial")]
 
 
-def test_unknown_agent_is_rejected_before_anything_is_written(writer, live_client):
+def test_unknown_agent_is_rejected_and_nothing_is_written(writer, live_client):
     before = rows(live_client, "SELECT count(*) FROM sessions")[0][0]
-    with pytest.raises(WriterError, match="unknown agent"):
-        writer.write([rec("w-bad", "note", "n", agent_id="letta")])
+    result = writer.write([rec("w-bad", "note", "n", agent_id="letta")])
+    assert [(r.index, r.record.source_key) for r in result.rejected] == [(0, "n")]
+    assert "unknown agent" in result.rejected[0].reason
+    assert result.inserted == 0
     assert rows(live_client, "SELECT count(*) FROM sessions")[0][0] == before
 
 
-def test_losing_a_race_retries_and_skips(writer, live_client, monkeypatch):
+def test_two_writers_racing_on_a_new_session_both_land(live_cfg, live_client, monkeypatch):
     hsid = "w-race"
-    batch = [rec(hsid, "user_msg", "u1"), rec(hsid, "user_msg", "u2")]
-    writer.write(batch)
-    # Pretend the pre-read missed the rows another capturer just wrote.
-    real = writer._existing
-    calls = {"n": 0}
+    barrier = threading.Barrier(2)
+    real_insert = MemoryClient.insert
+    held: set[int] = set()
 
-    def flaky(table, column, values):
-        if table != "events":
-            return real(table, column, values)
-        calls["n"] += 1
-        return set() if calls["n"] == 1 else real(table, column, values)
+    def insert_together(client, rows_by_table):
+        # Hold each connection's first insert until both writers have done their pre-reads.
+        if id(client) not in held:
+            held.add(id(client))
+            barrier.wait(10)
+        return real_insert(client, rows_by_table)
 
-    monkeypatch.setattr(writer, "_existing", flaky)
-    result = writer.write(batch)
-    assert (result.events, result.skipped) == (0, 2)
-    assert calls["n"] == 2
+    monkeypatch.setattr(MemoryClient, "insert", insert_together)
+    outcomes: dict[str, Any] = {}
+
+    def write(record: Record) -> None:
+        try:
+            with MemoryClient.from_config(live_cfg) as client:
+                outcomes[record.kind] = Writer(client, live_cfg.blob_dir, Redactor()).write(
+                    [record]
+                )
+        except Exception as exc:
+            outcomes[record.kind] = exc
+
+    threads = [
+        threading.Thread(target=write, args=(rec(hsid, "session_start", "s"),)),
+        threading.Thread(target=write, args=(rec(hsid, "user_msg", "u1"),)),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(30)
+    assert [type(outcomes[kind]).__name__ for kind in ("session_start", "user_msg")] == [
+        "WriteResult",
+        "WriteResult",
+    ], outcomes
+    assert [r.rejected for r in outcomes.values()] == [[], []]
+    assert sum(r.sessions for r in outcomes.values()) == 1
+    sid = ids.session_id("factory-droid", hsid)
+    assert rows(
+        live_client,
+        f"SELECT kind FROM events WHERE session_id = {sql_literal(sid)} ORDER BY kind",
+    ) == [("session_start",), ("user_msg",)]
+
+
+def test_a_refused_record_is_rejected_and_the_rest_are_written(writer, live_client):
+    hsid = "w-partial"
+    result = writer.write(
+        [
+            rec(hsid, "user_msg", "u1"),
+            rec(hsid, "memory_write", "bad", memory={"content": "", "type": "fact"}),
+            rec(hsid, "user_msg", "u2"),
+        ]
+    )
+    assert [(r.index, r.record.source_key) for r in result.rejected] == [(1, "bad")]
+    assert "no content" in result.rejected[0].reason
+    assert (result.sessions, result.events) == (1, 2)
+    sid = ids.session_id("factory-droid", hsid)
+    assert rows(
+        live_client,
+        f"SELECT content FROM events WHERE session_id = {sql_literal(sid)} ORDER BY content",
+    ) == [("user_msg u1",), ("user_msg u2",)]
+
+
+def test_records_that_refer_to_a_rejected_record_are_rejected_with_it(writer, live_client):
+    hsid = "w-dependents"
+    result = writer.write(
+        [
+            rec(hsid, "tool_result", "t1", parent_key="t1"),
+            rec(hsid, "note", "healthy"),
+            rec(hsid, "tool_call", "t1", memory={"content": ""}),
+        ]
+    )
+    reasons = {r.index: r.reason for r in result.rejected}
+    assert sorted(reasons) == [0, 2]
+    assert "referenced record" in reasons[0]
+    assert "no content" in reasons[2]
+    sid = ids.session_id("factory-droid", hsid)
+    assert rows(live_client, f"SELECT kind FROM events WHERE session_id = {sql_literal(sid)}") == [
+        ("note",)
+    ]
+
+
+def test_an_unexpected_error_rejects_only_the_record_that_caused_it(writer, live_client):
+    hsid = "w-unexpected"
+    result = writer.write(
+        [rec(hsid, "note", "ok"), rec(hsid, "note", "odd", content={"not": "text"})]
+    )
+    assert [r.index for r in result.rejected] == [1]
+    assert "AttributeError" in result.rejected[0].reason
+    sid = ids.session_id("factory-droid", hsid)
+    assert rows(
+        live_client, f"SELECT content FROM events WHERE session_id = {sql_literal(sid)}"
+    ) == [("note ok",)]
+
+
+def test_an_unavailable_ledger_raises_instead_of_rejecting(writer, live_client, monkeypatch):
+    def refuse(rows_by_table):
+        raise AgentMemoryError("synthetic outage")
+
+    monkeypatch.setattr(live_client, "insert", refuse)
+    with pytest.raises(AgentMemoryError, match="synthetic outage"):
+        writer.write([rec("w-outage", "note", "n")])
+
+
+def test_isolating_a_rejected_record_keeps_the_batch_session_details(writer, live_client):
+    hsid = "w-isolated-session"
+    result = writer.write(
+        [
+            rec(hsid, "user_msg", "u1"),
+            rec(hsid, "memory_write", "bad", memory={"content": ""}),
+            rec(hsid, "session_start", "s", session=SessionInfo(cwd="/x/demo", model="m1")),
+        ]
+    )
+    assert [r.index for r in result.rejected] == [1]
+    sid = ids.session_id("factory-droid", hsid)
+    assert rows(
+        live_client, f"SELECT model, project FROM sessions WHERE session_id = {sql_literal(sid)}"
+    ) == [("m1", "demo")]
+
+
+def test_isolating_a_rejected_record_does_not_invent_coverage(writer, live_client):
+    hsid = "w-isolated-coverage"
+    observation = {
+        "source_mode": "transcript_import",
+        "adapter_version": "test",
+        "source_fingerprint": "sha256:synthetic",
+        "range_start": 1,
+        "range_end": 3,
+    }
+    result = writer.write(
+        [
+            rec(hsid, "session_start", "s", observation=observation),
+            rec(hsid, "memory_write", "bad", memory={"content": ""}),
+            rec(hsid, "user_msg", "u1"),
+        ]
+    )
+    assert [r.index for r in result.rejected] == [1]
+    sid = ids.session_id("factory-droid", hsid)
+    assert rows(
+        live_client,
+        f"SELECT source_mode FROM capture_observations WHERE session_id = {sql_literal(sid)}",
+    ) == [("transcript_import",)]
 
 
 def test_queued_memory_and_action_records_create_rows(writer, live_client):
