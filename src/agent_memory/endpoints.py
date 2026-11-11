@@ -25,6 +25,11 @@ class EgressError(AgentMemoryError):
     """A model request is forbidden or cannot complete."""
 
 
+class Unreachable(EgressError):
+    """No model server was asked: nothing accepted the connection, or the request may not
+    leave this machine. A server that was too slow, or that said no, was reached."""
+
+
 class HttpStatusError(EgressError):
     """An HTTP rejection: its status, what the server said, and how long the request took."""
 
@@ -59,7 +64,7 @@ def is_loopback(url: str) -> bool:
 
 def require_egress(url: str, what: str) -> None:
     if not is_loopback(url) and not remote_allowed():
-        raise EgressError(
+        raise Unreachable(
             f"{what} sends data to a non-loopback service. Set {REMOTE_ENV}=1 to allow it."
         )
 
@@ -108,9 +113,11 @@ def _send(
             if attempt == TIMEOUT_RETRIES:
                 raise EgressError(f"{url}: timed out after {timeout:.0f}s") from None
         except urllib.error.URLError as exc:
-            if isinstance(exc.reason, TimeoutError) and attempt < TIMEOUT_RETRIES:
+            # urllib wraps what went wrong before a reply was awaited: no connection.
+            timed_out = isinstance(exc.reason, TimeoutError)
+            if timed_out and attempt < TIMEOUT_RETRIES:
                 continue
-            raise EgressError(f"{url}: {exc}") from None
+            raise (EgressError if timed_out else Unreachable)(f"{url}: {exc}") from None
         except OSError as exc:
             raise EgressError(f"{url}: {exc}") from None
     latency = (time.perf_counter() - started) * 1000

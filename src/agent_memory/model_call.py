@@ -42,6 +42,10 @@ class ModelUnavailable(ModelCallError):
     """The server could not be reached, timed out, or rejected the request."""
 
 
+class ModelUnreachable(ModelUnavailable):
+    """No server was asked: none accepted the connection, or the request may not be sent."""
+
+
 class CutOff(ModelCallError):
     """The last model reply was cut off."""
 
@@ -145,6 +149,8 @@ def call(
             latency += refusal.latency_ms
             current, stage = replace(ask, think=None, shape=None), "last"
             continue
+        except endpoints.Unreachable as fault:
+            raise ModelUnreachable(str(fault)) from None
         except endpoints.EgressError as fault:
             raise ModelUnavailable(str(fault)) from None
         latency += reply.latency_ms
@@ -381,7 +387,7 @@ class OpenRouter:
         endpoints.require_egress(self.url, "OpenRouter")
         key = self.api_key or os.environ.get(OPENROUTER_KEY_ENV)
         if not key:
-            raise endpoints.EgressError(
+            raise endpoints.Unreachable(
                 f"{OPENROUTER_KEY_ENV} is not set; OpenRouter needs an API key."
             )
         headers = {"Authorization": f"Bearer {key}"}

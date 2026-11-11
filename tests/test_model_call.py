@@ -14,6 +14,7 @@ from agent_memory.model_call import (
     CutOff,
     LlamaCpp,
     ModelUnavailable,
+    ModelUnreachable,
     NoJson,
     Ollama,
     OpenRouter,
@@ -146,7 +147,16 @@ def test_what_happened_chooses_the_next_attempt_not_the_words_in_a_reply():
 )
 def test_a_fault_that_another_attempt_cannot_change_ends_the_call(fault):
     server = FakeServer(fault)
-    with pytest.raises(ModelUnavailable, match=str(fault).split(":")[-1].strip()):
+    with pytest.raises(ModelUnavailable, match=str(fault).split(":")[-1].strip()) as raised:
+        judge_like(server)
+    assert len(server.asked) == 1
+    # The server was reached: the fault may be the doing of what was asked.
+    assert not isinstance(raised.value, ModelUnreachable)
+
+
+def test_a_server_that_was_not_reached_is_told_apart():
+    server = FakeServer(endpoints.Unreachable("http://u: <urlopen error Connection refused>"))
+    with pytest.raises(ModelUnreachable, match="Connection refused"):
         judge_like(server)
     assert len(server.asked) == 1
 
@@ -442,10 +452,10 @@ def test_openrouter_needs_the_opt_in_and_a_key(monkeypatch):
     ask = Ask(
         prompt="P", budget=700, system="S", temperature=0.2, seed=7, shape=schema, think=False
     )
-    with pytest.raises(endpoints.EgressError, match=endpoints.REMOTE_ENV):
+    with pytest.raises(endpoints.Unreachable, match=endpoints.REMOTE_ENV):
         server.send(ask)
     monkeypatch.setenv(endpoints.REMOTE_ENV, "1")
-    with pytest.raises(endpoints.EgressError, match=model_call.OPENROUTER_KEY_ENV):
+    with pytest.raises(endpoints.Unreachable, match=model_call.OPENROUTER_KEY_ENV):
         server.send(ask)
     assert sent == []
 

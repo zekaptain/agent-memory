@@ -1,9 +1,12 @@
 """Model egress is checked at the HTTP boundary, not inferred from a backend name."""
 
+import io
 import json
 import os
 import subprocess
 import sys
+import urllib.error
+from email.message import Message
 from unittest.mock import MagicMock
 
 import pytest
@@ -49,6 +52,38 @@ def test_post_checks_remote_ollama_before_network(monkeypatch):
     monkeypatch.setenv(endpoints.REMOTE_ENV, "1")
     assert endpoints.post_json(url, {})[0] == {"ok": True}
     send.assert_called_once()
+
+
+def test_a_server_that_was_not_asked_is_unreachable(monkeypatch):
+    refused = urllib.error.URLError(ConnectionRefusedError(61, "Connection refused"))
+    send = MagicMock(side_effect=refused)
+    monkeypatch.setattr(endpoints.urllib.request, "urlopen", send)
+    with pytest.raises(endpoints.Unreachable, match="Connection refused"):
+        endpoints.post_json("http://localhost:1/api/chat", {})
+    send.assert_called_once()
+
+    monkeypatch.delenv(endpoints.REMOTE_ENV, raising=False)
+    with pytest.raises(endpoints.Unreachable, match=endpoints.REMOTE_ENV):
+        endpoints.get_json("http://gpu-box:11434/api/tags")
+    send.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        TimeoutError("timed out"),
+        urllib.error.URLError(TimeoutError("timed out")),
+        ConnectionResetError(54, "Connection reset by peer"),
+        urllib.error.HTTPError("u", 400, "Bad Request", Message(), io.BytesIO(b"too long")),
+    ],
+    ids=["read timeout", "connect timeout", "dropped while waiting", "rejected"],
+)
+def test_a_server_that_was_too_slow_or_said_no_was_reached(monkeypatch, fault):
+    """Either may be the doing of what was sent, so neither says the server is gone."""
+    monkeypatch.setattr(endpoints.urllib.request, "urlopen", MagicMock(side_effect=fault))
+    with pytest.raises(endpoints.EgressError) as raised:
+        endpoints.post_json("http://localhost:1/api/chat", {})
+    assert not isinstance(raised.value, endpoints.Unreachable)
 
 
 def test_hosts_are_resolved_from_environment_once():
