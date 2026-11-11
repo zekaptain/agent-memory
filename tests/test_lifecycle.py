@@ -9,11 +9,12 @@ from uuid import uuid4
 import duckdb
 import pytest
 
-from agent_memory.capture.pipeline import replay_spool
+from agent_memory.capture.pipeline import deliver, replay_spool
 from agent_memory.capture.spool import Spool
 from agent_memory.db import AgentMemoryError, MemoryClient, MemoryServer
 from agent_memory.lifecycle import maintain_corrections
 from agent_memory.mcp_server.tools import MemoryTools, ToolError
+from agent_memory.review import reviewer
 
 
 @pytest.fixture
@@ -23,12 +24,19 @@ def tools(live_cfg):
     tool.close()
 
 
+@pytest.fixture
+def human(live_cfg):
+    tool = reviewer(live_cfg)
+    yield tool
+    tool.close()
+
+
 def states(tools, *mids):
     client = tools._client_or_raise()
     return [tools._status_of(client, mid) for mid in mids]
 
 
-def test_unapproved_proposal_keeps_original_until_approval_and_never_revives(tools):
+def test_unapproved_proposal_keeps_original_until_approval_and_never_revives(tools, human):
     old = tools.remember("original", "fact")["memory_id"]
     new = tools.remember("replacement", "fact", supersedes=old, trust_level="tool")
     mid = new["memory_id"]
@@ -36,7 +44,7 @@ def test_unapproved_proposal_keeps_original_until_approval_and_never_revives(too
     assert new["pending_reason"] == "awaiting_approval"
     tools.review("confirm", mid, "evidence only")
     assert states(tools, old, mid) == ["active", "quarantined"]
-    tools.review("approve", mid, "verified correction")
+    human.review("approve", mid, "verified correction")
     assert states(tools, old, mid) == ["superseded", "active"]
     tools.review("quarantine", mid, "withdraw approval")
     tools.review("retire", mid, "withdraw correction")
@@ -86,7 +94,9 @@ def test_queued_identity_resolves_dedup_only_after_restart(down_cfg):
     server = MemoryServer(down_cfg, export_interval_hours=0)
     tool = MemoryTools(down_cfg, "factory-droid", project="queue")
     queued = tool.remember("identical", "fact", trust_level="tool")["memory_id"]
-    tool.review("approve", queued, "approve queued identity")
+    human = reviewer(down_cfg)
+    assert human.review("approve", queued, "approve queued identity")["queued"]
+    human.close()
     server.start()
     try:
         online = MemoryTools(down_cfg, "factory-droid", project="queue")
@@ -112,18 +122,18 @@ def wait_until(at):
     time.sleep(max(0, (at - datetime.now(UTC)).total_seconds()) + 0.02)
 
 
-def test_due_approval_withdrawal_and_reapproval(tools):
+def test_due_approval_withdrawal_and_reapproval(tools, human):
     due = datetime.now(UTC) + timedelta(seconds=1.2)
     old = tools.remember("old", "fact")["memory_id"]
     new = tools.remember(
         "future", "fact", supersedes=old, trust_level="tool", valid_from=due.isoformat()
     )["memory_id"]
-    assert tools.review("approve", new, "approved future correction")["status"] == "pending"
+    assert human.review("approve", new, "approved future correction")["status"] == "pending"
     tools.review("quarantine", new, "withdraw before due")
     wait_until(due)
     assert [x["memory_id"] for x in tools.recall("")["items"]] == [old]
     assert states(tools, old, new) == ["active", "quarantined"]
-    tools.review("approve", new, "approve after boundary")
+    human.review("approve", new, "approve after boundary")
     assert states(tools, old, new) == ["superseded", "active"]
 
 
@@ -192,7 +202,7 @@ def test_no_due_work_path_does_not_query_memories(tools, monkeypatch):
     assert "LIMIT 128" in queries[0]
 
 
-def test_cross_scope_cycles_and_repeated_pending_proposals(tools):
+def test_cross_scope_cycles_and_repeated_pending_proposals(tools, human):
     old = tools.remember("old", "fact")["memory_id"]
     with pytest.raises(ToolError, match="cross-scope"):
         tools.remember("new", "fact", supersedes=old, scope="another-scope")
@@ -200,12 +210,12 @@ def test_cross_scope_cycles_and_repeated_pending_proposals(tools):
     with pytest.raises(ToolError, match=r"cycle|pending predecessor"):
         tools.remember("old", "fact", supersedes=new)
     assert tools.remember("new", "fact", supersedes=old, trust_level="tool")["memory_id"] == new
-    tools.review("approve", new, "approve once")
+    human.review("approve", new, "approve once")
     assert states(tools, old, new) == ["superseded", "active"]
     assert tools.status()["spool_pending_lines"] == 0
 
 
-def test_dedupe_retains_sources_without_restoring_retired_memory(tools):
+def test_dedupe_retains_sources_without_restoring_retired_memory(tools, human):
     source = tools.recall("")["request_event_id"]
     original = tools.remember("same", "fact")["memory_id"]
     tools.review("retire", original, "terminal")
@@ -217,7 +227,7 @@ def test_dedupe_retains_sources_without_restoring_retired_memory(tools):
     )
     assert (source,) in rows
     assert len(rows) == 3
-    assert tools.review("approve", original, "not restoration")["status"] == "retired"
+    assert human.review("approve", original, "not restoration")["status"] == "retired"
 
 
 def test_concurrent_acceptance_has_one_winner(tools, live_cfg, monkeypatch):
@@ -325,13 +335,13 @@ def test_replay_lost_commit_ack_remains_pending_then_idempotent(down_cfg, monkey
         server.stop()
 
 
-def test_merge_canonical_preserves_alias_sources_approval_and_valid_to(tools):
+def test_merge_canonical_preserves_alias_sources_approval_and_valid_to(tools, human):
     end = (datetime.now(UTC) + timedelta(days=1)).isoformat()
     source = tools.recall("")["request_event_id"]
     incoming = tools.relate(
         "Alias", "owns", "Service", trust_level="tool", valid_to=end, source_event_ids=[source]
     )["memory_id"]
-    tools.review("approve", incoming, "verified")
+    human.review("approve", incoming, "verified")
     merged = tools.merge_entity("Alias", "Canonical", "same entity")
     canonical = merged["superseded"][0]["by"]
     _, rows = tools._client_or_raise().query(
@@ -390,7 +400,7 @@ def test_dedup_correction_keeps_future_intent(tools):
     assert states(tools, old, canonical) == ["active", "active"]
 
 
-def test_dedup_tool_proposal_cannot_borrow_agent_default_trust(tools):
+def test_dedup_tool_proposal_cannot_borrow_agent_default_trust(tools, human):
     old = tools.remember("original", "fact")["memory_id"]
     canonical = tools.remember("canonical", "fact")["memory_id"]
     result = tools.remember("canonical", "fact", supersedes=old, trust_level="tool")
@@ -398,7 +408,7 @@ def test_dedup_tool_proposal_cannot_borrow_agent_default_trust(tools):
     assert states(tools, old, canonical) == ["active", "active"]
     tools.review("confirm", canonical, "not approval")
     assert states(tools, old, canonical) == ["active", "active"]
-    tools.review("approve", canonical, "approve correction")
+    human.review("approve", canonical, "approve correction")
     assert states(tools, old, canonical) == ["superseded", "active"]
 
 
@@ -438,10 +448,44 @@ def test_replay_identical_already_accepted_correction_keeps_queued_identity(down
         server.stop()
 
 
+def test_replay_rejects_an_approval_from_an_agents_session(down_cfg):
+    tool = MemoryTools(down_cfg, "factory-droid", project="forged")
+    held = tool.remember("read from a tool", "fact", trust_level="tool")["memory_id"]
+    doubted = tool.remember("an inference", "fact")["memory_id"]
+    # What a process holding the agent's spool could append without the review tool.
+    spooled = [
+        tool.session.record(
+            "memory_write",
+            f"spooled-{action}",
+            role="memory",
+            action={"memory_id": mid, "action": action, "actor": "human", "reason": "looks right"},
+        )
+        for mid, action in ((held, "approve"), (doubted, "retire"))
+    ]
+    deliver(down_cfg, spooled, spool_only=True)
+    server = MemoryServer(down_cfg, export_interval_hours=0)
+    server.start()
+    try:
+        result = replay_spool(down_cfg)
+        assert result.failed_lines == 1
+        assert "only a human approves a memory" in result.errors[0]
+        assert Spool(down_cfg.spool_dir).rejected()[0].lines == 1
+        assert states(tool, held, doubted) == ["quarantined", "retired"]
+        # A queued review is its session's agent's, whoever the record says asked.
+        _, rows = tool._client_or_raise().query(
+            "SELECT action, actor FROM memory_actions "
+            f"WHERE memory_id IN ('{held}', '{doubted}') AND action IN ('approve', 'retire')"
+        )
+        assert rows == [("retire", "factory-droid")]
+    finally:
+        tool.close()
+        server.stop()
+
+
 def test_replay_dependencies_across_interleaved_session_files(down_cfg):
-    first = MemoryTools(down_cfg, "factory-droid", harness_session_id="first", project="shared")
+    first = reviewer(down_cfg)
     second = MemoryTools(down_cfg, "factory-droid", harness_session_id="second", project="shared")
-    old = first.remember("cross-session original", "fact")["memory_id"]
+    old = first.remember("cross-session original", "fact", scope="shared")["memory_id"]
     new = second.remember("cross-session correction", "fact", supersedes=old, trust_level="tool")[
         "memory_id"
     ]

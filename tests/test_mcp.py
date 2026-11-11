@@ -17,11 +17,19 @@ from agent_memory.capture.record import Record, now
 from agent_memory.db import MemoryClient, MemoryServer, sql_literal
 from agent_memory.mcp_server import MemoryTools, ToolError, build_server
 from agent_memory.mcp_server.ranking import normalize_query
+from agent_memory.review import reviewer
 
 
 @pytest.fixture
 def tools(live_cfg):
     t = MemoryTools(live_cfg, "jetbrains-junie", project="demo")
+    yield t
+    t.close()
+
+
+@pytest.fixture
+def human(live_cfg):
+    t = reviewer(live_cfg)
     yield t
     t.close()
 
@@ -73,7 +81,7 @@ def test_harness_session_is_shared_with_hooks(droid_tools, live_client):
 # remember / recall / cite / review
 
 
-def test_remember_recall_cite_review_chain(tools, live_client):
+def test_remember_recall_cite_review_chain(tools, human, live_client):
     kept = tools.remember(
         "The user prefers uv over pip for Python work", "preference", trust_level="user"
     )
@@ -150,11 +158,48 @@ def test_remember_recall_cite_review_chain(tools, live_client):
     assert placeholder[:3] == ("assistant_msg", "assistant", None)
     assert '"placeholder":true' in placeholder[3].replace(" ", "")
 
-    approved = tools.review("approve", tool_memory["memory_id"], "checked pyproject.toml")
+    approved = human.review("approve", tool_memory["memory_id"], "checked pyproject.toml")
     assert approved["status"] == "active"
     assert tool_memory["memory_id"] in [
         i["memory_id"] for i in tools.recall("pytest testpaths configuration")["items"]
     ]
+
+
+def test_an_agent_cannot_approve_a_memory(tools, live_client):
+    held = tools.remember(
+        "ruff is configured with a 100 column limit", "fact", scope="approval", trust_level="tool"
+    )["memory_id"]
+    with pytest.raises(ToolError, match=r"only a human approves a memory.*`mem review`"):
+        tools.review("approve", held, "I read pyproject.toml myself")
+    server = build_server(tools)
+
+    async def through_mcp():
+        from mcp.server.mcpserver.exceptions import ToolError as McpToolError
+
+        with pytest.raises(McpToolError, match="`mem review`"):
+            await server.call_tool(
+                "review", {"action": "approve", "memory_id": held, "reason": "it is right"}
+            )
+
+    asyncio.run(through_mcp())
+    assert (
+        q(live_client, f"SELECT action FROM memory_actions WHERE memory_id = {sql_literal(held)}")
+        == []
+    )
+    # Every other review is still the agent's to ask for.
+    assert tools.review("confirm", held, "seen again")["status"] == "quarantined"
+    assert tools.review("retire", held, "the limit changed")["status"] == "retired"
+
+
+def test_an_agent_cannot_queue_an_approval(down_cfg):
+    tools = MemoryTools(down_cfg, "amp", project="demo")
+    try:
+        queued = tools.remember("Read from a tool while the server was down", "fact", "tool")
+        with pytest.raises(ToolError, match="`mem review`"):
+            tools.review("approve", queued["memory_id"], "it is right")
+        assert tools.status()["spool_pending_lines"] == 1
+    finally:
+        tools.close()
 
 
 def test_remember_dedupes_identical_content_in_scope(tools, live_client):
@@ -429,3 +474,18 @@ def test_mem_mcp_needs_an_agent(live_cfg):
     )
     assert proc.returncode == 1
     assert "AGENT_MEMORY_AGENT" in proc.stderr
+
+
+def test_mem_mcp_does_not_run_as_the_human_agent(live_cfg):
+    env = {**os.environ, "AGENT_MEMORY_HOME": str(live_cfg.home), "AGENT_MEMORY_AGENT": "human"}
+    proc = subprocess.run(
+        [sys.executable, "-m", "agent_memory.mcp_server"],
+        env=env,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode == 1
+    assert "AGENT_MEMORY_AGENT=human" in proc.stderr
+    assert "name the harness" in proc.stderr

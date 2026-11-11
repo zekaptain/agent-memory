@@ -27,6 +27,7 @@ from agent_memory.graph.resolve import (
     propose,
 )
 from agent_memory.mcp_server import MemoryTools, ToolError
+from agent_memory.review import reviewer
 
 # model
 
@@ -267,6 +268,13 @@ def tools(live_cfg):
     t.close()
 
 
+@pytest.fixture
+def human(live_cfg):
+    t = reviewer(live_cfg)
+    yield t
+    t.close()
+
+
 def q(client, sql):
     return client.query(sql)[1]
 
@@ -461,7 +469,7 @@ def test_a_merge_names_the_recall_it_was_proposed_from(tools, live_client):
     assert "retrieval_id" not in payloads[1]
 
 
-def test_merge_entity_supersedes_rewrites_and_retires_as_history(tools, live_client):
+def test_merge_entity_supersedes_rewrites_and_retires_as_history(tools, human, live_client):
     ids = _seed(tools)
     recall = tools.recall("anything")
     source = recall["request_event_id"]
@@ -475,7 +483,7 @@ def test_merge_entity_supersedes_rewrites_and_retires_as_history(tools, live_cli
         trust_level="tool",
         source_event_ids=[source],
     )
-    tools.review("approve", approved["memory_id"], "checked")
+    human.review("approve", approved["memory_id"], "checked")
 
     result = tools.merge_entity(
         "armstrong", "Neil Armstrong", "same astronaut", canonical_type="PERSON"

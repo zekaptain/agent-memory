@@ -10,6 +10,7 @@ from typing import Any
 from mcp.server.mcpserver import MCPServer
 
 from ..config import ConfigError, load_config
+from ..lifecycle import HUMAN_AGENT
 from .tools import MemoryTools, ToolError
 
 INSTRUCTIONS = """Shared, auditable memory across coding agents.
@@ -17,7 +18,8 @@ Call recall before answering questions about the user, this project's history, o
 decisions, and pass its retrieval_id to cite when you answer. Call remember for durable
 facts, decisions, preferences, and procedures (one statement per call; name supersedes
 when correcting an older memory), not for transient task state. Use review to retire a
-wrong memory or flag a contradiction.
+wrong memory or flag a contradiction. A memory stored with trust_level tool is not recalled
+until the user approves it with `mem review`; you cannot approve one yourself.
 Call relate to record how two named things connect (a person owns a service, a module
 depends on a library, a decision replaced an approach): one subject, predicate, object per
 call, with the entity names as they appear in the source. Call graph to walk those
@@ -58,7 +60,8 @@ def build_server(tools: MemoryTools) -> MCPServer:
     ) -> dict[str, Any]:
         """Store one durable memory: a fact, preference, decision, procedure, observation,
         or profile attribute. Not for transient task state. trust_level: user (the user said
-        it), agent (you inferred it), tool (came from tool output; starts quarantined).
+        it), agent (you inferred it), tool (came from tool output; quarantined until the user
+        approves it).
         Pass supersedes=<memory_id> when correcting an existing memory. Identical content
         in the same scope is confirmed rather than duplicated."""
         return tools.remember(
@@ -96,8 +99,9 @@ def build_server(tools: MemoryTools) -> MCPServer:
         related_memory_id: str | None = None,
     ) -> dict[str, Any]:
         """Change a memory's standing. action: retire (wrong or obsolete), quarantine (hide
-        until reviewed), approve (release from quarantine), confirm (still true),
-        flag_contradiction (conflicts with related_memory_id). reason is required."""
+        until the user reviews it), confirm (still true), flag_contradiction (conflicts with
+        related_memory_id). reason is required. You cannot approve a quarantined memory:
+        only the user can, with `mem review`."""
         return tools.review(action, memory_id, reason, related_memory_id)
 
     @server.tool()
@@ -168,6 +172,12 @@ def tools_from_env() -> MemoryTools:
     agent = os.environ.get("AGENT_MEMORY_AGENT")
     if not agent:
         raise ConfigError("AGENT_MEMORY_AGENT must name the harness (for example factory-droid).")
+    if agent == HUMAN_AGENT:
+        # Whatever runs mem-mcp is an agent, and the human agent may approve memories.
+        raise ConfigError(
+            f"AGENT_MEMORY_AGENT={HUMAN_AGENT} is the human at the mem CLI; "
+            "name the harness (for example factory-droid)."
+        )
     cfg = load_config()
     return MemoryTools(
         cfg,

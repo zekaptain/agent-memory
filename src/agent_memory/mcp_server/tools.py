@@ -36,6 +36,7 @@ from ..lifecycle import (
     REVIEW_ACTIONS,
     LifecycleError,
     LifecyclePlan,
+    check_asker,
     is_validation_error,
     maintain_corrections,
     validate_interval,
@@ -410,6 +411,11 @@ class MemoryTools:
     ) -> dict[str, Any]:
         if action not in REVIEW_ACTIONS:
             raise ToolError("action must be one of " + ", ".join(sorted(REVIEW_ACTIONS)))
+        try:
+            # Refused before anything is written or queued.
+            check_asker(self.agent_id, action)
+        except LifecycleError as exc:
+            raise ToolError(str(exc)) from None
         memory_id = _uuid(memory_id, "memory_id")
         if related_memory_id is not None:
             related_memory_id = _uuid(related_memory_id, "related_memory_id")

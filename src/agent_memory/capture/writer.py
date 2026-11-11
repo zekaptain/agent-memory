@@ -14,7 +14,7 @@ from typing import Any
 import duckdb
 
 from ..db import AgentMemoryError, MemoryClient, sql_literal
-from ..lifecycle import LifecycleError, LifecyclePlan, is_validation_error
+from ..lifecycle import LifecycleError, LifecyclePlan, check_asker, is_validation_error
 from . import blobs, ids
 from .attribution import reconcile_answers
 from .observations import pending_observations
@@ -308,6 +308,7 @@ class Writer:
             if not rec.action:
                 continue
             sid = session_of[(rec.agent_id, rec.harness_session_id)]
+            check_asker(rec.agent_id, rec.action["action"])
             plan.review(
                 {
                     "action_id": ids.action_id(
@@ -315,7 +316,8 @@ class Writer:
                     ),
                     "memory_id": rec.action["memory_id"],
                     "action": rec.action["action"],
-                    "actor": rec.action.get("actor") or rec.agent_id,
+                    # The session's agent asked, whatever the record says of itself.
+                    "actor": rec.agent_id,
                     "session_id": sid,
                     "event_id": event_ids[id(rec)],
                     "related_memory_id": rec.action.get("related_memory_id"),
