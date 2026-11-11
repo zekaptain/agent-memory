@@ -39,7 +39,7 @@ Recording what happened in a harness session into the ledger.
 _Avoid_: Ingestion, logging, tracking
 
 **Session**:
-One stretch of activity by one agent, recorded in the ledger as a unit. A conversation in a harness is the usual kind; a judge run, a day of admission, and a graph command run at the CLI are sessions too.
+One stretch of activity by one agent, recorded in the ledger as a unit. A conversation in a harness is the usual kind; a judge run, a day of admission, and a graph or review command run at the CLI are sessions too.
 _Avoid_: Thread, chat, conversation (which is only one kind of session)
 
 **Event**:
@@ -113,7 +113,7 @@ Where a memory applies: everywhere, or in one project.
 _Avoid_: Namespace, project (as a synonym)
 
 **Trust level**:
-Who vouches for a memory: the user, an agent, a tool, or an import.
+What the agent that wrote a memory says it rests on: the user's word, the agent's own inference, a tool's output, or an import. It is the writer's claim, and nothing checks it.
 _Avoid_: Confidence, source
 
 **Status**:
@@ -155,6 +155,14 @@ _Avoid_: Update, edit
 **Acceptance**:
 The durable record that a correction has replaced its predecessor. Only acceptance makes the predecessor superseded.
 _Avoid_: Approval (approval concerns one memory; acceptance concerns a replacement)
+
+**Approval**:
+The decision that lets a quarantined memory be recalled. A human gives it, never an agent; the only approvals that are not a human's are a carried approval and the approver's in auto mode.
+_Avoid_: Acceptance (which concerns a replacement), confirmation (which says a memory still holds and releases nothing)
+
+**Carried approval**:
+The approval a relation keeps when an entity merge rewrites it: the new relation is approved because the one it replaces was.
+_Avoid_: Inherited approval, re-approval
 
 ### Recall and audit
 
