@@ -25,7 +25,7 @@ _Avoid_: Judge home, test home
 ### Harnesses and agents
 
 **Harness**:
-A coding-agent product whose sessions are captured, such as Factory Droid or Mistral Vibe.
+A coding-agent product that agents work in, such as Factory Droid or Mistral Vibe. Capture reaches only a harness it has been built for and checked against.
 _Avoid_: Agent (for the product), client, tool, IDE
 
 **Agent**:
