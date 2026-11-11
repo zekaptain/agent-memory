@@ -146,10 +146,6 @@ Verified against the code in the audit of 2026-11 and still open.
 - A caller chooses the `trust_level` of what it remembers, and any agent
   can approve any quarantined memory. Outside admission, no command lets a
   person review quarantined memories (`mcp_server/tools.py`).
-- `mem ingest --transcript --keep-raw` has no effect. A raw payload kept
-  with `mem event --keep-raw` is lost when its record goes through the
-  spool, unless the replay is given `--keep-raw` too, and the replay at
-  server start never is (`capture/pipeline.py`).
 - What identifies a Droid hook has been checked against a real payload
   only for `UserPromptSubmit`. Factory documents an optional `message_id`
   on every hook and no tool id on `PostToolUse`. The adapter keys a hook
@@ -203,6 +199,5 @@ above these were deepened on 2026-11-11: the ledger session
 - May a run be relabeled after a freeze? Should `--freeze` also ask for
   every backend's verdicts on the calibration items?
 - Do Phases 0.5, 3, and 5 stay on this roadmap?
-- `--keep-raw` for transcripts: implement or remove?
 - Is the Parquet export a backup or a browsing aid?
 - What happens to `example-memory-db-schema.sql` and the prototype branch?

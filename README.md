@@ -141,8 +141,10 @@ mem ingest --harness droid --transcript "$TRANSCRIPT_PATH"
 Neither Droid nor Vibe hooks carry the assistant's reply. Droid transcript
 import fills that gap; Vibe transcript support is still pending.
 
-For `mem event`, use `--keep-raw` to retain the full payload or
-`--record-pre-tool` to record pre-tool hooks as well.
+For `mem event`, use `--keep-raw` to keep the full payload with the event,
+redacted like everything else, or `--record-pre-tool` to record pre-tool
+hooks as well. A payload kept this way stays with its record while the
+record waits in the spool.
 See the [capture spec](docs/phase-1-spec.md) for payload and adapter details.
 
 `mem event` is made to run as a hook. It prints nothing on stdout, because a

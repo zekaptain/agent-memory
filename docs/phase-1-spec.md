@@ -82,6 +82,10 @@ Rules:
   in [architecture.md](architecture.md).
 - `payload` is stored as `VARIANT`. Adapters put structured fields here and a
   readable rendering in `content`.
+- `raw` is the whole hook payload, present only when the hook ran as
+  `mem event --keep-raw`. A record that has one keeps it, redacted, under
+  `payload.raw`. No later step is told to keep it or drop it, so a record
+  that waits in the spool keeps it too.
 
 ### Deterministic ids
 
@@ -243,7 +247,7 @@ harness events are never silently lost.
 ```
 mem event  --harness droid|vibe [--spool-only] [--keep-raw] [--record-pre-tool]
 mem ingest --harness droid --transcript PATH [--since-key KEY] [--include-thinking]
-           [--keep-raw] [--spool-only]
+           [--spool-only]
 mem ingest --spool [--purge-done DAYS]
 mem spool  status            # files, lines, oldest record per agent: pending and rejected
 mem spool  retry             # return rejected records to the spool
@@ -480,10 +484,11 @@ replay 50 ms).
 - Record redaction now covers content, payload, retained raw input, session
   fields, queued memories, and queued actions, including nested dictionary
   keys. Identity fields used to derive capture IDs stay unchanged. Raw input
-  is dropped unless `keep_raw` is enabled. An optional `redactions` field
-  carries the removal count through the v1 spool format; older records
-  default to zero. Reapplying a rule to its own marker does not count as
-  another removal.
+  is dropped unless `keep_raw` is enabled. (A record that carries raw input
+  now keeps it; see "A kept hook payload stays with its record" below.) An
+  optional `redactions` field carries the removal count through the v1
+  spool format; older records default to zero. Reapplying a rule to its
+  own marker does not count as another removal.
 - Structured credential fields such as `{"password": "..."}` use the
   existing assignment rules as well as ordinary value redaction. Specific
   secret rules still take precedence. Schema-invalid JSON is decoded and
@@ -729,3 +734,24 @@ other block.
   takes the JSON object the model call found, not the reply's text.
 
 Regressions are in `tests/test_graph.py` and `tests/test_model_call.py`.
+
+### A kept hook payload stays with its record (2026-11-11)
+
+`mem event --keep-raw` keeps the whole hook payload under `payload.raw`.
+Whether to keep it was an argument handed to each step, so a record that
+went through the spool lost its payload unless the replay was given
+`--keep-raw` again, and the replay at server start never was.
+`mem ingest --transcript --keep-raw` did nothing, because no transcript
+adapter sets a raw payload.
+
+- A record that carries `raw` keeps it wherever it goes: written at once,
+  spooled, replayed by `mem ingest --spool`, or replayed when `mem serve`
+  starts. `deliver`, `replay_spool`, the writer, and the redactor no
+  longer take a `keep_raw` argument.
+- `raw` is redacted before it reaches the spool and again at replay, like
+  every other field.
+- `mem ingest` no longer has `--keep-raw`, with `--transcript` or with
+  `--spool`. A script that passes it gets a usage error and exit 2.
+
+Regressions are in `tests/test_cli_capture.py` and
+`tests/test_audit_persistence.py`.
