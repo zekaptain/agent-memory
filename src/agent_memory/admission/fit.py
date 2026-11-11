@@ -71,7 +71,10 @@ def _cuts(
     eligible = [
         scoring.judge_action(model, row) != "discard"
         and row.get("judge_action") != "discard"
-        and all(gate in scoring.gate_values(row, model["backend"]) for gate in scoring.GATES)
+        and all(
+            scoring.gate_values(row, model["backend"]).get(gate) is not None
+            for gate in scoring.GATES
+        )
         and similarity >= model["similarity_floor"]
         for row, similarity in zip(rows, similarities, strict=True)
     ]

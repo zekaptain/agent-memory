@@ -168,10 +168,11 @@ do not delete existing homes or runs to resolve a workflow mistake.
   `closed_by` and clean controls. The drafter's view excludes the next
   message so unrelated steering is not fused into a lesson about the turn.
 - Stage A evaluates the turn once; Stage B evaluates each draft. Current
-  write gates are grounded, faithful, generalizable, and not already
-  enforced. A failed tool call can be intentional; a useful lesson need
-  not describe a failure. Harness rules, project docs, and tooling may
-  already enforce a lesson.
+  write gates are grounded, faithful, exact rule supported, generalizable,
+  and not already enforced. A gate the judge leaves unanswered is never
+  read as a probability; it sends the verdict to review. A failed tool
+  call can be intentional; a useful lesson need not describe a failure.
+  Harness rules, project docs, and tooling may already enforce a lesson.
 - Preserve seeded sampling, calibration/held-out separation, versioned
   projections/questions/drafters, hashes, and resumable per-item/per-drafter
   outputs. Older question-set runs remain read-only for draft/decide/label,

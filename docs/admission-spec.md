@@ -105,10 +105,13 @@ whose discard miss rate does not exceed the frozen judge's calibration
 miss rate. If the data cannot establish a safe write cut, nothing is
 automatically written.
 
-Two guards cannot be learned away: a frozen judge `discard` never becomes
+Three guards cannot be learned away: a frozen judge `discard` never becomes
 an approver `write`; similarity below the floor (default 0.35) never
-becomes a `write`. Scores between cuts go to review. Reports include
-precision, miss rate, coverage, Brier score and AUROC for both splits.
+becomes a `write`; and a draft with a write gate the judge left unanswered
+goes to review whatever its score, and does not help choose the write cut
+(see "Unanswered gates" in the judge spec). Scores between cuts go to
+review. Reports include precision, miss rate, coverage, Brier score and
+AUROC for both splits.
 
 Auto mode requires held-out precision of at least **0.8** over at least
 **20 scored held-out writes**:

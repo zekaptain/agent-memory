@@ -96,7 +96,7 @@ class RulesBackend:
             pick = "harness" if agent_started else "none"
             rest = (1 - 0.6) / (len(q.options()) - 1)
             return {o: (0.6 if o == pick else rest) for o in q.options()}
-        return dict.fromkeys(q.options(), 1.0)
+        return {}  # No rule for this question: no answer, rather than an even guess.
 
     @staticmethod
     def _draft_mentions_turn(inp: JudgeInput) -> bool:

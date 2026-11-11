@@ -17,8 +17,9 @@ from agent_memory.admission.fit import fit_approver
 from agent_memory.admission.store import AdmissionStore, memory_split, write_jsonl
 from agent_memory.config import Config
 from agent_memory.endpoints import EgressError
+from agent_memory.judge.backends.base import answer_from_probabilities
 from agent_memory.judge.drafter import draft_hash
-from agent_memory.judge.questions import DEFAULT_THRESHOLDS
+from agent_memory.judge.questions import BY_ID, DEFAULT_THRESHOLDS
 from tests.test_judge import structured_draft, synthetic_run
 
 BACKEND = "llm:ref"
@@ -44,14 +45,21 @@ def _freeze(store):
     )
 
 
-def _row(i: int, label: bool, split="calibration", *, item_id=None) -> dict[str, Any]:
+def _row(
+    i: int, label: bool, split="calibration", *, item_id=None, unanswered=()
+) -> dict[str, Any]:
     p = 0.95 if label else 0.1
-    answers = {
+    answers: dict[str, Any] = {
         gate: {"probabilities": {"yes": p, "no": 1 - p}}
         for gate in ("grounded", "faithful", "rule_supported")
     }
     answers["generalizable"] = {"probabilities": {"0": 0.05, "1": 0.9, "2": 0.05}}
     answers["enforced"] = {"probabilities": {"none": 0.95, "tooling": 0.05}}
+    for gate in unanswered:
+        # As a backend records a question its judge did not answer: a uniform placeholder.
+        answers[gate] = answer_from_probabilities(
+            BY_ID[gate], {}, method="llm_json_missing"
+        ).to_dict()
     iid = item_id or f"item-{i}"
     return example_for(
         {
@@ -297,6 +305,50 @@ def test_production_feedback_replaces_experiment_training_influence(label):
     assert all(r["split"] == memory_split("reviewed-memory") for r in selected)
     review["embedding"] = original["embedding"]
     assert approver.neighbor_features(original, [review]) == (0.5, 0.0)
+
+
+@pytest.mark.parametrize("gate", ["generalizable", "enforced", "rule_supported", "grounded"])
+def test_an_unanswered_judge_gate_is_reviewed_whatever_the_score(tmp_path, gate):
+    _, store, model, _ = _fit(tmp_path)
+    examples = store.read_examples()
+    draft = _row(999, True, "production", unanswered=(gate,))
+    draft["label"] = None
+    assert draft["gates"][BACKEND][gate] is None
+    assert draft["judge_action"] == "review"
+    for intercept in (100, -100):  # A score far above the write cut, then far below review.
+        forced = approver.seal(
+            {
+                **model,
+                "weights": [0.0] * len(model["weights"]),
+                "intercept": intercept,
+                "p_hi": 0.8,
+                "p_lo": 0.2,
+            }
+        )
+        result = approver.score(forced, draft, examples)
+        assert (result["action"], result["reasons"]) == (
+            "review",
+            ["judge gate answers are incomplete"],
+        )
+    answered = _row(999, True, "production")
+    answered["label"] = None
+    assert approver.score(forced, answered, examples)["action"] == "discard"
+
+
+def test_unanswered_gates_cannot_set_or_pass_the_write_cut(tmp_path):
+    rows = [
+        _row(
+            i,
+            bool(i % 2),
+            "calibration" if i < 30 else "held_out",
+            unanswered=("enforced",) if i % 2 else (),
+        )
+        for i in range(80)
+    ]
+    _, _, model, _ = _fit(tmp_path, rows)
+    assert model["p_hi"] == 1.01  # No complete calibration draft was worth writing.
+    assert model["metrics"]["held_out"]["actions"] == {"write": 0, "review": 25, "discard": 25}
+    assert not approver.can_auto(model)
 
 
 def test_scoring_guardrails_and_stale_or_corrupt_models(tmp_path):

@@ -5,6 +5,9 @@ rule reads only Stage B: a lesson is written when it is grounded, faithful, reus
 the turn, enforced by nothing else, and its exact rule follows from the evidence. `failed`
 and `recurrence` describe the turn, not admission. Historical versions keep their rules
 through `write_gates`.
+
+A question the judge did not usably answer is marked `unanswered` and never read as a
+probability: on a write gate it sends the verdict to review.
 """
 
 from __future__ import annotations
@@ -269,22 +272,32 @@ def stage_b_for(lesson: Lesson | None) -> tuple[Question, ...]:
     )
 
 
+# How a backend marks a question its judge did not usably answer: the answer's method ends in
+# one of these. The probabilities stored beside it are a uniform placeholder, never evidence.
+UNANSWERED: tuple[str, ...] = ("_missing", "_unmatched", "_no_probability")
+
+
+def unanswered(method: str) -> bool:
+    return method.endswith(UNANSWERED)
+
+
 def aggregate_claims(answers: Mapping[str, Answer]) -> dict[str, Answer]:
-    """Derived draft gates cost nothing: every claim must clear each gate."""
+    """Derived draft gates cost nothing: every claim must clear each gate. One claim the judge
+    left unanswered leaves the whole gate unanswered."""
     from .backends.base import answer_from_probabilities
 
     out = {}
     for key in ("grounded", "faithful"):
-        probabilities = [
-            float(answer.probabilities["yes"])
-            for qid, answer in answers.items()
-            if qid.startswith(key + ".")
-        ]
-        if probabilities:
-            p = min(probabilities)
-            out[key] = answer_from_probabilities(
-                BY_ID[key], {"yes": p, "no": 1 - p}, method="min_over_claims"
-            )
+        claims = [answer for qid, answer in answers.items() if qid.startswith(key + ".")]
+        if not claims:
+            continue
+        if any(unanswered(answer.method) for answer in claims):
+            out[key] = answer_from_probabilities(BY_ID[key], {}, method="min_over_claims_missing")
+            continue
+        p = min(float(answer.probabilities["yes"]) for answer in claims)
+        out[key] = answer_from_probabilities(
+            BY_ID[key], {"yes": p, "no": 1 - p}, method="min_over_claims"
+        )
     return out
 
 
@@ -320,13 +333,10 @@ def write_gates(questions_version: str | None) -> tuple[str, ...]:
     return WRITE_GATES if questions_version == QUESTIONS_VERSION else WRITE_GATES_V2
 
 
-def gate_probability(
-    qid: str, probabilities: Mapping[str, float], *, method: str = ""
-) -> float | None:
+def gate_probability(qid: str, probabilities: Mapping[str, float]) -> float | None:
     """The probability that a gate is cleared: p(yes) for a noul question, the mass on levels
-    1 and 2 for `generalizable`, and p(none) for `enforced`."""
-    if qid == "rule_supported" and method.endswith(("_missing", "_unmatched")):
-        return None  # A parser's uniform fallback is not an answer, even after calibration.
+    1 and 2 for `generalizable`, and p(none) for `enforced`. None when the distribution has
+    no reading for this gate."""
     if qid == "generalizable":
         if "1" not in probabilities and "2" not in probabilities:
             return None
@@ -341,28 +351,34 @@ def gate_probabilities(
     gates: Sequence[str] = WRITE_GATES,
     *,
     methods: Mapping[str, str] | None = None,
-) -> dict[str, float]:
-    """`{question id: probabilities}` from a verdict's answers, reduced to the write gates."""
-    out: dict[str, float] = {}
+) -> dict[str, float | None]:
+    """`{question id: probabilities}` from a verdict's answers, reduced to the write gates as
+    `derive_action` reads them. A gate the judge left unanswered maps to None; a gate the
+    verdict was never asked is left out."""
+    out: dict[str, float | None] = {}
     for qid in gates:
         probs = probabilities.get(qid)
         if probs is None:
             continue
-        p = gate_probability(qid, probs, method=(methods or {}).get(qid, ""))
+        if unanswered((methods or {}).get(qid, "")):
+            out[qid] = None
+            continue
+        p = gate_probability(qid, probs)
         if p is not None:
             out[qid] = p
     return out
 
 
 def derive_action(
-    p_true: Mapping[str, float],
+    p_true: Mapping[str, float | None],
     thresholds: Mapping[str, float] | None = None,
     *,
     gates: Sequence[str] = WRITE_GATES,
     declined: bool = False,
 ) -> Derived:
     """write_lesson when every gate clears its threshold; review when any gate sits inside the
-    uncertainty band; discard otherwise, and always for a draft the drafter declined."""
+    uncertainty band or was left unanswered (None); discard otherwise, and always for a draft
+    the drafter declined. A gate missing from `p_true` was never asked: it cannot clear."""
     if declined:
         return Derived("discard", ["drafter declined: nothing worth keeping"])
     t = {**DEFAULT_THRESHOLDS, **(thresholds or {})}
@@ -371,12 +387,16 @@ def derive_action(
     uncertain = False
     all_above = True
     for key in gates:
-        p = p_true.get(key)
-        if p is None:
+        if key not in p_true:
             reasons.append(f"{key}: no answer")
             all_above = False
             continue
-        if key == "rule_supported" and p == 0.5:
+        p = p_true[key]
+        if p is None:
+            # A placeholder is no evidence either way, so no threshold may read it.
+            uncertain = True
+            reasons.append(f"{key}: unanswered")
+        elif key == "rule_supported" and p == 0.5:
             uncertain = True
             reasons.append("rule_supported=0.50: no direction of support")
         elif abs(p - t[key]) < band:

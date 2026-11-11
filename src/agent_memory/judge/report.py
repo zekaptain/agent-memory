@@ -34,6 +34,7 @@ from .questions import (
     derive_action,
     gate_probability,
     thresholds_from_run,
+    unanswered,
     write_gates,
 )
 from .store import JudgeError, RunStore, utc_now_iso
@@ -88,9 +89,18 @@ class Scored:
     def drafter(self) -> str | None:
         return self.verdict.get("drafter")
 
-    def answer(self, qid: str) -> dict[str, Any] | None:
+    def _stored(self, qid: str) -> dict[str, Any] | None:
         answers = self.verdict["answers"]
         return answers.get(qid) or answers.get(_ALIAS.get(qid, ""))
+
+    def left_unanswered(self, qid: str) -> bool:
+        stored = self._stored(qid)
+        return bool(stored) and unanswered(stored.get("method", ""))
+
+    def answer(self, qid: str) -> dict[str, Any] | None:
+        """The judge's answer to a question. None when the verdict holds none, or holds only
+        the placeholder for a question left unanswered, which no metric may score."""
+        return None if self.left_unanswered(qid) else self._stored(qid)
 
     def p(self, qid: str) -> float | None:
         answer = self.answer(qid)
@@ -98,11 +108,7 @@ class Scored:
 
     def gate_p(self, gate: str) -> float | None:
         answer = self.answer(gate)
-        return (
-            gate_probability(gate, answer["probabilities"], method=answer.get("method", ""))
-            if answer
-            else None
-        )
+        return gate_probability(gate, answer["probabilities"]) if answer else None
 
     def confidence(self, qid: str) -> float:
         answer = self.answer(qid)
@@ -115,8 +121,16 @@ class Scored:
         value = answer["value"]
         return str(round(value)) if isinstance(value, float) else str(value)
 
-    def gate_probabilities(self, gates: Sequence[str]) -> dict[str, float]:
-        return {g: p for g in gates if (p := self.gate_p(g)) is not None}
+    def gate_probabilities(self, gates: Sequence[str]) -> dict[str, float | None]:
+        """The gates as `derive_action` reads them: None for one the judge left unanswered,
+        and no entry for one the verdict was never asked."""
+        out: dict[str, float | None] = {}
+        for gate in gates:
+            if self.left_unanswered(gate):
+                out[gate] = None
+            elif (p := self.gate_p(gate)) is not None:
+                out[gate] = p
+        return out
 
     def stage_b_latency(self) -> float:
         return sum(
@@ -264,6 +278,8 @@ class StageBEval:
     admission_scored: int = 0
     writes_scored: int = 0
     unscored: int = 0
+    # Verdicts that are a review because the judge left a write gate unanswered.
+    unanswered: int = 0
 
 
 def _binary(rows: Sequence[Scored], gate: str, threshold: float) -> BinaryMetrics | None:
@@ -341,13 +357,13 @@ def evaluate_stage_b(
     actions: dict[str, int] = {"write_lesson": 0, "review": 0, "discard": 0}
     current = "rule_supported" in gates
     writes_worth = writes = worth = missed = writes_enforced = admission_scored = unscored = 0
+    left_unanswered = 0
     for r in rows:
-        action = derive_action(
-            r.gate_probabilities(gates),
-            thresholds,
-            gates=gates,
-            declined=bool(r.verdict.get("declined")),
-        ).action
+        probabilities = r.gate_probabilities(gates)
+        declined = bool(r.verdict.get("declined"))
+        # A declined draft is a discard whatever its answers, so no gate holds it.
+        left_unanswered += not declined and None in probabilities.values()
+        action = derive_action(probabilities, thresholds, gates=gates, declined=declined).action
         actions[action] += 1
         is_worth = should_write(
             r.label, r.draft, questions_version=QUESTIONS_VERSION if current else None
@@ -398,6 +414,7 @@ def evaluate_stage_b(
         admission_scored=admission_scored,
         writes_scored=writes,
         unscored=unscored,
+        unanswered=left_unanswered,
     )
 
 
@@ -580,6 +597,25 @@ def _write_rows(evals: Sequence[StageBEval]) -> list[list[str]]:
             str(e.writes_enforced),
         ]
         for e in evals
+    ]
+
+
+def _unanswered_note(evals: Sequence[StageBEval]) -> list[str]:
+    """Per backend, how many verdicts are a review because the judge left a write gate
+    unanswered. Nothing when there are none, so a run without any reads as it did before."""
+    counts: dict[str, list[int]] = {}
+    for e in evals:
+        slot = counts.setdefault(e.name, [0, 0])
+        slot[0] += e.unanswered
+        slot[1] += e.n
+    shown = [f"`{name}` {count} of {n}" for name, (count, n) in counts.items() if count]
+    if not shown:
+        return []
+    return [
+        "",
+        f"Verdicts with an unanswered gate: {', '.join(shown)}. The judge gave no usable "
+        "answer to at least one write gate, so each is a review. An unanswered question "
+        "counts toward no metric and no fitted threshold.",
     ]
 
 
@@ -1349,6 +1385,7 @@ def build_report(store: RunStore, *, freeze: bool = False) -> str:
                 ],
             )
         )
+        lines.extend(_unanswered_note(stage_b))
         if cascades:
             lines.extend(["", f"### Cascade to `{reference}` on `failed`", ""])
             rows = []

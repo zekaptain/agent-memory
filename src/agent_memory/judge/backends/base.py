@@ -10,7 +10,7 @@ from typing import Any, Protocol
 
 from ... import endpoints
 from ..lesson import Claim
-from ..questions import Question
+from ..questions import Question, unanswered
 from ..store import JudgeError
 
 REMOTE_ENV = endpoints.REMOTE_ENV
@@ -89,7 +89,13 @@ def normalize(probabilities: Mapping[str, float], options: Sequence[str]) -> dic
 def answer_from_probabilities(
     question: Question, probabilities: Mapping[str, float], *, method: str, **extra: Any
 ) -> Answer:
-    probs = normalize(probabilities, question.options())
+    """An answer from whatever distribution a backend read. A distribution with no mass on
+    any of the question's options is no answer: the result is a uniform placeholder whose
+    method says so, whichever backend produced it."""
+    options = question.options()
+    probs = normalize(probabilities, options)
+    if not unanswered(method) and not any(float(probabilities.get(o, 0.0)) > 0 for o in options):
+        method = f"{method}_missing"
     if question.type == "score":
         value: str | float = sum(int(k) * p for k, p in probs.items())
     else:

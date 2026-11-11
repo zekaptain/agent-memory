@@ -1252,7 +1252,9 @@ Grounded, faithful, reusable (`generalizable` levels 1 or 2), unenforced
 Stage A failure remains descriptive, not a write prerequisite. The new
 gate defaults to 0.5 with the existing 0.15 uncertainty band. Missing or
 unparseable rule answers cannot authorize a write, even after threshold
-fitting: a parser's uniform fallback is not evidence. An explicit 0.5
+fitting: a parser's uniform fallback is not evidence. (Since 2026-11-10
+this holds for every gate, and such a verdict is a review rather than a
+discard; see "Unanswered gates" below.) An explicit 0.5
 rule-support distribution goes to review even if a fitted cut is lower.
 The rules baseline returns that uncertainty rather than treating token
 overlap as proof of a causal rule.
@@ -1306,3 +1308,54 @@ missing/unparseable gate answers, unclear label persistence, edit history,
 hash invalidation, calibration/held-out separation, costs and historical
 report reproduction. No private runs or model experiments are part of this
 change.
+
+### Unanswered gates, as built (2026-11-10)
+
+A judge can be asked a question and give no usable answer: its reply omits
+the question, names none of the options, gives a score with no digit, or
+carries no probability that can be read. Until this change only
+`rule_supported` was protected. For every other question the parser put a
+uniform or default distribution in the answer's place, and the write rule
+read it as evidence. A reply that omitted `generalizable` cleared that gate
+at 0.67 and could produce `write_lesson`.
+
+A question the judge did not usably answer is now **unanswered**. Its
+stored distribution is a placeholder that nothing reads as a probability.
+
+- The mark is the answer's `method`, which ends in `_missing` (no entry,
+  or no distribution), `_unmatched` (an answer that is none of the
+  options) or `_no_probability` (no finite numeric probability). The JSON
+  judges (`llm`, `llamacpp`) no longer read a score answer without a digit
+  as level 0 or a missing probability as 0.5, and only a string or a
+  number can name an option.
+- Any backend's distribution with no mass on a listed option is marked
+  the same way. That covers a Jev entry with empty probabilities, readout
+  samples that name no option (`sampling:8_missing`) and a question the
+  rules baseline has no rule for (`rules_missing`).
+- With per-claim questions, one unanswered claim leaves the whole
+  `grounded` or `faithful` gate unanswered (`min_over_claims_missing`).
+- An unanswered write gate makes the verdict a `review`, with the reason
+  `<gate>: unanswered`. Like the uncertainty band, it outranks another
+  gate that plainly fails. A missing or unparseable `rule_supported`
+  answer was a discard before; it is a review now.
+- A declined draft is still a discard. A gate the verdict was never asked
+  (an item with no draft, an older question set) still reads
+  `<gate>: no answer` and cannot clear, as before.
+- An unanswered question that gates nothing (`actionable`, Stage A) does
+  not hold a write.
+- The model is not asked again. The verdict is recorded once with the
+  mark, and a resumed decide does not repeat it.
+- Reports leave an unanswered question out of every metric and out of
+  threshold fitting. When a backend has verdicts that are a review for
+  this reason, one line under the write-decision table gives the count
+  per backend. With none, the report is byte for byte what it was.
+- Admission keeps the distinction. An example's unanswered gate is stored
+  as null, the draft goes to human review whatever its score, and it does
+  not help choose the write cut.
+
+A read-only scan of the `method` fields in the existing runs' verdict
+files found none of these marks, and the reports of the two labelled runs
+(exp2, exp3) rebuild byte for byte from copies. A verdict already stored
+with a silent default cannot be told apart from a real answer and is left
+as it is. Regressions are in `tests/test_judge_unanswered.py`, with
+mocked HTTP and synthetic runs.

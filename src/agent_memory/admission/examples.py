@@ -17,6 +17,7 @@ from ..judge.questions import (
     QUESTIONS_VERSION,
     derive_action,
     gate_probability,
+    unanswered,
 )
 from . import ADMISSION_VERSION, AdmissionError
 from .embed import DEFAULT_EMBEDDER, lesson_fields, make_embedder, validate_vector
@@ -44,19 +45,24 @@ def validated_thresholds(value: Any, *, complete: bool = False) -> dict[str, flo
     return out
 
 
-def verdict_gates(verdict: Mapping[str, Any]) -> dict[str, float]:
+def verdict_gates(verdict: Mapping[str, Any]) -> dict[str, float | None]:
+    """The judge's probability for each gate of one draft. A gate the judge left unanswered
+    is kept as None, so the example still says it was asked."""
     answers = verdict.get("answers", {})
     if not isinstance(answers, Mapping):
         raise AdmissionError("judge answers must be an object")
-    out = {}
+    out: dict[str, float | None] = {}
     for key in GATES:
         answer = answers.get(key)
         if answer is None:
             continue
         if not isinstance(answer, Mapping) or not isinstance(answer.get("probabilities"), Mapping):
             raise AdmissionError("invalid judge gate answer")
+        if unanswered(str(answer.get("method", ""))):
+            out[key] = None
+            continue
         try:
-            p = gate_probability(key, answer["probabilities"], method=str(answer.get("method", "")))
+            p = gate_probability(key, answer["probabilities"])
         except (ValueError, TypeError):
             raise AdmissionError("invalid judge gate probability") from None
         if p is None:

@@ -7,6 +7,7 @@ calibrated; measuring it against the decision backends is part of the experiment
 from __future__ import annotations
 
 import json
+import math
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -79,6 +80,36 @@ def parse_judge_json(text: str) -> dict[str, Any]:
     return data
 
 
+def _read(entry: Any, question: Question) -> tuple[str, float] | str:
+    """The option an entry of the reply names and the probability it gives, or why the entry
+    is unusable: `missing`, `unmatched`, or `no_probability`. Nothing is guessed in its
+    place, because any default would read as the judge's own answer."""
+    if not isinstance(entry, dict):
+        return "missing"
+    raw = entry.get("answer")
+    # Only text and numbers can name an option: `str(None)` would name the option "none".
+    named = isinstance(raw, (str, int, float)) and not isinstance(raw, bool)
+    answer = str(raw).strip().lower() if named else ""
+    if question.type == "score":
+        answer = re.sub(r"[^0-9]", "", answer)
+    options = question.options()
+    matched = next((o for o in options if o.lower() == answer), None)
+    if matched is None:
+        matched = next((o for o in options if answer and o.lower().startswith(answer)), None)
+    if matched is None:
+        return "unmatched"
+    raw_p = entry.get("probability")
+    if raw_p is None or isinstance(raw_p, bool):
+        return "no_probability"
+    try:
+        p = float(raw_p)
+    except (TypeError, ValueError):
+        return "no_probability"
+    if not math.isfinite(p):
+        return "no_probability"
+    return matched, min(1.0, max(0.0, p))
+
+
 def answers_from_judge_json(
     data: dict[str, Any],
     questions: Sequence[Question],
@@ -86,26 +117,16 @@ def answers_from_judge_json(
     method: str = "llm_json",
     **extra: Any,
 ) -> dict[str, Answer]:
+    """One answer per question. A question the reply does not usably answer gets a uniform
+    placeholder whose method ends in the reason, which `questions.unanswered` recognises."""
     out: dict[str, Answer] = {}
     for q in questions:
-        entry = data.get(q.id)
+        read = _read(data.get(q.id), q)
+        if isinstance(read, str):
+            out[q.id] = answer_from_probabilities(q, {}, method=f"{method}_{read}", **extra)
+            continue
+        matched, p = read
         options = q.options()
-        if not isinstance(entry, dict):
-            out[q.id] = answer_from_probabilities(q, {}, method=f"{method}_missing", **extra)
-            continue
-        answer = str(entry.get("answer", "")).strip().lower()
-        try:
-            p = min(1.0, max(0.0, float(entry.get("probability", 0.5))))
-        except (TypeError, ValueError):
-            p = 0.5
-        if q.type == "score":
-            answer = re.sub(r"[^0-9]", "", answer) or "0"
-        matched = next((o for o in options if o.lower() == answer), None)
-        if matched is None:
-            matched = next((o for o in options if answer and o.lower().startswith(answer)), None)
-        if matched is None:
-            out[q.id] = answer_from_probabilities(q, {}, method=f"{method}_unmatched", **extra)
-            continue
         rest = (1 - p) / (len(options) - 1) if len(options) > 1 else 0.0
         probs = {o: (p if o == matched else rest) for o in options}
         out[q.id] = answer_from_probabilities(q, probs, method=method, **extra)

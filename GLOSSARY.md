@@ -242,6 +242,10 @@ _Avoid_: Negative, baseline
 A judge's recorded answers about one turn and its drafts, with the action that follows from them.
 _Avoid_: Judgment, result, score
 
+**Unanswered question**:
+A question a judge was asked but gave no usable answer to. It is evidence of nothing, so no lesson is written on the strength of one.
+_Avoid_: Missing answer, fallback, default answer, no answer (which means the question was never asked)
+
 **Label**:
 A human's answers to the same questions, treated as ground truth.
 _Avoid_: Annotation, rating

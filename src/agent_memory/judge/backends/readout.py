@@ -137,8 +137,9 @@ class ReadoutBackend:
             letter = first_letter(text, len(options))
             if letter:
                 counts[options[LETTERS.index(letter)]] += 1
-        # Add-one smoothing so a unanimous sample is confident, not certain.
-        probs = {o: (c + 0.5) for o, c in counts.items()}
+        # Add-one smoothing so a unanimous sample is confident, not certain. Samples that
+        # named no option are no answer, which smoothing would dress up as a uniform one.
+        probs = {o: (c + 0.5) for o, c in counts.items()} if any(counts.values()) else {}
         return answer_from_probabilities(
             question,
             probs,

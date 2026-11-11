@@ -104,17 +104,22 @@ def group_id(example: Mapping[str, Any]) -> str:
     raise AdmissionError("admission examples require an item grouping identity")
 
 
-def gate_values(example: Mapping[str, Any], backend: str) -> dict[str, float]:
+def gate_values(example: Mapping[str, Any], backend: str) -> dict[str, float | None]:
+    """The example's gates as `derive_action` reads them: None for a gate the judge left
+    unanswered, no entry for one the example does not hold."""
     backends = example.get("gates")
     if not isinstance(backends, Mapping):
         raise AdmissionError("admission example gates must be an object")
     gates = backends.get(backend)
     if not isinstance(gates, Mapping):
         raise AdmissionError("admission example does not match the fitted judge backend")
-    values = {}
+    values: dict[str, float | None] = {}
     for key in GATES:
-        value = gates.get(key)
+        if key not in gates:
+            continue
+        value = gates[key]
         if value is None:
+            values[key] = None
             continue
         if (
             isinstance(value, bool)
@@ -179,7 +184,7 @@ def features(
 ) -> tuple[list[float], float, float]:
     gates = gate_values(example, backend)
     vote, similarity = neighbor_features(example, calibration)
-    values: dict[str, float] = {f"judge:{key}": gates.get(key, 0.0) for key in GATES}
+    values: dict[str, float] = {f"judge:{key}": gates.get(key) or 0.0 for key in GATES}
     values.update(neighbor_vote=vote, max_similarity=similarity)
     for field in ("kind", "caller"):
         name = f"{field}:{example.get(field) or 'unknown'}"
@@ -214,9 +219,11 @@ def decide(
 ) -> tuple[str, list[str]]:
     if judge_action(model, example) == "discard" or example.get("judge_action") == "discard":
         return "discard", ["frozen judge discarded this draft"]
+    gates = gate_values(example, model["backend"])
+    if any(gates.get(gate) is None for gate in GATES):
+        # The score was fitted on complete answers; without them a person decides.
+        return "review", ["judge gate answers are incomplete"]
     if value >= model["p_hi"]:
-        if any(gate not in gate_values(example, model["backend"]) for gate in GATES):
-            return "review", ["judge gate answers are incomplete"]
         if similarity < model["similarity_floor"]:
             return "review", ["similarity below the fitted safety floor"]
         return "write", ["admission score clears the calibrated write cut"]

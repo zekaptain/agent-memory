@@ -37,8 +37,8 @@ from tests.test_judge import structured_draft, synthetic_run
         ("no", 0.5, "discard"),
         ("yes", 0.5, "write_lesson"),
         ("unclear", 0.0, "review"),
-        ("missing", 0.0, "discard"),
-        ("invalid", 0.0, "discard"),
+        ("missing", 0.0, "review"),
+        ("invalid", 0.0, "review"),
     ],
 )
 def test_true_claims_do_not_justify_an_unsupported_rule(monkeypatch, support, cut, expected):
@@ -122,7 +122,7 @@ def test_true_claims_do_not_justify_an_unsupported_rule(monkeypatch, support, cu
     row = report.Scored(item, {}, verdict)
     if support in ("missing", "invalid"):
         assert row.gate_p("rule_supported") is None
-        assert "rule_supported: no answer" in verdict["reasons"]
+        assert verdict["reasons"] == ["rule_supported: unanswered"]
 
 
 def test_absent_gate_never_writes_even_with_zero_threshold_and_band():
@@ -241,17 +241,6 @@ def test_rule_thresholds_fit_calibration_only_and_remain_frozen(tmp_path, monkey
     assert "Held-out split (8 items)" in text
     assert "rule_supported ≥ 0.65" in text
     assert store.run_json.read_bytes() == frozen_bytes
-
-
-def test_missing_rule_answers_are_not_used_to_fit_thresholds(tmp_path):
-    store = synthetic_run(tmp_path, n=2)
-    path = store.verdicts_path("rules")
-    rows = store.read_jsonl(path)
-    for row in rows:
-        row["answers"]["rule_supported"]["method"] = "llm_json_missing"
-    store.write_jsonl(path, rows)
-    report.build_report(store, freeze=True)
-    assert store.read_run()["frozen"]["backends"]["rules"]["thresholds"]["rule_supported"] == 0.5
 
 
 def test_multi_draft_costs_include_rule_question_and_charge_stage_a_once(tmp_path, monkeypatch):
