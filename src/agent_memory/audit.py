@@ -15,9 +15,7 @@ from typing import Any, Literal
 import duckdb
 
 from .db import MemoryClient, sql_literal
-
-# The agent of a person at the `mem` CLI.
-CLI_AGENT = "human"
+from .lifecycle import HUMAN_AGENT
 
 type AuditSource = MemoryClient | duckdb.DuckDBPyConnection
 type Row = dict[str, Any]
@@ -397,7 +395,7 @@ def check(source: AuditSource) -> AuditReport:
             for row in _rows(
                 source,
                 "SELECT session_id::VARCHAR AS session_id FROM sessions "
-                f"WHERE agent_id = {sql_literal(CLI_AGENT)}",
+                f"WHERE agent_id = {sql_literal(HUMAN_AGENT)}",
             )
         }
         if "agent_id" in schema["sessions"]

@@ -19,6 +19,8 @@ from .db import AgentMemoryError, MemoryClient, sql_literal
 
 REVIEW_ACTIONS = frozenset({"approve", "quarantine", "retire", "confirm", "flag_contradiction"})
 TERMINAL = frozenset({"retired", "superseded", "expired", "deduplicated"})
+# The agent a human at the `mem` CLI writes as.
+HUMAN_AGENT = "human"
 
 
 class LifecycleError(AgentMemoryError, ValueError):

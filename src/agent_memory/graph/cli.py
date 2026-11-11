@@ -11,6 +11,7 @@ import typer
 from .. import endpoints
 from ..capture.session import Observed
 from ..config import Config, load_config
+from ..lifecycle import HUMAN_AGENT
 from ..mcp_server.tools import MemoryTools
 from .recall import relations_of
 from .resolve import (
@@ -70,7 +71,7 @@ def _listing(tools: MemoryTools, scope: list[str] | None) -> dict[str, Any]:
 def entities(
     ctx: typer.Context,
     scope: SCOPES = None,
-    agent: AGENT = "human",
+    agent: AGENT = HUMAN_AGENT,
     project: PROJECT = None,
 ) -> None:
     """Every entity in the active relations, with its type and mention count. Logged as a
@@ -100,7 +101,7 @@ def show(
     entity: Annotated[str, typer.Argument(help="Entity name; matching ignores case.")],
     hops: Annotated[int, typer.Option(min=1, max=MAX_HOPS)] = 2,
     scope: SCOPES = None,
-    agent: AGENT = "human",
+    agent: AGENT = HUMAN_AGENT,
     project: PROJECT = None,
 ) -> None:
     """The relations within N hops of an entity. Logged as a graph_hop_v1 retrieval."""
@@ -134,7 +135,7 @@ def resolve(
     apply: Annotated[
         bool, typer.Option("--apply", help="Record the merges. Without it, only propose.")
     ] = False,
-    agent: AGENT = "human",
+    agent: AGENT = HUMAN_AGENT,
     project: PROJECT = None,
 ) -> None:
     """Propose entity merges with a local model; --apply records them as supersedes history.

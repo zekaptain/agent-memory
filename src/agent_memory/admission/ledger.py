@@ -12,7 +12,7 @@ from ..capture.session import LedgerSession, Observed, event_row
 from ..config import Config
 from ..db import MemoryClient, sql_literal
 from ..judge.verdict import Verdict
-from ..lifecycle import LifecyclePlan, stable_id
+from ..lifecycle import HUMAN_AGENT, LifecyclePlan, stable_id
 
 ADMISSION_AGENT = "admission"
 OBSERVED = Observed("mem admit", "record", "mem_admit_v1")
@@ -128,7 +128,7 @@ def admit(
                 "metadata": {"lesson": lesson, "admission": clean_metadata},
             },
             event_id=eid,
-            actor="human" if human_action else ADMISSION_AGENT,
+            actor=HUMAN_AGENT if human_action else ADMISSION_AGENT,
             deduplicate=replace_memory_id is None,
             sources=[
                 {"event_id": source, "relation": "derived_from"} for source in sorted(sources)
@@ -144,7 +144,7 @@ def admit(
                 {
                     **action,
                     "memory_id": mid,
-                    "actor": "human" if human_action else ADMISSION_AGENT,
+                    "actor": HUMAN_AGENT if human_action else ADMISSION_AGENT,
                     "session_id": sid,
                     "event_id": eid,
                     "related_memory_id": replace_memory_id,
@@ -159,7 +159,7 @@ def review_memory(cfg: Config, memory_id: str, action: dict[str, Any]) -> str:
     clean, _ = make_redactor(cfg).value(action)
     with MemoryClient.from_config(cfg) as client:
         plan = LifecyclePlan(client)
-        mid = plan.review({**clean, "memory_id": memory_id, "actor": "human"})
+        mid = plan.review({**clean, "memory_id": memory_id, "actor": HUMAN_AGENT})
         client.insert(plan.rows)
     return mid
 
