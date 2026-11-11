@@ -69,22 +69,26 @@ class AuditReport:
     findings: tuple[Finding, ...] = ()
     legacy_acceptances: tuple[LegacyAcceptance, ...] = ()
 
-    @property
-    def exit_code(self) -> int:
-        """0: clean; 1: findings (including coverage warnings); 2: incomplete audit."""
+    def exit_code(self, *, strict: bool = False) -> int:
+        """0: no errors; 1: an error, or with `strict` any finding; 2: incomplete audit."""
         if any(f.code in {"audit_read_failed", "schema_missing_columns"} for f in self.findings):
             return 2
-        return int(bool(self.findings))
+        failing = [f for f in self.findings if strict or f.severity == "error"]
+        return int(bool(failing))
 
     @property
     def status(self) -> str:
-        return ("clean", "findings", "error")[self.exit_code]
+        """What the report holds, whatever exit code the caller asked for."""
+        code = self.exit_code()
+        if code:
+            return ("findings", "error")[code - 1]
+        return "warnings" if self.findings else "clean"
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self, *, strict: bool = False) -> dict[str, Any]:
         return {
-            "version": 1,
+            "version": 2,
             "status": self.status,
-            "exit_code": self.exit_code,
+            "exit_code": self.exit_code(strict=strict),
             "schema_versions": list(self.schema_versions),
             "summary": {
                 "errors": sum(f.severity == "error" for f in self.findings),

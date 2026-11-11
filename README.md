@@ -391,6 +391,11 @@ Diagnostics contain IDs and reason codes, not transcript text. Ambiguous
 legacy correction histories need review; an old `supersedes` edge is not
 proof of approval or acceptance.
 
+The check exits 1 when it finds an error and 2 when it could not complete.
+Warnings about capture coverage and attribution are listed without failing
+it, because a session that only used the MCP tools always has them. Add
+`--strict` to exit 1 on a warning too.
+
 A live rollout is a separate operation: review preflight, verify a
 consistent backup of the database **and blobs**, stop the server, migrate,
 restart, and verify read-only. Parquet exports alone do not back up blobs.

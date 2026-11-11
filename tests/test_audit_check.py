@@ -371,6 +371,41 @@ def test_unknown_schema_does_not_report_clean(tmp_path, capsys):
     assert "schema_missing_columns" in {f["code"] for f in report["findings"]}
 
 
+def test_warnings_alone_do_not_fail_the_audit_unless_strict(old_cfg, capsys):
+    with open_direct(old_cfg.db_path) as con:
+        insert_rows(con, synthetic_chain([new_id() for _ in range(7)], WHEN))
+    argv = ["--home", str(old_cfg.home), "audit", "check", "--direct", "--json"]
+    assert main(argv) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert (report["status"], report["exit_code"]) == ("warnings", 0)
+    assert report["summary"]["errors"] == 0
+    assert report["summary"]["warnings"] > 0
+
+    assert main([*argv, "--strict"]) == 1
+    strict = json.loads(capsys.readouterr().out)
+    assert (strict["status"], strict["exit_code"]) == ("warnings", 1)
+    assert strict["findings"] == report["findings"]
+
+    assert main(argv[:-1]) == 0
+    assert capsys.readouterr().out.startswith("audit: warnings (0 errors, ")
+
+
+def test_an_error_or_an_incomplete_audit_fails_whether_strict_or_not(old_cfg, tmp_path, capsys):
+    with open_direct(old_cfg.db_path) as con:
+        predecessor = memory(con)
+        memory(con, trust="tool", supersedes=predecessor, created_at=WHEN + timedelta(days=1))
+    empty = Config(home=tmp_path / "empty")
+    empty.home.mkdir()
+    duckdb.connect(str(empty.db_path)).close()
+    for home, code, status in ((old_cfg.home, 1, "findings"), (empty.home, 2, "error")):
+        for flags in ([], ["--strict"]):
+            assert (
+                main(["--home", str(home), "audit", "check", "--direct", "--json", *flags]) == code
+            )
+            report = json.loads(capsys.readouterr().out)
+            assert (report["status"], report["exit_code"]) == (status, code)
+
+
 def test_quack_audit_uses_only_reads_and_never_direct(live_cfg, live_client, monkeypatch, capsys):
     ids = [new_id() for _ in range(7)]
     live_client.insert(synthetic_chain(ids, WHEN, content=PRIVATE))
@@ -389,9 +424,9 @@ def test_quack_audit_uses_only_reads_and_never_direct(live_cfg, live_client, mon
     argv = ["--home", str(live_cfg.home), "--port", str(live_cfg.port), "audit", "check", "--json"]
     code = main(argv)
     output = capsys.readouterr()
-    assert code == 1
+    assert code == 0
     report = json.loads(output.out)
-    assert report["status"] == "findings"
+    assert report["status"] == "warnings"
     assert PRIVATE not in output.out + output.err
     assert statements
     assert all(sql.lstrip().startswith("SELECT") for sql in statements)
@@ -506,7 +541,7 @@ def test_additive_schema_introspection_does_not_require_latest_views(old_con):
     old_con.execute("INSERT INTO schema_migrations (version, name) VALUES (9999, 'future')")
     report = check(old_con)
     assert report.schema_versions == (1, 9999)
-    assert report.exit_code == 0
+    assert report.exit_code() == 0
     assert PRIVATE not in json.dumps(report.to_dict())
 
 
@@ -553,8 +588,8 @@ def test_actual_mcp_cite_placeholder_over_quack(live_cfg, live_client, capsys):
         assert not cited["degraded"]
     finally:
         tools.close()
-    argv = ["--home", str(live_cfg.home), "--port", str(live_cfg.port), "audit", "check", "--json"]
-    assert main(argv) == 1
+    base = ["--home", str(live_cfg.home), "--port", str(live_cfg.port)]
+    assert main([*base, "audit", "check", "--strict", "--json"]) == 1
     report = json.loads(capsys.readouterr().out)
     assert any(
         f["code"] == "cite_placeholder_unresolved" and f["entity_id"] == cited["answer_event_id"]
@@ -584,7 +619,7 @@ def test_mem_graph_reads_warn_only_when_made_for_a_harness_agent(
     for_agent = {rid for agent, rid in rows if agent == "amp"}
     assert (len(by_person), len(for_agent)) == (2, 1)
 
-    assert main([*base, "audit", "check", "--json"]) == 1
+    assert main([*base, "audit", "check", "--strict", "--json"]) == 1
     uncited = {
         f["entity_id"]
         for f in json.loads(capsys.readouterr().out)["findings"]

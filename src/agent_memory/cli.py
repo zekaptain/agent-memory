@@ -441,11 +441,15 @@ def audit_check(
     as_json: Annotated[
         bool, typer.Option("--json", help="Print a deterministic report with IDs and reason codes.")
     ] = False,
+    strict: Annotated[
+        bool, typer.Option("--strict", help="Exit 1 on a warning too, not only on an error.")
+    ] = False,
 ) -> None:
     """Check ledger integrity and provenance without writes.
 
-    Exit 0: clean; 1: findings (including coverage warnings); 2: audit could not complete.
-    Coverage gaps can describe an unfinished session, not necessarily a capture failure.
+    Exit 0: no errors; 1: an error, or any finding with --strict; 2: audit could not complete.
+    Warnings describe capture coverage and attribution. An unfinished session and one that
+    only used the MCP tools always have them, so they are listed without failing the check.
     """
     try:
         cfg = _config(ctx)
@@ -461,8 +465,11 @@ def audit_check(
     except (AgentMemoryError, ConfigError, duckdb.Error, OSError, ValueError, TypeError):
         # Connection errors can embed credentials, paths, or rejected SQL values.
         report = audit.read_failure()
+    code = report.exit_code(strict=strict)
     if as_json:
-        print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2, sort_keys=True))
+        print(
+            json.dumps(report.to_dict(strict=strict), ensure_ascii=False, indent=2, sort_keys=True)
+        )
     else:
         counts = report.to_dict()["summary"]
         print(f"audit: {report.status} ({counts['errors']} errors, {counts['warnings']} warnings)")
@@ -472,13 +479,13 @@ def audit_check(
                 f"{finding.severity}: {finding.code} "
                 f"{finding.entity_type}={finding.entity_id}{related}"
             )
-        if report.exit_code == 2:
+        if code == 2:
             print(
                 "Check configuration, connectivity, and schema. For a stopped old database, "
                 "use --direct; this command never initializes or migrates it."
             )
-    if report.exit_code:
-        raise typer.Exit(report.exit_code)
+    if code:
+        raise typer.Exit(code)
 
 
 spool_app = typer.Typer(

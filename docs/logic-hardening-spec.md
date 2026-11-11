@@ -119,12 +119,27 @@ not become a successful binding.
 
 A person at the `mem` CLI reads and never answers, so nothing can cite a
 recall made in a session of the `human` agent. `mem audit check` reported
-each one as `retrieval_missing_attribution` for good, and exits 1 on a
-warning. It no longer expects a citation for those recalls. This covers
+each one as `retrieval_missing_attribution` for good. It no longer expects
+a citation for those recalls. This covers
 `mem graph show`, `entities` and `resolve` run with the default `--agent`,
 including the ones already in a ledger. A recall made with `--agent` set
 to a harness's agent is still expected to be cited, and the other
 retrieval checks apply to every session.
+
+### Audit exit code, as built (2026-11-11)
+
+`mem audit check` exits 1 only when a finding is an error: a correction
+history that cannot be trusted, an invalid binding, or retrieval rows that
+do not agree. Warnings describe capture coverage and attribution. A session
+that only used the MCP tools is partial by design and an unfinished session
+has a gap, so every ledger in use carries warnings, and exiting 1 for them
+said nothing about the ledger. Warnings are still listed and counted.
+`--strict` exits 1 on any finding, as the command did before. Exit code 2
+still means the audit could not complete.
+
+The JSON report is `version` 2. Its `status` is `clean`, `warnings`,
+`findings` (at least one error) or `error` (incomplete), whatever flags
+were passed. Its `exit_code` is the code the command exits with.
 
 ## Judge version boundary
 
