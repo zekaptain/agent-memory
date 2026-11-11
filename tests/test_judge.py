@@ -1909,6 +1909,111 @@ def test_report_locks_held_out_until_freeze(tmp_path):
         build_report(store, freeze=True)
 
 
+def drop_labels(store: RunStore, *item_ids: str) -> None:
+    rows = [r for r in store.read_jsonl(store.labels_path) if r["item_id"] not in item_ids]
+    store.write_jsonl(store.labels_path, rows)
+
+
+def split_ids(store: RunStore, split: str) -> list[str]:
+    return [i["item_id"] for i in store.items() if i["split"] == split]
+
+
+def test_freeze_refuses_while_calibration_items_are_unlabeled(tmp_path):
+    """Thresholds are chosen once. Chosen on part of the calibration split, they stayed
+    chosen, and nothing said how much of it they were chosen on."""
+    store = synthetic_run(tmp_path)
+    calibration = split_ids(store, "calibration")
+    drop_labels(store, calibration[0], calibration[5])
+    before = store.run_json.read_bytes()
+    with pytest.raises(JudgeError, match="2 of 12 calibration items are not fully labeled") as no:
+        build_report(store, freeze=True)
+    assert "(2 without a label, 0 with questions left)" in str(no.value)
+    assert "mem judge label" in str(no.value)
+    assert "--partial" in str(no.value)
+    assert store.run_json.read_bytes() == before  # Nothing was frozen on the way out.
+    assert "Locked." in build_report(store)  # The open report can still be read.
+
+    # Said outright, the freeze goes ahead, and the run and its reports keep the count.
+    text = build_report(store, freeze=True, partial=True)
+    assert store.read_run()["frozen"]["partial"] == {"calibration": 12, "unlabeled": 2}
+    said = "2 of 12 calibration items were not fully labeled"
+    assert said in text
+    assert said in build_report(store)
+
+
+def test_a_complete_freeze_is_stored_as_before(tmp_path):
+    store = synthetic_run(tmp_path)
+    # A held-out item without a label takes nothing from the thresholds.
+    drop_labels(store, split_ids(store, "held_out")[0])
+    # Allowing a partial freeze does not make one.
+    text = build_report(store, freeze=True, partial=True)
+    assert set(store.read_run()["frozen"]) == {"frozen_at", "reference", "backends"}
+    assert "not fully labeled" not in text
+
+
+def test_freeze_counts_a_label_with_questions_left(tmp_path):
+    store = synthetic_run(tmp_path)
+    first = split_ids(store, "calibration")[0]
+    # A second drafter came after the labels, so nobody has answered for its draft.
+    store.add_draft(
+        {
+            "item_id": first,
+            "lesson": "Another lesson.",
+            "cited": [1],
+            "drafter": "llamacpp:x",
+            "model_snapshot": "x",
+            "latency_ms": 1.0,
+            "cost_usd": 0.0,
+            "declined": False,
+        }
+    )
+    with pytest.raises(JudgeError, match="1 of 12 calibration items are not fully labeled") as no:
+        build_report(store, freeze=True)
+    assert "(0 without a label, 1 with questions left)" in str(no.value)
+    # It is the one item a labeling session would open, so `mem judge label` finishes it.
+    assert [item["item_id"] for item in LabelController(store).todo] == [first]
+    # The same draft on a held-out item is not the freeze's concern.
+    store.write_jsonl(
+        store.drafts_path,
+        [
+            {**row, "item_id": split_ids(store, "held_out")[0]}
+            if row["drafter"] == "llamacpp:x"
+            else row
+            for row in store.read_jsonl(store.drafts_path)
+        ],
+    )
+    build_report(store, freeze=True)
+
+
+def test_an_older_run_is_complete_when_every_calibration_item_has_a_label(tmp_path):
+    """Its labels answer the questions of their day, and the labeler no longer opens it."""
+    store = synthetic_run(tmp_path, v1=True)
+    drop_labels(store, split_ids(store, "calibration")[0])
+    with pytest.raises(JudgeError, match="1 of 12 calibration items have no label") as no:
+        build_report(store, freeze=True)
+    assert "can no longer be labeled" in str(no.value)
+    assert "--partial" in str(no.value)
+    build_report(store, freeze=True, partial=True)
+    assert store.read_run()["frozen"]["partial"] == {"calibration": 12, "unlabeled": 1}
+
+
+def test_report_freeze_needs_partial_said_on_the_command_line(tmp_path, monkeypatch, capsys):
+    from agent_memory.cli import main
+
+    monkeypatch.delenv("AGENT_MEMORY_HOME", raising=False)
+    store = synthetic_run(tmp_path)
+    drop_labels(store, split_ids(store, "calibration")[0])
+    report = ["--home", str(tmp_path / "exp"), "judge", "report", "--run", "syn", "--raw"]
+    assert main([*report, "--freeze"]) == 1
+    assert "1 of 12 calibration items are not fully labeled" in capsys.readouterr().err
+    assert not store.read_run().get("frozen")
+    # Without --freeze there is nothing for --partial to allow.
+    assert main([*report, "--partial"]) == 2
+    assert not store.read_run().get("frozen")
+    assert main([*report, "--freeze", "--partial"]) == 0
+    assert store.read_run()["frozen"]["partial"]["unlabeled"] == 1
+
+
 def test_report_still_reads_a_questions_v1_run(tmp_path):
     """exp1 and exp2 were built under questions_v1: one draft per item, `supported` instead of
     `grounded`, the v1 write rule. They must keep rendering."""
@@ -2850,7 +2955,8 @@ def test_claim_report_rates_metrics_kind_and_legacy_absence(tmp_path):
     store.write_jsonl(store.items_path, items)
     report = build_report(store)
     assert "| rules | held_out | grounded |" not in report
-    report = build_report(store, freeze=True)
+    # These labels stop short of the rule and exact-draft questions.
+    report = build_report(store, freeze=True, partial=True)
     assert "| rules | held_out | grounded | 3 |" in report
     # Purging evidence does not invent missing-citation failures.
     store.purge_projections()

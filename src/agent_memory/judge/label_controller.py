@@ -16,6 +16,7 @@ from .labeling import (
     assemble,
     changed_values,
     cited_entries,
+    has_tool_errors,
     missing_steps,
     order_drafts,
     raw_answers,
@@ -149,7 +150,7 @@ class LabelController:
 
     @staticmethod
     def has_errors(item: Mapping[str, Any]) -> bool:
-        return bool(item.get("facts", {}).get("tool_error_count"))
+        return has_tool_errors(item)
 
     def views(self, item: Mapping[str, Any]) -> list[DraftView]:
         return order_drafts(item["item_id"], self.draft_rows.get(item["item_id"], []), self.seed)

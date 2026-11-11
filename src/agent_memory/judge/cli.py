@@ -287,15 +287,24 @@ def report(
         bool,
         typer.Option("--freeze", help="Choose thresholds on the calibration split and lock them."),
     ] = False,
+    partial: Annotated[
+        bool,
+        typer.Option(
+            "--partial",
+            help="With --freeze: freeze although calibration items are not fully labeled.",
+        ),
+    ] = False,
     live: LIVE_DAY = None,
     raw: Annotated[
         bool, typer.Option("--raw", help="Print markdown instead of rendering.")
     ] = False,
 ) -> None:
     """Score verdicts against labels and write report.md."""
+    if partial and not freeze:
+        raise typer.BadParameter("only applies with --freeze.", param_hint="--partial")
     cfg = _config(ctx)
     store = _store(cfg, run, live)
-    text = build_report(store, freeze=freeze)
+    text = build_report(store, freeze=freeze, partial=partial)
     if raw:
         print(text)
     else:

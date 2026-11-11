@@ -14,7 +14,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 
 from .drafter import draft_hash
-from .labeling import ENFORCED_ORDER, LESSON_ORDER
+from .labeling import ENFORCED_ORDER, LESSON_ORDER, questions_left
 from .lesson import entry_numbers, lesson_from_row
 from .metrics import (
     BinaryMetrics,
@@ -1189,7 +1189,67 @@ def _criteria(
     return lines
 
 
-def build_report(store: RunStore, *, freeze: bool = False) -> str:
+def unlabeled_calibration(
+    store: RunStore, items: Sequence[Mapping[str, Any]], *, current: bool
+) -> tuple[int, int]:
+    """The calibration items a freeze would go short of: how many have no label, and how many
+    have a label with questions left. The second is only known for the current question set,
+    the one a labeling session still asks."""
+    labels = store.labels()
+    drafts = store.drafts_by_item() if current else {}
+    without = left = 0
+    for item in items:
+        if item.get("split") != "calibration":
+            continue
+        row = labels.get(item["item_id"])
+        if row is None:
+            without += 1
+        elif current:
+            try:
+                left += bool(questions_left(item, row, drafts.get(item["item_id"], [])))
+            except JudgeError:
+                left += 1  # More drafts than a session can show: they cannot all be labeled.
+    return without, left
+
+
+def _freeze(
+    store: RunStore,
+    run: Mapping[str, Any],
+    items: Sequence[Mapping[str, Any]],
+    scored: Mapping[str, Mapping[Key, Scored]],
+    calibration: set[str],
+    *,
+    partial: bool,
+) -> dict[str, Any]:
+    """Choose the thresholds and lock them in the run. They are chosen once, so a freeze while
+    calibration items are not fully labeled has to be asked for, and the run keeps the count."""
+    version = run.get("questions_version")
+    if run.get("frozen"):
+        raise JudgeError("thresholds are already frozen for this run")
+    current = version == QUESTIONS_VERSION
+    without, left = unlabeled_calibration(store, items, current=current)
+    short = without + left
+    if short and not partial:
+        allow = "pass --partial to freeze on the labels there are"
+        if current:
+            raise JudgeError(
+                f"{short} of {len(calibration)} calibration items are not fully labeled "
+                f"({without} without a label, {left} with questions left). Finish them with "
+                f"`mem judge label`, or {allow}."
+            )
+        raise JudgeError(
+            f"{short} of {len(calibration)} calibration items have no label, and a run built "
+            f"with {version or 'no question set'} can no longer be labeled; {allow}."
+        )
+    chosen = freeze_thresholds(scored, calibration, version)
+    if short:
+        chosen["partial"] = {"calibration": len(calibration), "unlabeled": short}
+    return store.update_run(frozen=chosen)
+
+
+def build_report(store: RunStore, *, freeze: bool = False, partial: bool = False) -> str:
+    """Score the run and write report.md. `freeze` chooses the thresholds first; `partial`
+    lets it do so while calibration items are not fully labeled."""
     run = store.read_run()
     version = run.get("questions_version")
     current = version == QUESTIONS_VERSION
@@ -1200,9 +1260,7 @@ def build_report(store: RunStore, *, freeze: bool = False) -> str:
     calibration = {i["item_id"] for i in items if i.get("split") == "calibration"}
     held_out = {i["item_id"] for i in items if i.get("split") == "held_out"}
     if freeze:
-        if run.get("frozen"):
-            raise JudgeError("thresholds are already frozen for this run")
-        run = store.update_run(frozen=freeze_thresholds(scored, calibration, version))
+        run = _freeze(store, run, items, scored, calibration, partial=partial)
     frozen = run.get("frozen")
     reference = (frozen or {}).get("reference") or reference_backend(scored)
     labeled = {i for rows in scored.values() for (i, _) in rows}
@@ -1394,7 +1452,14 @@ def build_report(store: RunStore, *, freeze: bool = False) -> str:
             )
     if frozen:
         section("Held-out split", held_out, use_frozen=True, is_held_out=True)
-        lines.extend(["## Frozen thresholds", "", f"Frozen at {frozen['frozen_at']}.", ""])
+        when = f"Frozen at {frozen['frozen_at']}."
+        part = frozen.get("partial")
+        if part:
+            when += (
+                f" {part['unlabeled']} of {part['calibration']} calibration items were not "
+                "fully labeled then (`--partial`)."
+            )
+        lines.extend(["## Frozen thresholds", "", when, ""])
         for name, spec in sorted(frozen.get("backends", {}).items()):
             t = spec["thresholds"]
             gate = spec.get("gate")

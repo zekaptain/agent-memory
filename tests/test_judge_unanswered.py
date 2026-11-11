@@ -320,6 +320,7 @@ def set_truth(gate: str, label: dict[str, Any], truth: bool) -> None:
     draft = label["drafts"]["ollama:m"]
     if gate == "failed":
         label["failed"] = truth
+        label["category"] = "tool_misuse" if truth else None
     elif gate == "generalizable":
         draft["generalizable"] = 1 if truth else 0
     elif gate == "enforced":

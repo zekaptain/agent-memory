@@ -218,6 +218,9 @@ def test_rule_thresholds_fit_calibration_only_and_remain_frozen(tmp_path, monkey
         label["drafts"]["ollama:m"]["rule_supported"] = (
             False if i == 0 else True if i == 1 else None
         )
+        if i > 1:
+            # Answered Unclear, which is an answer: the label has no question left.
+            label["drafts"]["ollama:m"]["unknown"] = ["rule_supported"]
         p = 0.6 if i == 0 else 0.7 if i == 1 else 0.99
         verdict["answers"]["rule_supported"]["probabilities"] = {"yes": p, "no": 1 - p}
         if i >= 12:

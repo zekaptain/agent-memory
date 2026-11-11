@@ -258,6 +258,19 @@ def missing_steps(
     return [s for s in steps_for(raw, drafts, has_tool_errors) if s not in raw]
 
 
+def has_tool_errors(item: Mapping[str, Any]) -> bool:
+    return bool(item.get("facts", {}).get("tool_error_count"))
+
+
+def questions_left(
+    item: Mapping[str, Any], row: Mapping[str, Any], draft_rows: Sequence[Mapping[str, Any]]
+) -> list[str]:
+    """What a labeling session would still ask about an item that has a label. The slot a
+    draft is shown in changes the names of its questions, not whether any is left."""
+    drafts = order_drafts(str(item["item_id"]), draft_rows, seed=1)
+    return missing_steps(row, drafts, has_tool_errors(item))
+
+
 def _flatten(row: Mapping[str, Any]) -> dict[str, Any]:
     flat: dict[str, Any] = {}
     for key, value in row.items():
