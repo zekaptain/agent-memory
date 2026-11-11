@@ -273,14 +273,7 @@ class Verdict:
             reused=True,
         )
 
-    def decision_record(
-        self,
-        item: Mapping[str, Any],
-        run_created: str,
-        *,
-        harness_session_id: str | None = None,
-        project: str = "judge-experiment",
-    ) -> Record:
+    def decision_record(self, item: Mapping[str, Any], run_created: str) -> Record:
         """The ledger copy of the verdict: distributions and provenance, never the state or
         the lesson text."""
         row = self.row
@@ -300,7 +293,7 @@ class Verdict:
         }
         return Record(
             agent_id=JUDGE_AGENT,
-            harness_session_id=harness_session_id or f"judge-{row['run_id']}",
+            harness_session_id=f"judge-{row['run_id']}",
             kind="decision",
             ts=now(),
             # Keyed on every input, so judging the same turn again with a draft (or a new
@@ -319,7 +312,7 @@ class Verdict:
             content=f"judge {row['backend']}: {row['action']} for turn {item['turn_event_id']}",
             payload=payload,
             session=SessionInfo(
-                project=project,
+                project="judge-experiment",
                 scope="judge",
                 started_at=datetime.fromisoformat(run_created),
                 metadata={"run_id": row["run_id"]},

@@ -12,11 +12,12 @@ from typing import Annotated
 import typer
 
 from ..config import Config, load_config
-from ..db import MemoryClient
+from ..db import MemoryClient, sql_literal
 from ..judge.store import JudgeError, lock
 from . import approver
 from .examples import import_labels
 from .fit import fit_approver
+from .ledger import ADMISSION_AGENT
 from .review import review_day
 from .run import DEFAULT_DRAFTER, run_day
 from .store import AdmissionStore
@@ -32,10 +33,12 @@ def _config(ctx: typer.Context) -> Config:
     opts = ctx.obj
     cfg = load_config(home=getattr(opts, "home", None), port=getattr(opts, "port", None))
     with MemoryClient.from_config(cfg) as client:
-        _, rows = client.query("SELECT agent_id FROM agents WHERE agent_id = 'judge'")
+        _, rows = client.query(
+            f"SELECT agent_id FROM agents WHERE agent_id = {sql_literal(ADMISSION_AGENT)}"
+        )
     if not rows:
         raise JudgeError(
-            f"judge agent is missing; stop the server, run mem --home {cfg.home} migrate, "
+            f"admission agent is missing; stop the server, run mem --home {cfg.home} migrate, "
             "then restart the server"
         )
     return cfg

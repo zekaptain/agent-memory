@@ -7,12 +7,15 @@ from typing import Any
 
 from ..capture import blobs, ids
 from ..capture.pipeline import make_redactor
-from ..capture.record import Record
+from ..capture.record import SessionInfo
+from ..capture.session import LedgerSession, Observed, event_row
 from ..config import Config
 from ..db import MemoryClient, sql_literal
 from ..judge.verdict import Verdict
 from ..lifecycle import LifecyclePlan, stable_id
 
+ADMISSION_AGENT = "admission"
+OBSERVED = Observed("mem admit", "record", "mem_admit_v1")
 MEMORY_TYPES = {
     "project_fact": "fact",
     "tool_quirk": "fact",
@@ -20,50 +23,6 @@ MEMORY_TYPES = {
     "process": "procedure",
     "user_preference": "preference",
 }
-
-
-def _event_rows(client: MemoryClient, record: Record) -> tuple[str, str, list]:
-    sid = ids.session_id(record.agent_id, record.harness_session_id)
-    eid = ids.event_id(record.agent_id, record.harness_session_id, record.kind, record.source_key)
-    rows: list[tuple[str, list[dict[str, Any]]]] = []
-    if not client.query(f"SELECT 1 FROM sessions WHERE session_id = {sql_literal(sid)}")[1]:
-        info = record.session
-        rows.append(
-            (
-                "sessions",
-                [
-                    {
-                        "session_id": sid,
-                        "agent_id": record.agent_id,
-                        "harness_session_id": record.harness_session_id,
-                        "project": info.project if info else None,
-                        "scope": "judge",
-                        "capture_completeness": "partial",
-                        "started_at": info.started_at if info else record.ts,
-                    }
-                ],
-            )
-        )
-    if not client.query(f"SELECT 1 FROM events WHERE event_id = {sql_literal(eid)}")[1]:
-        rows.append(
-            (
-                "events",
-                [
-                    {
-                        "event_id": eid,
-                        "session_id": sid,
-                        "seq": record.seq,
-                        "kind": record.kind,
-                        "content": record.content,
-                        "content_hash": blobs.content_hash(record.content or ""),
-                        "payload": record.payload,
-                        "ts": record.ts,
-                        "redactions": record.redactions,
-                    }
-                ],
-            )
-        )
-    return sid, eid, rows
 
 
 def admit(
@@ -97,16 +56,19 @@ def admit(
         "drafter": draft["drafter"],
     }
     judged = Verdict(verdict)
-    record = judged.decision_record(
-        item,
-        created_at,
-        harness_session_id=f"admission-{day}",
+    decision = judged.decision_record(item, created_at)
+    # The verdict is the judge's; the session it is recorded in, and the writer, are admission's.
+    info = replace(
+        decision.session or SessionInfo(),
         project=item.get("project") or "unknown",
+        scope="admission",
     )
     record = redactor.record(
         replace(
-            record,
-            source_key=record.source_key + "/" + result["approver_version"],
+            decision,
+            agent_id=ADMISSION_AGENT,
+            harness_session_id=f"admission-{day}",
+            source_key=decision.source_key + "/" + result["approver_version"],
             # The judge's action stays as judged; the approver's is recorded beside it.
             content=(
                 f"judge {judged.backend}: {judged.recorded.action}; "
@@ -114,13 +76,31 @@ def admit(
                 f"for turn {item['turn_event_id']}"
             ),
             payload={
-                **(record.payload or {}),
+                **(decision.payload or {}),
                 "admission": {**metadata, "action": result["action"]},
             },
+            session=info,
         )
     )
+    session = LedgerSession(record.agent_id, record.harness_session_id, info, OBSERVED)
+    sid = session.session_id
+    eid = ids.event_id(record.agent_id, record.harness_session_id, record.kind, record.source_key)
     with MemoryClient.from_config(cfg) as client:
-        sid, eid, rows = _event_rows(client, record)
+        session.open(client, redactor)
+        rows: list[tuple[str, list[dict[str, Any]]]] = []
+        if not client.query(f"SELECT 1 FROM events WHERE event_id = {sql_literal(eid)}")[1]:
+            event = event_row(
+                cfg.blob_dir,
+                sid,
+                eid,
+                record.kind,
+                record.content,
+                record.payload,
+                ts=record.ts,
+                seq=record.seq,
+                redactions=record.redactions,
+            )
+            rows.append(("events", [event]))
         plan = LifecyclePlan(client)
         content, _ = redactor.text(draft["rule"])
         lesson, _ = redactor.value({"kind": draft["kind"], "claims": draft["claims"]})
@@ -148,7 +128,7 @@ def admit(
                 "metadata": {"lesson": lesson, "admission": clean_metadata},
             },
             event_id=eid,
-            actor="human" if human_action else "judge",
+            actor="human" if human_action else ADMISSION_AGENT,
             deduplicate=replace_memory_id is None,
             sources=[
                 {"event_id": source, "relation": "derived_from"} for source in sorted(sources)
@@ -164,7 +144,7 @@ def admit(
                 {
                     **action,
                     "memory_id": mid,
-                    "actor": "human" if human_action else "judge",
+                    "actor": "human" if human_action else ADMISSION_AGENT,
                     "session_id": sid,
                     "event_id": eid,
                     "related_memory_id": replace_memory_id,

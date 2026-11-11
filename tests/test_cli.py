@@ -85,7 +85,7 @@ def test_direct_sql_as_json(mem):
         "sql", "--direct", "--json", "SELECT agent_id FROM agents ORDER BY 1 LIMIT 2"
     )
     assert code == 0
-    assert json.loads(out) == [{"agent_id": "amp"}, {"agent_id": "factory-droid"}]
+    assert json.loads(out) == [{"agent_id": "admission"}, {"agent_id": "amp"}]
 
 
 def test_direct_sql_is_read_only_by_default(mem):

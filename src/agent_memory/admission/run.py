@@ -19,7 +19,7 @@ from ..judge.provenance import session_callers
 from ..judge.questions import QUESTIONS_VERSION
 from ..judge.store import JudgeError, RunStore, utc_now_iso
 from ..judge.triggers import candidates_from_turns, fetch_turn_events, segment_turns
-from ..judge.verdict import ask_turn, judge
+from ..judge.verdict import JUDGE_AGENT, ask_turn, judge
 from . import approver, ledger
 from .embed import make_embedder
 from .examples import example_for
@@ -79,7 +79,8 @@ def _discover(cfg: Config, store: AdmissionStore, day: RunStore, cutoff: str) ->
         known.update(row["item_id"] for row in RunStore.read_jsonl(path))
     with MemoryClient.from_config(cfg) as client:
         _, rows = client.query(
-            "SELECT s.session_id::VARCHAR FROM sessions s WHERE s.agent_id != 'judge' "
+            "SELECT s.session_id::VARCHAR FROM sessions s WHERE s.agent_id NOT IN "
+            f"({sql_literal(JUDGE_AGENT)}, {sql_literal(ledger.ADMISSION_AGENT)}) "
             f"AND s.started_at <= {sql_literal(cutoff)}::TIMESTAMPTZ{since}"
         )
         turns = segment_turns(

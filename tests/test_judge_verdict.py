@@ -413,13 +413,6 @@ def test_the_decision_record_carries_distributions_and_provenance_but_no_text():
     assert "database was locked" not in text
     assert draft["rule"] not in text
 
-    elsewhere = verdict.decision_record(
-        ITEM, "2026-01-01T00:00:00+00:00", harness_session_id="admission-day", project="p"
-    )
-    assert elsewhere.session is not None
-    assert (elsewhere.harness_session_id, elsewhere.session.project) == ("admission-day", "p")
-    assert elsewhere.source_key == record.source_key
-
     # Keyed on every input: the same turn with no draft is another event.
     undrafted = judge(RulesBackend(), ITEM, STATE, None, {}, run_id="r")
     key = undrafted.decision_record(ITEM, "2026-01-01T00:00:00+00:00").source_key

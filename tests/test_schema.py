@@ -50,6 +50,7 @@ def last_column(con: duckdb.DuckDBPyConnection, table: str) -> str:
 def test_agents_are_seeded_with_capture_tiers(con):
     rows = con.execute("SELECT agent_id, capture_tier FROM agents ORDER BY agent_id").fetchall()
     assert rows == [
+        ("admission", "A"),
         ("amp", "B"),
         ("factory-droid", "A"),
         ("human", "A"),

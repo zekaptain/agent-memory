@@ -159,7 +159,7 @@ def test_shadow_provenance_idempotency_and_content_dedup(admission_live, models)
     result = run.run_day(cfg, day="2026-11-10", drafter="ollama:synthetic")
     assert result["processed"] == 2
     assert query(cfg, "SELECT status FROM memory_status") == [("quarantined",)]
-    assert query(cfg, "SELECT action, actor FROM memory_actions") == [("confirm", "judge")]
+    assert query(cfg, "SELECT action, actor FROM memory_actions") == [("confirm", "admission")]
     metadata = json.loads(query(cfg, "SELECT metadata::JSON::VARCHAR FROM memories")[0][0])
     assert metadata["lesson"]["kind"] == "project_fact"
     assert metadata["admission"]["score"] == 0.95
@@ -173,7 +173,7 @@ def test_shadow_provenance_idempotency_and_content_dedup(admission_live, models)
     )
     assert len(events) == 2
     for content, payload, agent, session in events:
-        assert (agent, session) == ("judge", "admission-2026-11-10")
+        assert (agent, session) == ("admission", "admission-2026-11-10")
         assert "The synthetic evidence" not in content + payload
         assert "Use the synthetic project setup" not in content + payload
     before = len(query(cfg, "SELECT * FROM events"))
@@ -182,6 +182,40 @@ def test_shadow_provenance_idempotency_and_content_dedup(admission_live, models)
     day = store.day("2026-11-10")
     assert len(RunStore.read_jsonl(day.root / "admitted.jsonl")) == 2
     assert all(p.stat().st_mode & 0o777 == 0o600 for p in day.root.rglob("*") if p.is_file())
+
+
+def test_admission_writes_as_its_own_agent_in_an_observed_session(admission_live, models):
+    """Admission used to write as agent judge, in sessions of scope judge that no capture
+    observation covered. Migration 0005 registers judge for experiment verdicts only."""
+    cfg = admission_live
+    install_model(cfg)
+    capture(cfg)
+    run.run_day(cfg, day="2026-11-10", drafter="ollama:synthetic")
+    [(sid, agent, scope, project, completeness, metadata)] = query(
+        cfg,
+        "SELECT session_id::VARCHAR, agent_id, scope, project, capture_completeness, "
+        "metadata::JSON::VARCHAR FROM sessions WHERE harness_session_id = 'admission-2026-11-10'",
+    )
+    assert (agent, scope, project, completeness) == (
+        "admission",
+        "admission",
+        "synthetic-project",
+        "partial",
+    )
+    assert json.loads(metadata)["via"] == "mem admit"
+    assert query(cfg, "SELECT count(*) FROM sessions WHERE agent_id = 'judge'") == [(0,)]
+    assert query(
+        cfg,
+        "SELECT source_mode, adapter_version, exclusions::JSON::VARCHAR "
+        f"FROM capture_observations WHERE session_id = '{sid}'",
+    ) == [("record", "mem_admit_v1", '["no_complete_capture_evidence"]')]
+    [(content, content_bytes, tokens)] = query(
+        cfg, "SELECT content, content_bytes, token_estimate FROM events WHERE kind = 'decision'"
+    )
+    assert content_bytes == len(content.encode())
+    assert tokens == content_bytes // 4
+    # Its own decisions are never read back as turns to draft lessons from.
+    assert run.run_day(cfg, day="2026-11-11", drafter="ollama:synthetic")["processed"] == 0
 
 
 def test_the_decision_event_keeps_the_judges_action_beside_the_approvers(
@@ -260,7 +294,7 @@ def test_auto_adds_approval(admission_live, models, monkeypatch):
     capture(cfg)
     run.run_day(cfg, day="2026-11-10")
     assert query(cfg, "SELECT status FROM memory_status") == [("active",)]
-    assert query(cfg, "SELECT action, actor FROM memory_actions") == [("approve", "judge")]
+    assert query(cfg, "SELECT action, actor FROM memory_actions") == [("approve", "admission")]
     reason = query(cfg, "SELECT reason FROM memory_actions")[0][0]
     assert "synthetic-v1" in reason
     assert "0.95" in reason
@@ -569,7 +603,7 @@ def test_model_error_does_not_log_private_reply(admission_live, models, monkeypa
         ("enable", ["--auto"]),
     ],
 )
-def test_every_command_requires_judge_agent_before_work(
+def test_every_command_requires_the_admission_agent_before_work(
     admission_live,
     monkeypatch,
     capsys,
@@ -582,7 +616,7 @@ def test_every_command_requires_judge_agent_before_work(
     def missing_agent(client, sql):
         return (
             (["agent_id"], [])
-            if sql == "SELECT agent_id FROM agents WHERE agent_id = 'judge'"
+            if sql == "SELECT agent_id FROM agents WHERE agent_id = 'admission'"
             else original(client, sql)
         )
 
@@ -659,7 +693,7 @@ def test_full_cli_label_import_fit_enable_run_and_review(
     capture(cfg)
     assert main([*args, "run", "--day", "2026-11-10"]) == 0
     assert query(cfg, "SELECT status FROM memory_status") == [("active",)]
-    assert query(cfg, "SELECT actor FROM memory_actions") == [("judge",)]
+    assert query(cfg, "SELECT actor FROM memory_actions") == [("admission",)]
     assert main([*args, "run", "--day", "2026-11-10"]) == 0
     assert len(query(cfg, "SELECT * FROM memory_actions")) == 1
     controller = ReviewController(cfg, "2026-11-10")
