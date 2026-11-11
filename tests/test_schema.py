@@ -509,6 +509,34 @@ def test_session_summary(con, chain):
     assert row == ("factory-droid", "A", 4, 1, 1, True)
 
 
+def test_session_summary_starts_a_session_at_the_earliest_the_ledger_knows_of_it(con, chain):
+    def starts(session_id: str) -> tuple | None:
+        return con.execute(
+            "SELECT started_at, recorded_started_at FROM session_summary WHERE session_id = ?",
+            [session_id],
+        ).fetchone()
+
+    assert starts(chain.session_id) == (chain.now, chain.now)
+    # A session's row is written with the first record the ledger receives, which need not
+    # be the session's first: one received later can be earlier.
+    earlier = chain.now - timedelta(hours=2)
+    first = {"event_id": new_id(), "session_id": chain.session_id, "seq": 0, "ts": earlier}
+    insert_rows(con, {"events": [{**first, "kind": "session_start", "role": "harness"}]})
+    assert starts(chain.session_id) == (earlier, chain.now)
+    # A session starts no later than its row says, and at what its row says without events.
+    late = {"event_id": new_id(), "seq": 1, "kind": "note", "ts": chain.now + timedelta(hours=1)}
+    for events in ([late], []):
+        session = {
+            "session_id": new_id(),
+            "agent_id": "factory-droid",
+            "capture_completeness": "partial",
+            "started_at": chain.now,
+        }
+        rows = [{**event, "session_id": session["session_id"]} for event in events]
+        insert_rows(con, {"sessions": [session], "events": rows})
+        assert starts(session["session_id"]) == (chain.now, chain.now)
+
+
 def test_full_text_search_indexes_new_memories(con, chain):
     late = memory_row(chain, content="Herons stalk the shallows", key="birds")
     insert_rows(con, {"memories": [late]})

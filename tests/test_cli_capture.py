@@ -265,6 +265,25 @@ def test_a_session_end_hook_brings_the_outcome_of_the_last_turn(
     assert imports_of(live_client, path.stem)[-1] == ("p1", "r2", 5, 6)
 
 
+def test_a_session_first_seen_through_a_prompt_starts_where_its_transcript_does(
+    live_mem, live_client, tmp_path, monkeypatch
+):
+    # Hooks installed while a session is running: the first record the ledger gets of it
+    # is a prompt, and the session's row is written with the time of that hook.
+    path = write_transcript(tmp_path / f"{tmp_path.name}.jsonl", turn(1))
+    feed(monkeypatch, droid_hook(path, "UserPromptSubmit", prompt="Prompt 2.", message_id="p2"))
+    assert live_mem("event", "--harness", "droid") == (0, "", "")
+    write_transcript(path, turn(1), turn(2, outcome=False))
+    feed(monkeypatch, droid_hook(path, "Stop", message_id="r2"))
+    assert live_mem("event", "--harness", "droid") == (0, "", "")
+    sid = ids.session_id("factory-droid", path.stem)
+    session = f"FROM session_summary WHERE session_id = {sql_literal(sid)}"
+    # A transcript's first entry is dated a millisecond before the first that has a time.
+    began = "TIMESTAMPTZ '2026-11-11 10:01:00.999+00'"
+    assert live_client.query(f"SELECT started_at = {began} {session}")[1] == [(True,)]
+    assert live_client.query(f"SELECT recorded_started_at > {began} {session}")[1] == [(True,)]
+
+
 def test_a_stop_hook_reads_the_whole_transcript_when_the_last_import_cannot_be_placed(
     live_mem, live_client, tmp_path, monkeypatch
 ):

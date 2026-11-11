@@ -772,6 +772,37 @@ def test_later_verified_coverage_must_cover_session_start(con, start_gap):
     assert ("capture_coverage_gap" in codes(report)) == start_gap
 
 
+def test_coverage_from_where_a_session_row_starts_misses_an_earlier_event(con):
+    ids = [new_id() for _ in range(7)]
+    insert_rows(con, synthetic_chain(ids, WHEN))
+    insert_rows(
+        con,
+        {
+            "capture_observations": [
+                {
+                    "observation_id": new_id(),
+                    "session_id": ids[0],
+                    "source_mode": "supported_capture",
+                    "adapter_version": "test",
+                    "policy_version": "test",
+                    "source_fingerprint": "synthetic",
+                    "covered_from": WHEN,
+                    "covered_through": WHEN + timedelta(minutes=1),
+                    "parse_errors": [],
+                    "exclusions": [],
+                    "complete_supported": True,
+                }
+            ]
+        },
+    )
+    assert not {"capture_full_unverified", "capture_coverage_gap"} & codes(check(con))
+    # The row is written with the first record the ledger received of the session, and a
+    # record received later can be earlier. The session then began before its row says.
+    before = {"event_id": new_id(), "session_id": ids[0], "seq": 0, "kind": "session_start"}
+    insert_rows(con, {"events": [{**before, "role": "harness", "ts": WHEN - timedelta(hours=1)}]})
+    assert {"capture_full_unverified", "capture_coverage_gap"} <= codes(check(con))
+
+
 def test_later_observation_diagnostics_never_print_error_or_exclusion_text(con):
     ids = [new_id() for _ in range(7)]
     insert_rows(con, synthetic_chain(ids, WHEN))
