@@ -210,6 +210,14 @@ _Avoid_: Rename, resolution
 An offline study of whether a model can pick out the turns worth learning from, measured against human labels. It never writes memories.
 _Avoid_: Eval, benchmark
 
+**Run**:
+One pass of the judge experiment over one sample of turns, together with everything produced about them: drafts, verdicts, labels, and a report.
+_Avoid_: Experiment (the study as a whole), batch, job
+
+**Item**:
+One turn sampled into a run.
+_Avoid_: Candidate (kept only as the name of the command that samples them), example, case
+
 **Projection**:
 The bounded, deterministic text of a turn that a judge or drafter is shown.
 _Avoid_: State, prompt, context, rendering
@@ -277,6 +285,10 @@ _Avoid_: Test set, validation set
 **Freeze**:
 Locking the thresholds chosen on the calibration split, after which held-out results count.
 _Avoid_: Finalize, lock in
+
+**Live day**:
+One day's new turns, judged with a run's frozen thresholds and kept with that run.
+_Avoid_: Sub-run, child run
 
 ### Admission
 
