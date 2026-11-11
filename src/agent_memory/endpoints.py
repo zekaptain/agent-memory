@@ -26,12 +26,15 @@ class EgressError(AgentMemoryError):
 
 
 class HttpStatusError(EgressError):
-    """An HTTP rejection with its status and elapsed request time."""
+    """An HTTP rejection: its status, what the server said, and how long the request took."""
 
-    def __init__(self, message: str, code: int, *, latency_ms: float = 0.0) -> None:
+    def __init__(
+        self, message: str, code: int, *, latency_ms: float = 0.0, detail: str = ""
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.latency_ms = latency_ms
+        self.detail = detail
 
 
 def remote_allowed() -> bool:
@@ -99,6 +102,7 @@ def _send(
                 f"{url}: HTTP {exc.code}: {detail}",
                 exc.code,
                 latency_ms=(time.perf_counter() - started) * 1000,
+                detail=detail,
             ) from None
         except TimeoutError:
             if attempt == TIMEOUT_RETRIES:
