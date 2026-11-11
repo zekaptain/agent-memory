@@ -402,6 +402,9 @@ comes from observations, while `recorded_capture_completeness` preserves the
 original session assertion. Transcript imports report their coverage
 boundary and exclusions; they do not prove coverage of later activity.
 Old full-capture assertions without evidence are labeled unverified.
+`session_summary.started_at` is the earliest the ledger knows of a
+session: its row's start or its first event, whichever is earlier.
+`recorded_started_at` is the row's own.
 
 `cite` can return a placeholder before the reply has been imported.
 `answer_bindings` records a reply only when captured turn evidence uniquely

@@ -19,7 +19,7 @@ As of 2026-11-11.
 | Phase 3: audit tooling | Not started. `mem audit check` exists, but as a preflight for migrations, not as the commands below. | below |
 | Phase 4: memory quality | Partly built: the relation graph's first step and lesson admission (migration 0007). | below, [admission-spec.md](admission-spec.md) |
 | Phase 5: Markdown projection | Not started | below |
-| Lifecycle, coverage, and attribution hardening | Done (migrations 0002 to 0006). No live home has been migrated past 0001. | [logic-hardening-spec.md](logic-hardening-spec.md) |
+| Lifecycle, coverage, and attribution hardening | Done (migrations 0002 to 0006, and 0008 for a session's start). No live home has been migrated past 0001; the migrations through 0008 ran on copies of both homes on 2026-11-11. | [logic-hardening-spec.md](logic-hardening-spec.md) |
 | Judge experiment | Built; four runs stored | [judge-experiment-spec.md](judge-experiment-spec.md), [run logs](archive/judge-experiments.md) |
 | Memory usefulness study | Design only | [memory-utility-evaluation-spec.md](memory-utility-evaluation-spec.md) |
 | Parametric consolidation | Research proposal | [parametric-consolidation-spec.md](parametric-consolidation-spec.md) |
@@ -252,14 +252,16 @@ Verified against the code in the audit of 2026-11 and still open.
   and a hook's event later than the last transcript entry, such as the
   `session_end`, raises `capture_coverage_gap`. No Droid session can
   read as fully covered (`audit.py`, `adapters/droid.py`).
-- `session_summary.started_at` is the time of the first record the
-  ledger received for a session. When that record is a hook that is not
-  the session's start (a prompt, or the resume of a session begun before
-  its hooks were installed), it is later than the start the transcript
-  records, which the view shows only inside `effective_metadata`
-  (migration 0003). Every session that is running when the hooks are
-  installed will show it: one whose first record was a prompt hook at
-  16:19 has a transcript that starts at 14:12.
+- A session's row still carries the time of the first record the ledger
+  received of it. `session_summary.started_at` is the earlier of that
+  and the session's first event (migration 0008), and `mem audit check`
+  reads the summary. `mem judge live --since` and admission's search for
+  sessions it has not seen read the row, and a judge item's
+  `session_started_at` is the row's (`judge/pipeline.py`,
+  `judge/triggers.py`, `admission/run.py`). In a copy of the experiment
+  home, 1,974 of 2,335 rows start after their session's first event, the
+  median row by 17 days: an import made before 2026-11-11 dated a
+  session's start at the time of the read.
 - A hook with no id of its own is keyed on the time it ran, so a hook
   command that runs twice records each notification twice.
   `mem hooks install` leaves one hook of its own at each hook event. A
@@ -328,8 +330,9 @@ above these were deepened on 2026-11-11: the ledger session
   answers today.
 - Should a refused approval leave a row in the ledger? Today one the
   tool refuses leaves none.
-- Should `session_summary.started_at` take the start the transcript
-  records? That needs a new view, in migration 0008.
+- Should `mem judge live --since` and admission take a session's start
+  from `session_summary`, as `mem audit check` does? For a session
+  imported before 2026-11-11 the row's start is the time of the import.
 - Should a Droid session captured from start to end be able to read as
   fully covered, and what would have to be true of it?
 - Should timeouts in a row stop a judge command? A timeout can be the

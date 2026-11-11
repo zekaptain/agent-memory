@@ -106,6 +106,29 @@ An import covers its recorded boundary, not later activity. Omitted thinking,
 unavailable attachments, parse failures, and unsupported hook categories are
 not captured. A transcript `user` role does not establish human authorship.
 
+### A session's start, as built (2026-11-11)
+
+A session's row is written with the first record the ledger receives of
+the session, and a row is never changed. A record received later can be
+earlier. A prompt hook writes the row at the time of the prompt, and the
+transcript imported when that turn ends holds the session from its
+beginning. Until 2026-11-11 an import also dated a session's start at
+the time of the read, so the rows of sessions imported before then carry
+the time of their import.
+
+Migration `0008_session_start` replaces `session_summary`. Its
+`started_at` is the earlier of the row's start and the session's first
+event. `recorded_started_at` is the row's own. Nothing else in the view
+changed, and no row was rewritten.
+
+`mem audit check` compares where coverage begins with that start.
+Coverage that begins where the row does, after an earlier event, is
+therefore a gap.
+
+`mem judge live --since` and admission's search for sessions it has not
+seen still read the row's start, and a judge item's `session_started_at`
+is the row's.
+
 ## Attribution preserves uncertainty
 
 Append-only `answer_bindings` connect placeholders to captured replies with

@@ -195,7 +195,9 @@ Derived views:
 - `memory_history`: one feed of creations, supersessions, and review actions.
 - `session_summary`: per-session counts of answers, recalls, compactions, and
   capture errors, plus capability tier and separately observed coverage.
-  Placeholders are not counted as captured replies.
+  Placeholders are not counted as captured replies. A session starts at the
+  earlier of its row's start and its first event (0008); the row's own start
+  is `recorded_started_at`.
 - `why_answer`: for an answer event, every retrieval item, cited memory, and
   context event behind it, each memory's source events and agent, its status
   at recall, and its status now.
