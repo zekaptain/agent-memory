@@ -41,7 +41,7 @@ def build_server(tools: MemoryTools) -> MCPServer:
         query: free text; empty returns the most important recent memories.
         scopes: default ["global", <project>]. types: fact, preference, decision, procedure,
         observation, profile. Every call is logged with what was returned."""
-        return tools.recall(query, scopes, limit, types)
+        return tools.recall(query=query, scopes=scopes, limit=limit, types=types)
 
     @server.tool()
     def remember(
@@ -65,18 +65,18 @@ def build_server(tools: MemoryTools) -> MCPServer:
         Pass supersedes=<memory_id> when correcting an existing memory. Identical content
         in the same scope is confirmed rather than duplicated."""
         return tools.remember(
-            content,
-            type,
-            scope,
-            key,
-            confidence,
-            importance,
-            trust_level,
-            supersedes,
-            source_event_ids,
-            valid_from,
-            expires_at,
-            valid_to,
+            content=content,
+            memory_type=type,
+            scope=scope,
+            key=key,
+            confidence=confidence,
+            importance=importance,
+            trust_level=trust_level,
+            supersedes=supersedes,
+            source_event_ids=source_event_ids,
+            valid_from=valid_from,
+            expires_at=expires_at,
+            valid_to=valid_to,
         )
 
     @server.tool()
@@ -89,7 +89,12 @@ def build_server(tools: MemoryTools) -> MCPServer:
         """Record what an answer was based on: the recall it used and the memories it relied
         on. Call it when you answer using recalled memory. Without answer_event_id a
         placeholder answer event is created and returned."""
-        return tools.cite(retrieval_id, memory_ids, context_event_ids, answer_event_id)
+        return tools.cite(
+            retrieval_id=retrieval_id,
+            memory_ids=memory_ids,
+            context_event_ids=context_event_ids,
+            answer_event_id=answer_event_id,
+        )
 
     @server.tool()
     def review(
@@ -102,7 +107,12 @@ def build_server(tools: MemoryTools) -> MCPServer:
         until the user reviews it), confirm (still true), flag_contradiction (conflicts with
         related_memory_id). reason is required. You cannot approve a quarantined memory:
         only the user can, with `mem review`."""
-        return tools.review(action, memory_id, reason, related_memory_id)
+        return tools.review(
+            action=action,
+            memory_id=memory_id,
+            reason=reason,
+            related_memory_id=related_memory_id,
+        )
 
     @server.tool()
     def relate(
@@ -128,20 +138,20 @@ def build_server(tools: MemoryTools) -> MCPServer:
         LIBRARY, DECISION. content is an optional fuller sentence; the default is the
         triple itself. The same triple in the same scope is confirmed, not duplicated."""
         return tools.relate(
-            subject,
-            predicate,
-            object,
-            subject_type,
-            object_type,
-            content,
-            scope,
-            confidence,
-            importance,
-            trust_level,
-            source_event_ids,
-            valid_from,
-            expires_at,
-            valid_to,
+            subject=subject,
+            predicate=predicate,
+            object=object,
+            subject_type=subject_type,
+            object_type=object_type,
+            content=content,
+            scope=scope,
+            confidence=confidence,
+            importance=importance,
+            trust_level=trust_level,
+            source_event_ids=source_event_ids,
+            valid_from=valid_from,
+            expires_at=expires_at,
+            valid_to=valid_to,
         )
 
     @server.tool()
@@ -157,7 +167,7 @@ def build_server(tools: MemoryTools) -> MCPServer:
         reason over, plus a retrieval_id for cite. Entity names match case- and
         punctuation-insensitively. Use it for questions that chain facts: who owns the
         thing that depends on X, what replaced the approach a decision retired."""
-        return tools.graph(entity, hops, scopes, limit, types)
+        return tools.graph(entity=entity, hops=hops, scopes=scopes, limit=limit, types=types)
 
     @server.tool()
     def status() -> dict[str, Any]:
