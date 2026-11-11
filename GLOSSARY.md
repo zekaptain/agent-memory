@@ -286,6 +286,10 @@ _Avoid_: Test set, validation set
 Locking the thresholds chosen on the calibration split, after which held-out results count.
 _Avoid_: Finalize, lock in
 
+**Partial freeze**:
+A freeze made while some turns of the calibration split had no label, or a label with questions left. It has to be asked for, and the run records how many turns it went without.
+_Avoid_: Early freeze, forced freeze
+
 **Live day**:
 One day's new turns, judged with a run's frozen thresholds and kept with that run.
 _Avoid_: Sub-run, child run
