@@ -144,6 +144,13 @@ Entry points are `mem` (`agent_memory.cli:main`) and `mem-mcp`
   event` runs as a hook, so it prints nothing on stdout and never exits 2.
   Add regression coverage for replay, partial failures, and parent/result
   linkage.
+- For Droid the transcript is the record of replies, tool calls, and
+  compactions. A Droid hook payload carries no id for a tool call
+  (checked against real payloads), so `PostToolUse` records nothing and
+  `PreCompact` records a note. Do not make a hook write an event the
+  transcript also holds unless both carry the same harness id. A
+  hook-only event that a message can raise more than once is keyed on
+  the time the hook ran, not on `message_id`.
 - Session and event rows come from `capture/session.py`, whoever writes
   them: the capture writer, the MCP tools, `mem graph`, `mem review`, and
   admission. A new writer opens a `LedgerSession` and builds its events

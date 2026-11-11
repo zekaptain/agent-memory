@@ -26,8 +26,10 @@ As of 2026-11-11.
 
 ## Next approved work
 
-The next approved work should verify Droid capture end to end, then build
-and run the local usefulness experiment. Retrieval tuning and wider graph
+The next approved work should finish verifying Droid capture end to end,
+then build and run the local usefulness experiment. The tool, compaction,
+and notification hooks were checked against real payloads on 2026-11-11;
+the turn and session hooks were not. Retrieval tuning and wider graph
 use follow measured failures. Parametric consolidation remains research
 until usefulness and withdrawal/backflow can be measured.
 
@@ -46,12 +48,15 @@ its capture and recall against this schema, then decide what to adopt
 harness exposes (see "Verified harness behavior" below):
 
 - *Shell hooks + transcript* (Droid, Vibe). Hooks pipe their stdin JSON to
-  `mem event`, which records prompts, tool calls and results, compaction, and
-  session boundaries as they happen. Neither harness hands the assistant's
-  reply to a hook, so a turn-end hook (`Stop` for Droid, `post_agent` for
-  Vibe) runs `mem ingest --transcript <path>` and the transcript's new entries
-  are merged by message id. Vibe has no session or prompt hooks at all, so its
-  session and user rows also come from the transcript.
+  `mem event`, which records what the transcript lacks or holds only
+  later: prompts, notifications, and session boundaries for Droid, and tool
+  calls and results for Vibe. Neither harness hands the assistant's reply
+  to a hook, and a Droid hook does not name the tool call it reports. A
+  turn-end hook (`Stop` for Droid, `post_agent` for Vibe) therefore runs
+  `mem ingest --transcript <path>`, which brings in replies, Droid's tool
+  calls and compactions, and merges entries a hook already recorded by
+  their id. Vibe has no session or prompt hooks at all, so its session and
+  user rows also come from the transcript.
 - *In-process extension + spool* (omp, Amp). A TypeScript module subscribes to
   the lifecycle events, appends JSONL to `spool/`, and runs `mem ingest` at
   turn end and shutdown. Writing a file keeps the agent loop unblocked and
@@ -90,7 +95,13 @@ read-only view.
 
 ## Verified harness behavior
 
-Checked against the vendor documentation on 2026-10-25.
+Checked against the vendor documentation on 2026-10-25. Droid's tool,
+compaction, and notification hooks were checked against 650 real payloads
+on 2026-11-11: `PreToolUse`, `PostToolUse`, and `Notification` carry no
+`message_id` and no id for a tool call, `PreCompact` carries the
+`message_id` of the compaction's anchor message, and `PostToolUse` does
+not run for a call made inside a Script. See "What a Droid hook carries"
+in [phase-1-spec.md](phase-1-spec.md).
 
 | Harness | Events | Payload | Gaps for capture |
 |---------|--------|---------|------------------|
@@ -159,14 +170,22 @@ Verified against the code in the audit of 2026-11 and still open.
 - A memory that admission wrote and a human approves or retires with
   `mem review` gives the fitted approver no example. Only
   `mem admit review` records one (`review.py`).
-- What identifies a Droid hook has been checked against a real payload
-  only for `UserPromptSubmit`. Factory documents an optional `message_id`
-  on every hook and no tool id on `PostToolUse`. The adapter keys a hook
-  on `message_id` when it has one, so the second tool call or
-  notification of one message is taken for a duplicate and dropped.
-  Without one it keys on the wall clock, so a hook that runs twice
-  becomes two events, and a tool call the transcript import also records
-  is in the ledger twice (`adapters/droid.py`).
+- Droid's `Stop`, `SessionStart`, `SessionEnd`, and `SubagentStop`
+  payloads have not been checked against real ones, and
+  `UserPromptSubmit` only once. Until `Stop` is checked it is not known
+  whether the reply is in the transcript when the `Stop` hook imports it.
+  `SessionStart` and `SessionEnd` are keyed on `message_id` when the
+  payload has one, which is right only if a message raises each at most
+  once (`adapters/droid.py`).
+- A Droid turn that never reaches `Stop` (a crash, a killed session) is
+  in the ledger only after someone imports its transcript. Nothing
+  imports at `SessionEnd` or at the next `SessionStart`.
+- A hook with no id of its own is keyed on the time it ran, so a hook
+  command registered twice records its notifications and session markers
+  twice (`adapters/droid.py`).
+- The transcript import drops which Script call a nested tool call ran
+  inside (`script_execution.outer_tool_use_id`), so the ledger cannot
+  tell a nested call from a top-level one (`adapters/droid.py`).
 
 Reported in the same audit and not yet checked against the code: the
 hand-maintained `ALL_TABLES` list; lockdown happening after the listener
@@ -181,8 +200,9 @@ blinding; an egress error body in exception text; no CI configuration.
 
 Proposed in the audit of 2026-11. None of these is approved.
 
-- Finish capture: a hook installer, the Vibe transcript adapter, and the
-  end-to-end check of Droid capture.
+- Finish capture: a hook installer that imports the transcript at `Stop`
+  and `SessionEnd`, the Vibe transcript adapter, and the rest of the
+  end-to-end check of Droid capture (the hooks not yet seen).
 - Build `mem why` and `mem session` (Phase 3) as recorded reads, each a
   new strategy for the recall path.
 - Run the memory usefulness experiment.

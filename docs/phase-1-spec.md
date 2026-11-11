@@ -104,8 +104,9 @@ Vibe tool hooks use the shared builders. A keyed Droid prompt uses the bare
 message ID. Without one, its hook uses `prompt:unkeyed:<ts>` and marks
 `payload.dedupe` as `"unkeyed"`; it makes no hook/transcript dedupe claim.
 Replies keep their entry IDs, thinking appends `#thinking`, and tool calls
-and results keep their tool-use IDs. Session markers and notes retain their
-existing keys.
+and results keep their tool-use IDs. A session marker and the note a
+`PreCompact` hook leaves are keyed on the message ID when the payload has
+one. Any other hook-only note is keyed on the time its hook ran.
 
 ### Idempotent insert
 
@@ -198,14 +199,15 @@ locally on 2026-10-25). Entry `type` values and their mapping:
 
 `modelId` on the first assistant message fills `sessions.model`.
 `session.project` is the basename of `cwd`. Signatures, encrypted reasoning
-content, and `openai*` fields are dropped. Droid hooks already record
-`user_msg`, `tool_call`, and `tool_result`, as well as session boundaries,
-compaction, and notes. `capture.identity` gives hook and transcript prompts
-the same bare message ID and tools the same tool-use ID. The former
-`UserPromptSubmit:` prefix caused duplicate prompts even when the harness
-IDs matched. Live comparison of hook `message_id` and transcript entry `id`
-is recorded in [archive/plan-history.md](archive/plan-history.md),
-separately from the synthetic tests.
+content, and `openai*` fields are dropped. Droid hooks record `user_msg`,
+session boundaries, and notes. Tool calls, their results, and compactions
+come from the transcript alone; see "What a Droid hook carries" under "As
+built". `capture.identity` gives hook and transcript prompts the same bare
+message ID. The former `UserPromptSubmit:` prefix caused duplicate prompts
+even when the harness IDs matched. Live comparison of hook `message_id`
+and transcript entry `id` is recorded in
+[archive/plan-history.md](archive/plan-history.md), separately from the
+synthetic tests.
 
 **Vibe**: `~/.vibe/logs/session/` exists locally but holds no transcript yet.
 The adapter ships as a stub that raises `UnsupportedTranscript` with the path,
@@ -223,9 +225,11 @@ directly (Phase 2). `mem ingest --spool` is the whole integration.
 
 Common stdin fields across Droid and Vibe (`session_id`, `cwd`,
 `hook_event_name`, `transcript_path`) map to the `session` block.
-`capture.identity` owns the keys: prompt and tool IDs are shared with
-transcript import, while hook-only notes use the event name plus ID or
-timestamp. `SessionStart` also includes its source (startup/resume/clear/compact).
+`capture.identity` owns the keys. A prompt's ID is shared with transcript
+import. A hook-only event uses the event name plus the message ID when
+that names one event (`SessionStart`, `SessionEnd`, `PreCompact`), and
+otherwise the time the hook ran.
+`SessionStart` also includes its source (startup/resume/clear/compact).
 Mapping:
 
 | hook event | kind | notes |
@@ -233,9 +237,10 @@ Mapping:
 | SessionStart | `session_start` | payload `source` (startup/resume/clear/compact); the `sessions` row is created once |
 | SessionEnd | `session_end` | payload `reason` |
 | UserPromptSubmit | `user_msg` | content = prompt |
-| PreToolUse / pre_tool | skipped by default | `--record-pre-tool` for debugging |
-| PostToolUse / post_tool | `tool_call` + `tool_result` | result parented to call |
-| PreCompact | `compaction` | payload `trigger`, `custom_instructions` |
+| PreToolUse / pre_tool | skipped by default | `--record-pre-tool` records a note, for debugging |
+| PostToolUse (Droid) | none | the payload names no call; the transcript records the call and its result |
+| post_tool (Vibe) | `tool_call` + `tool_result` | keyed on `tool_call_id`; result parented to call |
+| PreCompact | `note` | content = `custom_instructions`; payload `trigger` and the anchor `message_id`. The `compaction` event comes from the transcript |
 | Stop / post_agent | none | the Phase 2 hook script runs `mem ingest --transcript` after this |
 | SubagentStop, Notification | `note` | payload = stdin minus transcript text |
 
@@ -478,7 +483,8 @@ Implemented as specified except for these points, each forced by a probe:
   the recall query as `query_text`.
 - **Droid hooks** record `UserPromptSubmit` and `PostToolUse` too (not only
   session boundaries); Phase 2 decides which hooks to install once the
-  `message_id` question is settled.
+  `message_id` question is settled. (`PostToolUse` no longer records
+  anything; see "What a Droid hook carries" below.)
 
 Verified: ruff, pyrefly, 293 tests (110 new), `mem smoke` 16/16, and an import
 of this project's own 1000-event Droid transcript (0.8 s, 0 orphan results,
@@ -804,3 +810,58 @@ leaves no row in the ledger; one rejected at replay leaves its
 
 Regressions are in `tests/test_review.py`, `tests/test_mcp.py`, and
 `tests/test_lifecycle.py`.
+
+### What a Droid hook carries (2026-11-11)
+
+The hook adapter was written from Factory's documentation, which lists an
+optional `message_id` on every hook. A probe recorded the shape of 650
+hook payloads from one Droid session in the Factory app, where tools are
+called through Script, and compared them with that session's transcript.
+
+| hook | payloads | ids in the payload | what the transcript holds |
+|---|---|---|---|
+| `PreToolUse` | 554 | none | The call, with its id, written before the hook runs. |
+| `PostToolUse` | 93 | none | The call, with its id. The result is written after the hook runs. |
+| `PreCompact` | 2 | `message_id` | That id is the anchor message of the `compaction_state` entry that follows, not the entry's own id. |
+| `Notification` | 1 | none | Nothing. |
+
+- `PreToolUse` ran for every call, the 460 made inside a Script included.
+  `PostToolUse` ran only for top-level calls. The transcript holds every
+  call, and a nested one names the call it ran inside.
+- Hooks and transcript agree on order: the n-th top-level `PostToolUse`
+  is the n-th top-level call in the transcript, for all 93.
+- Content does not identify a call. Of the session's 5,198 calls, 524
+  have the same name and input as another.
+- Parsing that transcript (36 MB, 10,671 records) takes 0.17 s, so an
+  import at every `Stop` is affordable.
+
+A `PostToolUse` hook was recorded as a `tool_call` and a `tool_result`
+keyed on the time the hook ran, because the `tool_use_id` the adapter
+looked for is never sent. The transcript import then recorded the same
+call under its id. Every top-level call was in the ledger twice, and no
+nested call came from a hook at all. `PreCompact` was recorded as a
+`compaction` keyed on the anchor message and the transcript's
+`compaction_state` as another, so `session_summary` counted two
+compactions for one.
+
+- A Droid `PostToolUse` hook records nothing. The transcript is the
+  record of tool calls and results, and they reach the ledger when the
+  `Stop` hook imports it.
+- `PreCompact` is a `note`: a compaction was asked for, by this
+  `trigger`, with these instructions, after this message. The
+  `compaction` event is the transcript's.
+- `Notification`, `SubagentStop`, `PreToolUse` (with
+  `--record-pre-tool`), and events the adapter does not know are keyed
+  on the time the hook ran, whether or not the payload has a
+  `message_id`. One message can raise several of them, and keyed on its
+  id the second would have been dropped as a duplicate. The `message_id`
+  stays in the event's attribution.
+- Vibe is unchanged. Its `post_tool` payload is documented to carry
+  `tool_call_id`, and it has no transcript import yet.
+
+No `UserPromptSubmit`, `Stop`, `SessionStart`, `SessionEnd`, or
+`SubagentStop` ran while the probe was recording, so those payloads are
+not checked here. See [roadmap.md](roadmap.md#known-defects).
+
+Regressions are in `tests/test_adapters.py`,
+`tests/test_capture_identity.py`, and `tests/test_cli_capture.py`.

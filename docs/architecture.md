@@ -21,7 +21,7 @@ experiment](judge-experiment-spec.md), and [admission](admission-spec.md).
 
 | Harness          | Tier | Integration           | Capture                                                     |
 |------------------|------|-----------------------|-------------------------------------------------------------|
-| Factory Droid    | A    | `hooks.json` + MCP    | Lifecycle and tool hooks in real time; assistant replies from the transcript file hooks point at. |
+| Factory Droid    | A    | `hooks.json` + MCP    | Prompts, notifications, and session boundaries from hooks in real time; replies, tool calls, and compactions from the transcript file hooks point at, imported at the end of each turn. |
 | Mistral Vibe     | A    | `hooks.toml` + MCP    | Tool hooks in real time; prompts and replies from the transcript file. No session or compaction hooks. |
 | oh-my-pi (omp)   | A    | TypeScript hooks + MCP | Complete: every message, turn, tool, and compaction event, in process. |
 | Amp              | B    | plugin API + MCP      | Complete per turn (`agent.end` carries every message); no compaction or session-end events. Threads also live server-side. |
@@ -78,7 +78,9 @@ spill over 16 KiB, deterministic ids (`uuid5` over agent, harness session,
 kind, and source key), pre-read plus insert in one transaction, or the spool
 when the server is down. `mem event --harness droid|vibe` takes one hook
 payload on stdin; `mem ingest --transcript` imports a Droid session file
-(every entry type mapped; thinking opt-in); `mem ingest --spool` replays, and
+(every entry type mapped; thinking opt-in). For Droid the transcript is the
+record of replies, tool calls, and compactions: a Droid hook names no tool
+call, so `mem event` records none. `mem ingest --spool` replays, and
 `mem serve` drains the spool at startup. A record the ledger rejects, or a
 spool line it cannot read, becomes a `capture_error` event and is kept under
 `spool/failed/` while the rest of its batch is written. A real 1000-event

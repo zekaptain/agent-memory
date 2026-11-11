@@ -133,13 +133,20 @@ Hook installation is not automatic. After installing the commands on your
 # Read the hook's JSON payload from stdin.
 mem event --harness droid
 
-# In a Stop hook, import the assistant's reply from the transcript.
+# In a Stop hook, import the turn from the transcript: the assistant's
+# reply, every tool call and its result, and any compaction.
 # Read TRANSCRIPT_PATH from the hook payload before calling this.
 mem ingest --harness droid --transcript "$TRANSCRIPT_PATH"
 ```
 
-Neither Droid nor Vibe hooks carry the assistant's reply. Droid transcript
-import fills that gap; Vibe transcript support is still pending.
+For Droid the transcript is the record of replies, tool calls, and
+compactions, so the import in the `Stop` hook is required, not optional.
+A Droid hook does not carry the reply and does not name the tool call it
+reports. `mem event` therefore records nothing for `PostToolUse` and
+`Stop`. It records a prompt, a notification, the start and end of a
+session, a subagent's stop, and the request to compact (as a note; the
+compaction comes from the transcript). Vibe hooks name their tool calls,
+so those are recorded; Vibe transcript support is still pending.
 
 For `mem event`, use `--keep-raw` to keep the full payload with the event,
 redacted like everything else, or `--record-pre-tool` to record pre-tool
