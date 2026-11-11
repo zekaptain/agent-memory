@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 
 import pytest
@@ -13,8 +14,11 @@ from agent_memory.graph import Relation, hop_sql, normalize_entity, relations_sq
 from agent_memory.graph.resolve import (
     Cluster,
     Entity,
+    FailedBlock,
     OllamaResolver,
+    Proposal,
     ResolveError,
+    ResolverUnavailable,
     blocks,
     cluster_prompt,
     collect_entities,
@@ -80,16 +84,14 @@ def _entity(name: str, etype: str | None = None) -> Entity:
 
 def test_parse_clusters_repairs_model_output():
     names = ["Edwin Aldrin", "Buzz Aldrin", "Jim Lovell", "NASA"]
-    text = json.dumps(
-        {
-            "clusters": [
-                {"canonical": "Buzz Aldrin", "aliases": ["edwin aldrin", "Buzz Aldrin"]},
-                {"canonical": "Made Up", "aliases": ["Jim Lovell", "Edwin Aldrin", "Ghost"]},
-                "garbage",
-            ]
-        }
-    )
-    clusters = parse_clusters(text, names)
+    data = {
+        "clusters": [
+            {"canonical": "Buzz Aldrin", "aliases": ["edwin aldrin", "Buzz Aldrin"]},
+            {"canonical": "Made Up", "aliases": ["Jim Lovell", "Edwin Aldrin", "Ghost"]},
+            "garbage",
+        ]
+    }
+    clusters = parse_clusters(data, names)
     assert clusters[0] == Cluster("Buzz Aldrin", ("Edwin Aldrin", "Buzz Aldrin"))
     # Edwin was already placed; Ghost is not an input; Made Up is not in its own cluster.
     assert clusters[1] == Cluster("Jim Lovell", ("Jim Lovell",))
@@ -101,12 +103,10 @@ def test_parse_clusters_repairs_model_output():
     ]
 
 
-def test_parse_clusters_extracts_json_from_prose_and_rejects_garbage():
-    assert parse_clusters('Sure: {"clusters": []} done', ["A"]) == [Cluster("A", ("A",))]
-    with pytest.raises(ResolveError):
-        parse_clusters("no json here", ["A"])
-    with pytest.raises(ResolveError):
-        parse_clusters('{"nope": 1}', ["A"])
+def test_parse_clusters_needs_a_clusters_list():
+    assert parse_clusters({"clusters": []}, ["A"]) == [Cluster("A", ("A",))]
+    with pytest.raises(ResolveError, match="no clusters list"):
+        parse_clusters({"nope": 1}, ["A"])
 
 
 def test_collect_entities_blocks_and_prompt():
@@ -143,46 +143,118 @@ def test_propose_skips_single_entity_blocks_and_calls_model_per_block():
         def clusters(self, entity_type, entities):
             calls.append((entity_type, [e.name for e in entities]))
             names = [e.name for e in entities]
-            return parse_clusters(
-                json.dumps({"clusters": [{"canonical": names[0], "aliases": names}]}), names
-            )
+            return parse_clusters({"clusters": [{"canonical": names[0], "aliases": names}]}, names)
 
     rels = [
         Relation("Neil Armstrong", "commanded", "Apollo 11", "PERSON", "EVENT"),
         Relation("Armstrong", "walked on", "Moon", "PERSON", "LOCATION"),
         Relation("Apollo 11", "landed on", "Moon", "EVENT", "LOCATION"),
     ]
-    merges = propose(rels, Stub())
+    proposal = propose(rels, Stub())
     assert calls == [("PERSON", ["Armstrong", "Neil Armstrong"])]
-    assert [(m.alias, m.canonical) for m in merges] == [("Neil Armstrong", "Armstrong")]
-    assert propose(rels, Stub(), entity_type="event") == []
+    assert [(m.alias, m.canonical) for m in proposal.merges] == [("Neil Armstrong", "Armstrong")]
+    assert proposal.failed == []
+    assert propose(rels, Stub(), entity_type="event") == Proposal([], [])
 
 
-def test_ollama_resolver_posts_json_and_reports_truncation(monkeypatch):
+def test_propose_keeps_the_merges_of_blocks_that_worked():
+    rels = [
+        Relation("Neil Armstrong", "commanded", "Apollo 11", "PERSON", "EVENT"),
+        Relation("Armstrong", "flew", "Apollo Eleven", "PERSON", "EVENT"),
+        Relation("Houston", "tracked", "Apollo 11", "LOCATION", "EVENT"),
+        Relation("Mission Control", "tracked", "Apollo Eleven", "LOCATION", "EVENT"),
+    ]
+    asked: list[str] = []
+
+    class Stub:
+        name = "stub"
+
+        def __init__(self, failure: ResolveError) -> None:
+            self.failure = failure
+
+        def clusters(self, entity_type, entities):
+            asked.append(entity_type)
+            if entity_type == "LOCATION":
+                raise self.failure
+            names = [e.name for e in entities]
+            return parse_clusters({"clusters": [{"canonical": names[0], "aliases": names}]}, names)
+
+    # One block's reply is unusable: the blocks around it still count.
+    proposal = propose(rels, Stub(ResolveError("model ran out of tokens")))
+    assert asked == ["EVENT", "LOCATION", "PERSON"]
+    assert [(m.alias, m.canonical) for m in proposal.merges] == [
+        ("Apollo Eleven", "Apollo 11"),
+        ("Neil Armstrong", "Armstrong"),
+    ]
+    assert proposal.failed == [
+        FailedBlock("LOCATION", ("Houston", "Mission Control"), "model ran out of tokens")
+    ]
+    assert proposal.untried == 0
+
+    # A server that cannot be asked will not answer the next block either.
+    asked.clear()
+    proposal = propose(rels, Stub(ResolverUnavailable("connection refused")))
+    assert asked == ["EVENT", "LOCATION"]
+    assert [m.alias for m in proposal.merges] == ["Apollo Eleven"]
+    assert [f.reason for f in proposal.failed] == ["connection refused"]
+    assert proposal.untried == 1
+
+
+def test_ollama_resolver_takes_three_attempts_before_giving_up(monkeypatch):
     seen: list[dict] = []
+    replies: list[dict] = []
 
     def post(url, body, **_):
-        seen.append({"url": url, **body})
-        return {"message": {"content": '{"clusters": []}'}}, 1.0
+        seen.append({"url": url, **copy.deepcopy(body)})
+        return replies.pop(0), 1.0
 
     monkeypatch.setattr(endpoints, "post_json", post)
+    done = {"message": {"content": 'Sure: {"clusters": []} done'}}
+    cut = {"message": {"content": "{", "thinking": "x" * 9000}, "done_reason": "length"}
     resolver = OllamaResolver("tiny", host="http://ollama.test")
-    assert resolver.clusters("PERSON", [_entity("A"), _entity("B")]) == [
-        Cluster("A", ("A",)),
-        Cluster("B", ("B",)),
-    ]
+    people = [_entity("A"), _entity("B")]
+    apart = [Cluster("A", ("A",)), Cluster("B", ("B",))]
+
+    replies[:] = [done]
+    assert resolver.clusters("PERSON", people) == apart
     assert seen[0]["url"] == "http://ollama.test/api/chat"
     assert seen[0]["model"] == "tiny"
     assert seen[0]["format"] == "json"
     assert "- A: A did a thing" in seen[0]["messages"][0]["content"]
+    # Nothing is said about thinking at first: the server decides.
+    assert "think" not in seen[0]
 
-    monkeypatch.setattr(
-        endpoints,
-        "post_json",
-        lambda *a, **k: ({"message": {"content": "{"}, "done_reason": "length"}, 1.0),
-    )
-    with pytest.raises(ResolveError):
-        resolver.clusters("PERSON", [_entity("A"), _entity("B")])
+    # Cut off: once more with room, then with thinking off and no grammar.
+    seen.clear()
+    replies[:] = [cut, cut, done]
+    assert resolver.clusters("PERSON", people) == apart
+    assert [b["options"]["num_predict"] for b in seen] == [4096, 12288, 4096]
+    assert [b.get("think", "absent") for b in seen] == ["absent", "absent", False]
+    assert [b.get("format", "absent") for b in seen] == ["json", "json", "absent"]
+
+    # Still cut off: the error says where the budget went.
+    seen.clear()
+    replies[:] = [cut, cut, cut]
+    with pytest.raises(ResolveError, match="ran out of tokens after 9000 chars of thinking"):
+        resolver.clusters("PERSON", people)
+    assert len(seen) == 3
+
+    # An object without clusters is no answer either.
+    replies[:] = [{"message": {"content": '{"nope": 1}'}}]
+    with pytest.raises(ResolveError, match="no clusters list"):
+        resolver.clusters("PERSON", people)
+
+    # A server that cannot be asked is its own failure, after one request.
+    seen.clear()
+
+    def down(url, body, **_):
+        seen.append(body)
+        raise endpoints.EgressError(f"{url}: connection refused")
+
+    monkeypatch.setattr(endpoints, "post_json", down)
+    with pytest.raises(ResolverUnavailable, match="connection refused"):
+        resolver.clusters("PERSON", people)
+    assert len(seen) == 1
 
 
 # live: relate, graph, merge
@@ -613,6 +685,75 @@ def test_mem_graph_cli_entities_show_and_resolve(live_cfg, monkeypatch, capsys):
     code, out = mem("entities", "--scope", "nothing-here")
     assert code == 0
     assert "no relations" in out
+
+
+def test_mem_graph_resolve_keeps_the_merges_of_blocks_that_worked(live_cfg, monkeypatch, capsys):
+    for var in ("AGENT_MEMORY_HOME", "AGENT_MEMORY_HOST", "AGENT_MEMORY_PORT"):
+        monkeypatch.delenv(var, raising=False)
+    seed = MemoryTools(live_cfg, "oh-my-pi", harness_session_id="partial-seed", project="partial")
+    try:
+        seed.relate("Cy Ng", "owns", "auth-svc", "PERSON", "SERVICE")
+        seed.relate("C. Ng", "reviews", "auth-api", "PERSON", "SERVICE")
+    finally:
+        seed.close()
+
+    def mem(*args: str) -> tuple[int, str]:
+        code = main(["--home", str(live_cfg.home), "--port", str(live_cfg.port), "graph", *args])
+        return code, capsys.readouterr().out
+
+    def post(url, body, **_):
+        if "SERVICE entities" in body["messages"][0]["content"]:
+            return {"message": {"content": "{"}, "done_reason": "length"}, 1.0
+        cluster = {"canonical": "Cy Ng", "aliases": ["Cy Ng", "C. Ng"]}
+        return {"message": {"content": json.dumps({"clusters": [cluster]})}}, 1.0
+
+    monkeypatch.setattr(endpoints, "post_json", post)
+    failed = (
+        "mem graph: could not cluster 2 SERVICE entities ('auth-api' to 'auth-svc'): "
+        "model ran out of tokens; JSON incomplete: '{'"
+    )
+    code, out = mem("resolve", "--scope", "partial", "--model", "stub")
+    assert code == 1
+    assert "C. Ng  ->  Cy Ng  (PERSON)" in out
+    assert "proposal only" in out
+    assert out.splitlines()[-1] == failed
+
+    code, out = mem("resolve", "--scope", "partial", "--model", "stub", "--apply")
+    assert code == 1
+    assert "merged 'C. Ng' into 'Cy Ng': 1 superseded, 0 retired" in out
+    assert out.splitlines()[-1] == failed
+    code, out = mem("show", "Cy Ng", "--hops", "1", "--scope", "partial")
+    assert "(Cy Ng) --[reviews]--> (auth-api)" in out
+
+    # Nothing left to merge, and the block that failed is still reported.
+    code, out = mem("resolve", "--scope", "partial", "--model", "stub")
+    assert code == 1
+    assert "proposes no merges" not in out
+    assert out.splitlines() == [failed]
+
+    # A server that cannot be asked: the first block is named, the rest are not tried.
+    seed = MemoryTools(live_cfg, "oh-my-pi", harness_session_id="partial-seed-2", project="partial")
+    try:
+        seed.relate("Di Wu", "owns", "auth-svc", "PERSON", "SERVICE")
+    finally:
+        seed.close()
+    asked: list[str] = []
+
+    def down(url, body, **_):
+        asked.append(url)
+        raise endpoints.EgressError(f"{url}: connection refused")
+
+    monkeypatch.setattr(endpoints, "post_json", down)
+    code, out = mem(
+        "resolve", "--scope", "partial", "--model", "stub", "--host", "http://localhost:1"
+    )
+    assert code == 1
+    assert out.splitlines() == [
+        "mem graph: could not cluster 2 PERSON entities ('Cy Ng' to 'Di Wu'): "
+        "http://localhost:1/api/chat: connection refused",
+        "mem graph: 1 more block was not tried",
+    ]
+    assert len(asked) == 1
 
 
 def test_mem_graph_entities_and_resolve_record_what_they_read(

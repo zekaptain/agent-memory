@@ -8,28 +8,32 @@ are shown before they are applied, and any name the model leaves out keeps its o
 
 from __future__ import annotations
 
-import json
-import re
 from collections import Counter, defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from .. import endpoints
+from .. import endpoints, model_call
 from ..db import AgentMemoryError
+from ..model_call import Ask, Ollama
 from .model import Relation, normalize_entity
 
 DEFAULT_MODEL = "qwen3:8b"
 BLOCK_SIZE = 60
 MAX_SENTENCES = 3
 MAX_TOKENS = 4096
+# A block of sixty names can take a thinking model past the budget before the clusters
+# close. Three times the room, as for the judge.
+WIDER_TOKENS = 3 * MAX_TOKENS
 UNTYPED = "UNTYPED"
-
-_JSON_OBJECT = re.compile(r"\{.*\}", re.DOTALL)
 
 
 class ResolveError(AgentMemoryError):
     """Entity resolution cannot proceed for an expected reason."""
+
+
+class ResolverUnavailable(ResolveError):
+    """The model could not be asked at all, so asking about another block is pointless."""
 
 
 @dataclass(frozen=True)
@@ -53,6 +57,25 @@ class Merge:
     alias: str
     canonical: str
     entity_type: str | None
+
+
+@dataclass(frozen=True)
+class FailedBlock:
+    """A block the resolver returned no clusters for, and why."""
+
+    entity_type: str
+    names: tuple[str, ...]
+    reason: str
+
+
+@dataclass(frozen=True)
+class Proposal:
+    """The merges proposed from the blocks that worked, the blocks that failed, and how
+    many were not tried after the resolver became unavailable."""
+
+    merges: list[Merge]
+    failed: list[FailedBlock]
+    untried: int = 0
 
 
 def collect_entities(relations: Sequence[Relation]) -> list[Entity]:
@@ -123,11 +146,10 @@ def cluster_prompt(entity_type: str, entities: Sequence[Entity]) -> str:
     )
 
 
-def parse_clusters(text: str, names: Sequence[str]) -> list[Cluster]:
+def parse_clusters(data: dict[str, Any], names: Sequence[str]) -> list[Cluster]:
     """The model's clusters, repaired: names it dropped become singletons, names it invented
     are ignored, a name it placed twice stays in the first cluster, and a canonical that is
     not in its own cluster is replaced by the longest alias."""
-    data = _json_object(text)
     raw = data.get("clusters")
     if not isinstance(raw, list):
         raise ResolveError("model JSON has no clusters list")
@@ -176,26 +198,20 @@ class OllamaResolver:
     """Clusters with Ollama; non-loopback hosts require the shared egress opt-in."""
 
     def __init__(self, model: str = DEFAULT_MODEL, *, host: str = endpoints.OLLAMA_HOST) -> None:
-        self.model = model
-        self.host = host
+        self.server = Ollama(model, host)
         self.name = f"ollama:{model}"
 
     def clusters(self, entity_type: str, entities: Sequence[Entity]) -> list[Cluster]:
-        body: dict[str, Any] = {
-            "model": self.model,
-            "stream": False,
-            "format": "json",
-            "options": {"temperature": 0, "num_predict": MAX_TOKENS},
-            "messages": [{"role": "user", "content": cluster_prompt(entity_type, entities)}],
-        }
+        # Nothing is said about thinking, so a model that can think does. A block that is
+        # cut off gets room, then one attempt with thinking off.
+        ask = Ask(prompt=cluster_prompt(entity_type, entities), budget=MAX_TOKENS)
         try:
-            response, _ = endpoints.post_json(f"{self.host}/api/chat", body)
-        except AgentMemoryError as exc:
+            result = model_call.call(self.server, ask, wider=WIDER_TOKENS, drop_thinking=True)
+        except model_call.ModelUnavailable as exc:
+            raise ResolverUnavailable(str(exc)) from None
+        except model_call.ModelCallError as exc:
             raise ResolveError(str(exc)) from None
-        content = str((response.get("message") or {}).get("content") or "")
-        if response.get("done_reason") == "length":
-            raise ResolveError("model ran out of tokens before finishing the clusters")
-        return parse_clusters(content, [e.name for e in entities])
+        return parse_clusters(result.data, [e.name for e in entities])
 
 
 def propose(
@@ -204,33 +220,24 @@ def propose(
     *,
     entity_type: str | None = None,
     block_size: int = BLOCK_SIZE,
-) -> list[Merge]:
+) -> Proposal:
     """Merges the resolver proposes over the entities in these relations. Blocks with one
-    entity need no model call."""
+    entity need no model call. A block the resolver fails on is reported beside the merges
+    from the blocks that worked, not instead of them."""
     entities = collect_entities(relations)
     if entity_type:
         wanted = entity_type.upper()
         entities = [e for e in entities if (e.entity_type or UNTYPED) == wanted]
+    todo = [block for block in blocks(entities, block_size) if len(block[1]) > 1]
     merges: list[Merge] = []
-    for etype, members in blocks(entities, block_size):
-        if len(members) < 2:
-            continue
-        clusters = resolver.clusters(etype, members)
-        merges.extend(plan_merges(clusters, None if etype == UNTYPED else etype))
-    return merges
-
-
-def _json_object(text: str) -> dict[str, Any]:
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        match = _JSON_OBJECT.search(text)
-        if not match:
-            raise ResolveError(f"model returned no JSON: {text[:200]!r}") from None
+    failed: list[FailedBlock] = []
+    for index, (etype, members) in enumerate(todo):
         try:
-            data = json.loads(match.group(0))
-        except json.JSONDecodeError as exc:
-            raise ResolveError(f"model returned unparsable JSON ({exc.msg})") from None
-    if not isinstance(data, dict):
-        raise ResolveError("model JSON is not an object")
-    return data
+            clusters = resolver.clusters(etype, members)
+        except ResolveError as exc:
+            failed.append(FailedBlock(etype, tuple(e.name for e in members), str(exc)))
+            if isinstance(exc, ResolverUnavailable):
+                return Proposal(merges, failed, untried=len(todo) - index - 1)
+            continue
+        merges.extend(plan_merges(clusters, None if etype == UNTYPED else etype))
+    return Proposal(merges, failed)

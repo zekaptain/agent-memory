@@ -16,8 +16,10 @@ from .recall import relations_of
 from .resolve import (
     BLOCK_SIZE,
     DEFAULT_MODEL,
+    UNTYPED,
     Merge,
     OllamaResolver,
+    Proposal,
     collect_entities,
     propose,
 )
@@ -137,7 +139,8 @@ def resolve(
 ) -> None:
     """Propose entity merges with a local model; --apply records them as supersedes history.
     The relations the model is given are logged as a graph_relations_v1 retrieval, and each
-    merge names it."""
+    merge names it. A block of entities the model returns no clusters for is named and the
+    command exits 1, after the merges from the other blocks are shown or recorded."""
     tools = _tools(ctx, agent, project)
     resolver = OllamaResolver(model, host=host)
     try:
@@ -146,16 +149,17 @@ def resolve(
         if not relations:
             print("no relations recorded in these scopes")
             return
-        merges = propose(relations, resolver, entity_type=entity_type, block_size=block_size)
-        if not merges:
+        proposal = propose(relations, resolver, entity_type=entity_type, block_size=block_size)
+        if proposal.merges:
+            _print_merges(proposal.merges)
+            print(
+                f"\nproposed from {len(relations)} relations; retrieval {listing['retrieval_id']}"
+            )
+            if not apply:
+                print("proposal only; pass --apply to record these merges")
+        elif not proposal.failed:
             print(f"{resolver.name} proposes no merges across {len(relations)} relations")
-            return
-        _print_merges(merges)
-        print(f"\nproposed from {len(relations)} relations; retrieval {listing['retrieval_id']}")
-        if not apply:
-            print("proposal only; pass --apply to record these merges")
-            return
-        for merge in merges:
+        for merge in proposal.merges if apply else []:
             result = tools.merge_entity(
                 merge.alias,
                 merge.canonical,
@@ -171,6 +175,8 @@ def resolve(
                 f"merged {merge.alias!r} into {merge.canonical!r}: "
                 f"{len(result['superseded'])} superseded, {len(result['retired'])} retired"
             )
+        if proposal.failed:
+            raise typer.Exit(_fail_blocks(proposal))
     finally:
         tools.close()
 
@@ -180,6 +186,20 @@ def _print_merges(merges: list[Merge]) -> None:
     for m in merges:
         suffix = f"  ({m.entity_type})" if m.entity_type else ""
         print(f"{m.alias:<{width}}  ->  {m.canonical}{suffix}")
+
+
+def _fail_blocks(proposal: Proposal) -> int:
+    for block in proposal.failed:
+        kind = "" if block.entity_type == UNTYPED else f"{block.entity_type} "
+        print(
+            f"mem graph: could not cluster {len(block.names)} {kind}entities "
+            f"({block.names[0]!r} to {block.names[-1]!r}): {block.reason}",
+            flush=True,
+        )
+    if proposal.untried:
+        left = "block was" if proposal.untried == 1 else "blocks were"
+        print(f"mem graph: {proposal.untried} more {left} not tried", flush=True)
+    return 1
 
 
 def _fail(reason: str) -> int:
