@@ -248,10 +248,15 @@ Verified against the code in the audit of 2026-11 and still open.
   does not know what the ledger already holds (`capture/pipeline.py`).
 - `mem audit check` warns about every Droid session captured through
   the hooks. Each import lists what it leaves out, so
-  `capture_exclusions` and `capture_transcript_partial` always apply,
-  and a hook's event later than the last transcript entry, such as the
-  `session_end`, raises `capture_coverage_gap`. No Droid session can
-  read as fully covered (`audit.py`, `adapters/droid.py`).
+  `capture_exclusions` and `capture_transcript_partial` always apply.
+  `capture_coverage_gap` always applies too, for three reasons. The
+  first import begins at the transcript's first entry, which is dated
+  after the `SessionStart` hook's event. `session_summary` shows one
+  observation of a session, the import that reaches furthest, and each
+  import after the first begins where the one before it ended. A hook's
+  event later than the last transcript entry, such as the `session_end`,
+  lies past what that import covers. No Droid session can read as fully
+  covered (`audit.py`, `adapters/droid.py`, the `session_summary` view).
 - A session's row still carries the time of the first record the ledger
   received of it. `session_summary.started_at` is the earlier of that
   and the session's first event (migration 0008), and `mem audit check`
