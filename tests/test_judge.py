@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from agent_memory import endpoints
+from agent_memory import endpoints, model_call
 from agent_memory.adapters.droid import DroidAdapter
 from agent_memory.capture import ids
 from agent_memory.capture.redact import Redactor
@@ -23,11 +23,11 @@ from agent_memory.judge.backends import JudgeInput, make_backend
 from agent_memory.judge.backends import http as judge_http
 from agent_memory.judge.backends.base import REMOTE_ENV, Answer, normalize
 from agent_memory.judge.backends.jev import JevBackend, parse_answers, request_body
-from agent_memory.judge.backends.llamacpp import LlamaCppJudgeBackend
 from agent_memory.judge.backends.llm import (
-    LlmJudgeBackend,
+    ReasoningJudge,
     answers_from_judge_json,
-    parse_judge_json,
+    llamacpp_judge,
+    ollama_judge,
 )
 from agent_memory.judge.backends.readout import ReadoutBackend, _letter_logits, first_letter
 from agent_memory.judge.backends.rules import RulesBackend
@@ -610,12 +610,16 @@ def test_make_backend_specs(monkeypatch):
     assert make_backend("readout:gemma4:26b").name == "readout:gemma4:26b"
     assert make_backend("llm:gemma4:26b").name == "llm:gemma4:26b"
     assert make_backend("llamacpp:gemma-4-26b").name == "llamacpp:gemma-4-26b"
-    assert isinstance(make_backend("llamacpp:gemma-4-26b"), LlamaCppJudgeBackend)
+    # One judge, told which server to ask.
+    ollama = make_backend("llm:gemma4:26b")
+    assert isinstance(ollama, ReasoningJudge)
+    assert ollama.server == Ollama("gemma4:26b")
     # Router-mode ids carry slashes and colons; the spec keeps everything after the kind.
     router = make_backend("llamacpp:ggml-org/Qwen3.8-27B-GGUF:Q8_0")
-    assert isinstance(router, LlamaCppJudgeBackend)
-    assert router.model == "ggml-org/Qwen3.8-27B-GGUF:Q8_0"
-    assert router.host == "http://localhost:9931"
+    assert isinstance(router, ReasoningJudge)
+    assert router.server == LlamaCpp(
+        "ggml-org/Qwen3.8-27B-GGUF:Q8_0", "http://localhost:9931", split_thinking=True
+    )
     assert make_backend("jev").name == "jev:typesafe/jev-1.14"
     assert make_backend("jev:typesafe/jev-1.12").name == "jev:typesafe/jev-1.12"
     for bad in ("readout", "llm", "llamacpp", "nope", "??"):
@@ -720,11 +724,6 @@ def test_jev_refuses_without_opt_in_and_key(monkeypatch):
 
 def test_llm_judge_truncated_json_is_judge_error_and_falls_back_without_thinking(monkeypatch):
     cut = '{"failed": {"answer": "yes", "probability": 0.9}, "category": {"answer": "wro'
-    with pytest.raises(JudgeError, match="unparsable JSON"):
-        parse_judge_json(cut)
-    with pytest.raises(JudgeError, match="no JSON"):
-        parse_judge_json("")
-
     good = '{"failed": {"answer": "no", "probability": 0.8}}'
     calls: list[dict] = []
 
@@ -736,7 +735,7 @@ def test_llm_judge_truncated_json_is_judge_error_and_falls_back_without_thinking
 
     monkeypatch.setattr(endpoints, "post_json", post)
     inp = JudgeInput(item_id="i", state="S", facts={}, flags=())
-    answers = LlmJudgeBackend("m").decide(inp, [BY_ID["failed"]])
+    answers = ollama_judge("m").decide(inp, [BY_ID["failed"]])
     # Cut off while thinking: once more with room, then without thinking. The last retry must
     # say `think: false` outright; Ollama treats a missing flag as "think".
     assert [c.get("think", "absent") for c in calls] == [True, True, False]
@@ -747,7 +746,7 @@ def test_llm_judge_truncated_json_is_judge_error_and_falls_back_without_thinking
     assert answers["failed"].model_snapshot == "m:1"
     assert answers["failed"].latency_ms == pytest.approx(210.0)  # all three attempts billed
 
-    # A whole budget spent thinking: the error names it, and the retry still runs.
+    # A whole budget spent thinking: the attempt without thinking still runs.
     calls.clear()
 
     def all_thinking(url, body, **k):
@@ -760,25 +759,57 @@ def test_llm_judge_truncated_json_is_judge_error_and_falls_back_without_thinking
         return {"message": {"content": good}, "done_reason": "stop"}, 10.0
 
     monkeypatch.setattr(endpoints, "post_json", all_thinking)
-    answers = LlmJudgeBackend("m").decide(inp, [BY_ID["failed"]])
+    answers = ollama_judge("m").decide(inp, [BY_ID["failed"]])
     assert [c.get("think", "absent") for c in calls] == [True, True, False]
     assert answers["failed"].method == "llm_json_nothink"
-    with pytest.raises(JudgeError, match="after 15000 chars of reasoning; JSON incomplete: ''"):
-        LlmJudgeBackend("m")._ask({"think": True}, [BY_ID["failed"]], method="llm_json")
 
-    # A server that rejects the flag outright gets the retry without it.
+    # A model that cannot think refuses the switch. It is asked once more with the switch
+    # left out, and the refused request is billed too.
     calls.clear()
 
-    def rejects_flag(url, body, **k):
+    def refuses_switch(url, body, **k):
         calls.append(dict(body))
         if "think" in body:
-            raise endpoints.HttpStatusError(f'{url}: HTTP 400: json: unknown field "think"', 400)
+            said = '{"error":"\\"m\\" does not support thinking"}'
+            raise endpoints.HttpStatusError(
+                f"{url}: HTTP 400: {said}", 400, latency_ms=50.0, detail=said
+            )
         return {"message": {"content": good}, "done_reason": "stop"}, 10.0
 
-    monkeypatch.setattr(endpoints, "post_json", rejects_flag)
-    answers = LlmJudgeBackend("m").decide(inp, [BY_ID["failed"]])
+    monkeypatch.setattr(endpoints, "post_json", refuses_switch)
+    answers = ollama_judge("m").decide(inp, [BY_ID["failed"]])
     assert [c.get("think", "absent") for c in calls] == [True, "absent"]
+    assert [c.get("format", "absent") for c in calls] == ["json", "absent"]
     assert answers["failed"].method == "llm_json_nothink"
+    assert answers["failed"].latency_ms == pytest.approx(60.0)
+
+    # A reply that only points at a link holds no JSON. The last attempt still says off: the
+    # word "http" in the error once made it leave the switch out, and the model thought again.
+    calls.clear()
+
+    def links(url, body, **k):
+        calls.append(dict(body))
+        if body.get("think"):
+            return {"message": {"content": "See https://example.test/docs first."}}, 5.0
+        return {"message": {"content": good}, "done_reason": "stop"}, 10.0
+
+    monkeypatch.setattr(endpoints, "post_json", links)
+    answers = ollama_judge("m").decide(inp, [BY_ID["failed"]])
+    assert [c.get("think", "absent") for c in calls] == [True, False]
+    assert answers["failed"].method == "llm_json_nothink"
+
+    # A missing model is not a refused switch, whatever its name says: one request.
+    calls.clear()
+
+    def missing(url, body, **k):
+        calls.append(dict(body))
+        said = "model 'qwen3-thinking:8b' not found"
+        raise endpoints.HttpStatusError(f"{url}: HTTP 404: {said}", 404, detail=said)
+
+    monkeypatch.setattr(endpoints, "post_json", missing)
+    with pytest.raises(JudgeError, match="not found"):
+        ollama_judge("qwen3-thinking:8b").decide(inp, [BY_ID["failed"]])
+    assert len(calls) == 1
 
     # Without thinking there is nothing to fall back to; the error surfaces for the caller.
     calls.clear()
@@ -788,7 +819,7 @@ def test_llm_judge_truncated_json_is_judge_error_and_falls_back_without_thinking
         lambda u, b, **k: calls.append(dict(b)) or ({"message": {"content": ""}}, 1.0),
     )
     with pytest.raises(JudgeError, match="no JSON"):
-        LlmJudgeBackend("m", think=False).decide(inp, [BY_ID["failed"]])
+        ollama_judge("m", think=False).decide(inp, [BY_ID["failed"]])
     assert [c.get("think", "absent") for c in calls] == [False]
 
 
@@ -816,7 +847,7 @@ def test_llamacpp_judge_speaks_openai_chat_and_falls_back_without_thinking(monke
 
     monkeypatch.setattr(endpoints, "post_json", post)
     inp = JudgeInput(item_id="i", state="S", facts={}, flags=())
-    backend = LlamaCppJudgeBackend("gemma-4-26b", host="http://llama.test:8080")
+    backend = llamacpp_judge("gemma-4-26b", host="http://llama.test:8080")
     assert backend.name == "llamacpp:gemma-4-26b"
     assert backend.local
     answers = backend.decide(inp, [BY_ID["failed"]])
@@ -858,7 +889,7 @@ def test_llamacpp_judge_speaks_openai_chat_and_falls_back_without_thinking(monke
         lambda u, b, **k: calls.append((u, dict(b))) or ({"choices": [{"message": {}}]}, 1.0),
     )
     with pytest.raises(JudgeError, match="no JSON"):
-        LlamaCppJudgeBackend("m", think=False).decide(inp, [BY_ID["failed"]])
+        llamacpp_judge("m", think=False).decide(inp, [BY_ID["failed"]])
     assert len(calls) == 1
     assert calls[0][1]["reasoning_effort"] == "none"
 
@@ -871,7 +902,7 @@ def test_llamacpp_judge_speaks_openai_chat_and_falls_back_without_thinking(monke
 
     monkeypatch.setattr(endpoints, "post_json", loading)
     with pytest.raises(JudgeError, match="Loading model"):
-        LlamaCppJudgeBackend("m").decide(inp, [BY_ID["failed"]])
+        llamacpp_judge("m").decide(inp, [BY_ID["failed"]])
     assert len(calls) == 1
 
     # The response's model field is missing: the configured name stands in as the snapshot.
@@ -880,7 +911,7 @@ def test_llamacpp_judge_speaks_openai_chat_and_falls_back_without_thinking(monke
         "post_json",
         lambda u, b, **k: ({"choices": [{"message": {"content": good}}]}, 4.0),
     )
-    answers = LlamaCppJudgeBackend("alias").decide(inp, [BY_ID["failed"]])
+    answers = llamacpp_judge("alias").decide(inp, [BY_ID["failed"]])
     assert answers["failed"].model_snapshot == "alias"
     assert answers["failed"].method == "llm_json"
 
@@ -899,7 +930,7 @@ def test_llamacpp_judge_speaks_openai_chat_and_falls_back_without_thinking(monke
         lambda u, **k: gets.append(u) or {"data": [{"id": "org/b:Q8_0"}, {"id": "org/a:Q4"}]},
     )
     with pytest.raises(JudgeError) as excinfo:
-        LlamaCppJudgeBackend("typo", host="http://r:9931").decide(inp, [BY_ID["failed"]])
+        llamacpp_judge("typo", host="http://r:9931").decide(inp, [BY_ID["failed"]])
     assert "model 'typo' not found" in str(excinfo.value)
     assert str(excinfo.value).endswith(". Models this server knows: org/a:Q4, org/b:Q8_0")
     assert gets == ["http://r:9931/v1/models"]
@@ -908,7 +939,7 @@ def test_llamacpp_judge_speaks_openai_chat_and_falls_back_without_thinking(monke
         endpoints, "get_json", lambda u, **k: (_ for _ in ()).throw(endpoints.EgressError("down"))
     )
     with pytest.raises(JudgeError) as excinfo:
-        LlamaCppJudgeBackend("typo").decide(inp, [BY_ID["failed"]])
+        llamacpp_judge("typo").decide(inp, [BY_ID["failed"]])
     assert str(excinfo.value).endswith('not found"}}')
     assert "Models this server knows" not in str(excinfo.value)
 
@@ -939,7 +970,7 @@ def test_judge_cut_off_while_thinking_gets_room_before_losing_thinking(monkeypat
 
     monkeypatch.setattr(endpoints, "post_json", gpt_oss)
     inp = JudgeInput(item_id="i", state="S", facts={}, flags=())
-    answers = LlamaCppJudgeBackend("ggml-org/gpt-oss-20b-GGUF:MXFP4").decide(inp, [BY_ID["failed"]])
+    answers = llamacpp_judge("ggml-org/gpt-oss-20b-GGUF:MXFP4").decide(inp, [BY_ID["failed"]])
     assert [b["max_tokens"] for b in bodies] == [MAX_JUDGE_TOKENS, RETRY_JUDGE_TOKENS]
     # Still the thinking pass: same switch, same grammar, no reasoning_effort override.
     assert all(b["chat_template_kwargs"] == {"enable_thinking": True} for b in bodies)
@@ -961,8 +992,8 @@ def test_judge_cut_off_while_thinking_gets_room_before_losing_thinking(monkeypat
         return {"choices": [{"finish_reason": "length", "message": message}]}, 50.0
 
     monkeypatch.setattr(endpoints, "post_json", loops)
-    with pytest.raises(JudgeError, match=r"after 19824 chars of reasoning; JSON incomplete: ''"):
-        LlamaCppJudgeBackend("m").decide(inp, [BY_ID["failed"]])
+    with pytest.raises(JudgeError, match=r"after 19824 chars of thinking; JSON incomplete: ''"):
+        llamacpp_judge("m").decide(inp, [BY_ID["failed"]])
     assert [b["max_tokens"] for b in bodies] == [
         MAX_JUDGE_TOKENS,
         RETRY_JUDGE_TOKENS,
@@ -987,7 +1018,7 @@ def test_judge_cut_off_while_thinking_gets_room_before_losing_thinking(monkeypat
         }, 200.0
 
     monkeypatch.setattr(endpoints, "post_json", ollama)
-    answers = LlmJudgeBackend("g").decide(inp, [BY_ID["failed"]])
+    answers = ollama_judge("g").decide(inp, [BY_ID["failed"]])
     assert [b["options"]["num_predict"] for b in bodies] == [MAX_JUDGE_TOKENS, RETRY_JUDGE_TOKENS]
     assert [b["think"] for b in bodies] == [True, True]
     assert [b["format"] for b in bodies] == ["json", "json"]
@@ -1044,7 +1075,7 @@ def test_llamacpp_judge_end_to_end_over_http():
     thread.start()
     try:
         host = f"http://127.0.0.1:{server.server_address[1]}"
-        backend = LlamaCppJudgeBackend("stand-in", host=host)
+        backend = llamacpp_judge("stand-in", host=host)
         inp = JudgeInput(item_id="i", state="S", facts={}, flags=(), draft="Run tests first.")
         answers = backend.decide(inp, [BY_ID["failed"], BY_ID["category"]])
     finally:
@@ -1126,7 +1157,7 @@ def test_llm_json_parsing():
         '"generalizable": {"answer": "level 1", "probability": 0.7}, '
         '"grounded": {"answer": "maybe", "probability": 0.5}}\n```'
     )
-    data = parse_judge_json(text)
+    data = model_call.json_object(text)
     questions = [
         BY_ID["failed"],
         BY_ID["category"],
@@ -1142,8 +1173,6 @@ def test_llm_json_parsing():
     assert answers["generalizable"].value == pytest.approx(0.7 * 1 + 0.15 * 0 + 0.15 * 2)
     assert answers["grounded"].method == "llm_json_unmatched"
     assert answers["actionable"].method == "llm_json_missing"
-    with pytest.raises(JudgeError, match="no JSON"):
-        parse_judge_json("nothing here")
 
 
 def lesson_reply(rule="Stop the server first.", *, cited=(3, 5), claims=None):

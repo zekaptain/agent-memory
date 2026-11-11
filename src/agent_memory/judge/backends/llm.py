@@ -1,30 +1,33 @@
-"""The reasoning baseline: a local Ollama model prompted with the rubric, answering in JSON.
+"""The reasoning baseline: a local model prompted with the rubric, answering in JSON.
 
 Its self-reported probability is the confidence. The literature says that number is poorly
 calibrated; measuring it against the decision backends is part of the experiment.
+
+The judge is the same on either server: `llm:` asks Ollama, `llamacpp:` asks llama-server.
+Each runs under its own backend name, so one run can hold verdicts from both and the report
+lays them side by side. Only an `llm:` backend can be the reference judge.
 """
 
 from __future__ import annotations
 
-import json
 import math
 import re
-from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from collections.abc import Sequence
 from typing import Any
 
-from ...endpoints import OLLAMA_HOST
+from ... import model_call
+from ...endpoints import LLAMACPP_HOST, OLLAMA_HOST
+from ...model_call import Ask, LlamaCpp, Ollama, Server
 from ..questions import Question
 from ..store import JudgeError
-from . import http
 from .base import Answer, JudgeInput, answer_from_probabilities
 
 MAX_JUDGE_TOKENS = 4096
 # Thinking shares the budget with the answer. A judge cut off mid-thought is asked once more
 # with room before thinking is switched off: at temperature 0 the same budget stops at the
-# same place, and a template with no thinking switch (gpt-oss) makes the no-think retry the
-# same request again. Three times the budget, as for drafts; at gemma4:26b's speed on Ollama
-# that still finishes inside the request timeout.
+# same place, and a template with no thinking switch (gpt-oss) makes the attempt without
+# thinking the same request again. Three times the budget, as for drafts; at gemma4:26b's
+# speed on Ollama that still finishes inside the request timeout.
 RETRY_JUDGE_TOKENS = 3 * MAX_JUDGE_TOKENS
 
 SYSTEM = (
@@ -57,27 +60,6 @@ def judge_prompt(state: str, questions: Sequence[Question]) -> str:
         "name. For a score question answer with the level number. Give the probability that your "
         f"answer is correct.\n\nReturn exactly this JSON object: {{{schema}}}"
     )
-
-
-_JSON_OBJECT = re.compile(r"\{.*\}", re.DOTALL)
-
-
-def parse_judge_json(text: str) -> dict[str, Any]:
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        match = _JSON_OBJECT.search(text)
-        if not match:
-            raise JudgeError(f"judge returned no JSON: {text[:200]!r}") from None
-        try:
-            data = json.loads(match.group(0))
-        except json.JSONDecodeError as exc:
-            raise JudgeError(
-                f"judge returned unparsable JSON ({exc.msg}): {text[:200]!r}"
-            ) from None
-    if not isinstance(data, dict):
-        raise JudgeError("judge JSON is not an object")
-    return data
 
 
 def _read(entry: Any, question: Question) -> tuple[str, float] | str:
@@ -133,143 +115,52 @@ def answers_from_judge_json(
     return out
 
 
-def out_of_tokens(content: str, reasoning: str, *, who: str = "judge") -> str:
-    """Says where the budget went, so an empty answer after a long think is not mistaken for a
-    model that produced nothing."""
-    where = f" after {len(reasoning)} chars of reasoning" if reasoning else ""
-    return f"{who} ran out of tokens{where}; JSON incomplete: {content[-80:]!r}"
+class ReasoningJudge:
+    """The reasoning judge on one model server: thinking at the normal budget; when cut off,
+    once more with room; when that still yields no answers, once without thinking. Three
+    attempts at most. With `think=False` there is one attempt and nothing to fall back to."""
 
-
-def cut_off(exc: JudgeError) -> bool:
-    return "ran out of tokens" in str(exc)
-
-
-def retry_without_thinking(exc: JudgeError) -> bool:
-    """The token budget is shared between thinking and the answer. A thinking model that uses
-    it all returns empty or cut-off JSON; a server that predates thinking rejects the flag.
-    Either way the same question is worth asking again without thinking."""
-    message = str(exc).lower()
-    return "think" in message or "json" in message
-
-
-@dataclass(frozen=True)
-class Reply:
-    """One completion call: the answer text, the thinking before it, whether the budget ran out
-    first, the model the server says it used, and how long it took."""
-
-    content: str
-    reasoning: str
-    cut_off: bool
-    snapshot: str
-    latency_ms: float
-
-
-def answers_from_replies(
-    replies: Sequence[Reply], questions: Sequence[Question], *, method: str
-) -> dict[str, Answer]:
-    """Answers from the last reply, with every attempt's time billed to them."""
-    last = replies[-1]
-    if last.cut_off:
-        raise JudgeError(out_of_tokens(last.content, last.reasoning))
-    data = parse_judge_json(last.content)
-    spent = sum(r.latency_ms for r in replies)
-    return answers_from_judge_json(
-        data,
-        questions,
-        method=method,
-        latency_ms=spent / max(1, len(questions)),
-        model_snapshot=last.snapshot,
-    )
-
-
-def judge_with_room(
-    ask: Callable[[str], dict[str, Answer]],
-    widen: Callable[[], None],
-    without_thinking: Callable[[JudgeError], None],
-) -> dict[str, Answer]:
-    """Thinking at the normal budget; when cut off, once more with room; when that still fails
-    for a reason thinking can cause, once without it. Three calls at most. `ask` takes the
-    method name to record; `widen` and `without_thinking` adjust the request in place."""
-    try:
-        return ask("llm_json")
-    except JudgeError as exc:
-        if cut_off(exc):
-            widen()
-            try:
-                return ask("llm_json")
-            except JudgeError as again:
-                exc = again
-        if not retry_without_thinking(exc):
-            raise
-        without_thinking(exc)
-        return ask("llm_json_nothink")
-
-
-class LlmJudgeBackend:
-    local = True
-
-    def __init__(self, model: str, *, host: str = OLLAMA_HOST, think: bool = True) -> None:
-        self.model = model
-        self.host = host
+    def __init__(self, name: str, server: Server, *, think: bool = True) -> None:
+        self.name = name
+        self.server = server
         self.think = think
-        self.name = f"llm:{model}"
+        self.local = server.local
 
     def decide(self, inp: JudgeInput, questions: Sequence[Question]) -> dict[str, Answer]:
-        body: dict[str, Any] = {
-            "model": self.model,
-            "stream": False,
-            "format": "json",
-            # Bounds thinking plus the JSON answer; without it a judge can run past the timeout.
-            "options": {"temperature": 0, "num_predict": MAX_JUDGE_TOKENS},
-            "messages": [
-                {"role": "system", "content": SYSTEM},
-                {"role": "user", "content": judge_prompt(inp.state_with_draft(), questions)},
-            ],
-        }
-        # Ollama thinks by default for any model with the thinking capability, so leaving the
-        # flag out is not "off": the model would spend the whole budget in `thinking` and
-        # return an empty answer. Off has to be said explicitly.
-        if not self.think:
-            body["think"] = False
-            return self._ask(body, questions, method="llm_json")
-        body["think"] = True
-        replies: list[Reply] = []
-
-        def ask(method: str) -> dict[str, Answer]:
-            replies.append(self._complete(body))
-            return answers_from_replies(replies, questions, method=method)
-
-        def widen() -> None:
-            body["options"]["num_predict"] = RETRY_JUDGE_TOKENS
-
-        def without_thinking(exc: JudgeError) -> None:
-            # Answer without thinking and say so in the method, so the report can count how
-            # often reasoning was dropped.
-            if "http" in str(exc).lower():
-                # The server rejected the flag itself (it predates thinking): drop it.
-                body.pop("think", None)
-            else:
-                body["think"] = False
-            # Grammar-constrained JSON with no thinking channel is where Gemma-family models
-            # emit whitespace until the budget is gone; free text with the object extracted
-            # by regex is the sturdier shape for the retry.
-            body.pop("format", None)
-            body["options"]["num_predict"] = MAX_JUDGE_TOKENS
-
-        return judge_with_room(ask, widen, without_thinking)
-
-    def _ask(
-        self, body: dict[str, Any], questions: Sequence[Question], *, method: str
-    ) -> dict[str, Answer]:
-        return answers_from_replies([self._complete(body)], questions, method=method)
-
-    def _complete(self, body: dict[str, Any]) -> Reply:
-        response, latency = http.post_json(f"{self.host}/api/chat", body)
-        message = response.get("message") or {}
-        return Reply(
-            content=str(message.get("content") or ""),
-            reasoning=str(message.get("thinking") or ""),
-            cut_off=response.get("done_reason") == "length",
-            snapshot=str(response.get("model") or self.model),
-            latency_ms=latency,
+        ask = Ask(
+            prompt=judge_prompt(inp.state_with_draft(), questions),
+            budget=MAX_JUDGE_TOKENS,
+            system=SYSTEM,
+            think=self.think,
         )
+        try:
+            if self.think:
+                result = model_call.call(
+                    self.server, ask, who="judge", wider=RETRY_JUDGE_TOKENS, drop_thinking=True
+                )
+            else:
+                result = model_call.call(self.server, ask, who="judge")
+        except model_call.ModelCallError as exc:
+            raise JudgeError(str(exc)) from None
+        return answers_from_judge_json(
+            result.data,
+            questions,
+            # Said in the method, so the report can count how often thinking was dropped.
+            method="llm_json_nothink" if result.thinking_dropped else "llm_json",
+            # Every attempt's time is billed to the answers.
+            latency_ms=result.latency_ms / max(1, len(questions)),
+            model_snapshot=result.snapshot,
+        )
+
+
+def ollama_judge(model: str, *, host: str = OLLAMA_HOST, think: bool = True) -> ReasoningJudge:
+    """The `llm:<model>` backend."""
+    return ReasoningJudge(f"llm:{model}", Ollama(model, host), think=think)
+
+
+def llamacpp_judge(model: str, *, host: str = LLAMACPP_HOST, think: bool = True) -> ReasoningJudge:
+    """The `llamacpp:<model>` backend. It asks for thinking apart from the text, so the
+    answer is not buried in it."""
+    return ReasoningJudge(
+        f"llamacpp:{model}", LlamaCpp(model, host, split_thinking=True), think=think
+    )

@@ -12,7 +12,7 @@ import pytest
 
 from agent_memory import endpoints
 from agent_memory.judge import pipeline, report
-from agent_memory.judge.backends.llm import LlmJudgeBackend
+from agent_memory.judge.backends.llm import ollama_judge
 from agent_memory.judge.backends.rules import RulesBackend
 from agent_memory.judge.drafter import Draft
 from agent_memory.judge.label_controller import Action, LabelController
@@ -90,7 +90,7 @@ def test_true_claims_do_not_justify_an_unsupported_rule(monkeypatch, support, cu
         "turn_event_id": "turn",
     }
     judged = judge(
-        LlmJudgeBackend("synthetic", think=False),
+        ollama_judge("synthetic", think=False),
         item,
         "[1] The server was running.\n[2] The database was locked.",
         draft,

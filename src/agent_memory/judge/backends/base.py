@@ -143,17 +143,17 @@ def make_backend(spec: str) -> DecisionBackend:
             raise JudgeError("readout needs a model: readout:<ollama model>")
         return ReadoutBackend(model=arg)
     if kind == "llm":
-        from .llm import LlmJudgeBackend
+        from .llm import ollama_judge
 
         if not arg:
             raise JudgeError("llm needs a model: llm:<ollama model>")
-        return LlmJudgeBackend(model=arg)
+        return ollama_judge(arg)
     if kind == "llamacpp":
-        from .llamacpp import LlamaCppJudgeBackend
+        from .llm import llamacpp_judge
 
         if not arg:
             raise JudgeError("llamacpp needs a model: llamacpp:<llama-server model id or alias>")
-        return LlamaCppJudgeBackend(model=arg)
+        return llamacpp_judge(arg)
     if kind == "jev":
         from .jev import JevBackend
 

@@ -15,7 +15,7 @@ from agent_memory.judge import pipeline, report
 from agent_memory.judge.backends import JudgeInput
 from agent_memory.judge.backends.base import answer_from_probabilities
 from agent_memory.judge.backends.jev import parse_answers
-from agent_memory.judge.backends.llm import LlmJudgeBackend, answers_from_judge_json
+from agent_memory.judge.backends.llm import answers_from_judge_json, ollama_judge
 from agent_memory.judge.backends.readout import ReadoutBackend
 from agent_memory.judge.backends.rules import RulesBackend
 from agent_memory.judge.questions import (
@@ -82,7 +82,7 @@ def judged(monkeypatch, spoiled, thresholds=None, draft=None) -> Mapping[str, An
     """The stored row of the verdict the model's reply leads to."""
     reply_with(monkeypatch, spoiled)
     return judge(
-        LlmJudgeBackend("synthetic", think=False),
+        ollama_judge("synthetic", think=False),
         ITEM,
         STATE,
         draft or two_claims(),
@@ -207,7 +207,7 @@ def test_an_unanswered_gate_does_not_rescue_a_declined_or_undrafted_turn(monkeyp
     verdict = judged(monkeypatch, {"failed": OMITTED}, NO_BAR, declined)
     assert verdict["action"] == "discard"
     reply_with(monkeypatch, {})
-    backend = LlmJudgeBackend("synthetic", think=False)
+    backend = ollama_judge("synthetic", think=False)
     undrafted = judge(backend, ITEM, STATE, None, dict(NO_BAR), run_id="synthetic").row
     assert undrafted["action"] == "discard"
     assert undrafted["reasons"] == [f"{gate}: no answer" for gate in WRITE_GATES]
