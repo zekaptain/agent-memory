@@ -386,6 +386,49 @@ def test_unknown_new_labels_resume_without_backfill_and_edit_with_history(tmp_pa
     assert entry["drafts"]["ollama:m"]["store_exact"] is None
 
 
+def test_a_correction_away_from_unclear_is_kept_in_the_history(tmp_path):
+    store = synthetic_run(tmp_path, n=1)
+    store.labels_path.unlink()
+    item_id = store.read_jsonl(store.items_path)[0]["item_id"]
+
+    def label(**answers: str) -> dict:
+        controller = LabelController(store, item_ids=[item_id])
+        while controller.step != "summary":
+            step = controller.step
+            given = "continue" if step == "note" else controller.screen().selected
+            controller.apply(Action("answer", answers.get(step.replace(".", "_"), given)))
+        controller.apply(Action("answer", "save"))
+        return store.read_jsonl(store.labels_path)[0]
+
+    first = label(
+        failed="u",
+        worth_remembering="n",
+        A_grounded="y",
+        A_faithful="y",
+        A_rule_supported="u",
+        A_generalizable="1",
+        A_enforced_by="1",
+        A_store_exact="u",
+    )
+    assert first["failed"] is None
+    assert first["drafts"]["ollama:m"]["unknown"] == ["rule_supported", "store_exact"]
+    assert "history" not in first
+
+    # Unclear is an answer the reviewer gave, so moving off it is a change. Its stored value
+    # is null. `store_exact` stays Unclear and is not one.
+    corrected = label(failed="n", A_rule_supported="y")
+    assert corrected["history"][-1]["changed"] == {
+        "failed": None,
+        "drafts.ollama:m.rule_supported": None,
+    }
+    assert "2 value(s) changed on 1 item(s)" in report.build_report(store)
+
+    # One answer moved, so one value: the list that marks Unclear answers is not a second.
+    back = label(A_rule_supported="u")
+    assert back["history"][-1]["changed"] == {"drafts.ollama:m.rule_supported": True}
+    assert len(back["history"]) == 2
+
+
 def test_unknown_label_hash_invalidation_and_mid_label_draft_change(tmp_path):
     store = synthetic_run(tmp_path, n=1)
     rows = store.read_jsonl(store.drafts_path)

@@ -1428,3 +1428,19 @@ the new row starts on its own line. After an append, reading returns what
 it returned before plus the new rows. Admission's own store is unchanged:
 it refuses to append to a file it cannot read. Regressions are in
 `tests/test_judge_store.py`, one of them a resumed `decide`.
+
+### Label history counts a move off Unclear, as built (2026-11-11)
+
+A reviewer can answer Unclear to "Did the agent fail?", to rule support
+and to "Would you store this exact draft?". The answer is stored as null:
+for the turn with `incomplete` false, for a draft with the field named in
+its `unknown` list. `history` skipped every key whose old value was null.
+That is right for a question not yet answered, but it also skipped a
+correction from Unclear to Yes or No, so the report's count of changed
+labels missed those corrections.
+
+A move off Unclear is now a change, recorded with the null it was stored
+as. In `history`, a null old value therefore always means Unclear. The
+`unknown` list is no longer recorded as a value of its own, so one changed
+answer is one changed value. Stored labels are untouched, and the reports
+of earlier runs count their stored history as before.

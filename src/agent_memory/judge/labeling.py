@@ -5,7 +5,7 @@ shuffle of the unlabeled items, so stratum and backend output cannot bias the re
 drafts of an item are shown together as A, B, ... in a seeded order with the drafter hidden;
 the row records which drafter sat in each slot. A changed label keeps its previous value in
 the row's `history`, so the file stays append-only in spirit and the report can count how
-many labels moved.
+many labels moved. Unclear is an answer like Yes or No, so a move off it counts.
 """
 
 from __future__ import annotations
@@ -271,16 +271,35 @@ def _flatten(row: Mapping[str, Any]) -> dict[str, Any]:
                         for i, claim in enumerate(v or [], 1):
                             for claim_key, claim_value in claim.items():
                                 flat[f"drafts.{drafter}.claims.{i}.{claim_key}"] = claim_value
-                    elif k not in ("slot",):
+                    elif k not in ("slot", "unknown"):
                         flat[f"drafts.{drafter}.{k}"] = v
             continue
         flat[key] = value
     return flat
 
 
+def _unclear(row: Mapping[str, Any]) -> set[str]:
+    """The flattened keys the reviewer answered Unclear. Such an answer is stored as null, as
+    an unanswered question is, and told apart by `incomplete` or the draft's `unknown` list."""
+    keys: set[str] = set()
+    if "failed" in row and row["failed"] is None and not row.get("incomplete"):
+        keys.add("failed")
+    drafts = row.get("drafts")
+    if isinstance(drafts, dict):
+        for drafter, entry in drafts.items():
+            keys.update(f"drafts.{drafter}.{key}" for key in (entry or {}).get("unknown") or [])
+    return keys
+
+
 def changed_values(previous: Mapping[str, Any], new: Mapping[str, Any]) -> dict[str, Any]:
-    """Keys whose value moved, with the old value. Keys that are new, or were unanswered
-    (None) before, are not changes."""
+    """Keys whose answer moved, with the old value. A key that is new, or was unanswered
+    before, is not a change. Unclear is an answer, so moving off it is a change, recorded with
+    the null it was stored as."""
     before = _flatten(previous)
     after = _flatten(new)
-    return {k: v for k, v in before.items() if v is not None and k in after and after[k] != v}
+    unclear = _unclear(previous)
+    return {
+        k: v
+        for k, v in before.items()
+        if (v is not None or k in unclear) and k in after and after[k] != v
+    }
