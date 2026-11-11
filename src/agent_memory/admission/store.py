@@ -47,7 +47,7 @@ def _read_json(path: Path) -> dict[str, Any]:
     _refuse_link(path, "files")
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (ValueError, UnicodeError):
+    except ValueError:  # also what text that is not UTF-8 raises
         raise AdmissionError(f"invalid admission JSON: {path.name}") from None
     if not isinstance(data, dict):
         raise AdmissionError(f"expected an admission object: {path.name}")

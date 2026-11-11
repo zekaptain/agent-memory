@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -45,7 +45,7 @@ def _config(ctx: typer.Context) -> Config:
 
 
 @contextmanager
-def _locked(cfg: Config) -> Iterator[AdmissionStore]:
+def _locked(cfg: Config) -> Generator[AdmissionStore]:
     """One admission command at a time. A second one is refused at once."""
     store = AdmissionStore(cfg)
     with lock(store.root / ".lock", wait=False) as held:

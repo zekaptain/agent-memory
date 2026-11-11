@@ -27,7 +27,7 @@ import os
 import re
 import shutil
 import tempfile
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Generator, Iterable, Mapping
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -102,7 +102,7 @@ def read_json(path: Path) -> dict[str, Any]:
     """The JSON object in `path`. An error names the file and never quotes it."""
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (ValueError, UnicodeError):
+    except ValueError:  # also what text that is not UTF-8 raises
         raise JudgeError(f"{path}: invalid JSON") from None
     if not isinstance(data, dict):
         raise JudgeError(f"{path}: expected a JSON object")
@@ -114,7 +114,7 @@ def _lock_path(path: Path) -> Path:
 
 
 @contextmanager
-def lock(path: Path, *, wait: bool = True) -> Iterator[bool]:
+def lock(path: Path, *, wait: bool = True) -> Generator[bool]:
     """Hold the lock file `path` until the block ends. With `wait` off, the block runs at
     once and is told False when another holder has the lock."""
     private_dir(path.parent)
@@ -131,7 +131,7 @@ def lock(path: Path, *, wait: bool = True) -> Iterator[bool]:
 
 
 @contextmanager
-def sole_writer(path: Path) -> Iterator[None]:
+def sole_writer(path: Path) -> Generator[None]:
     """Be the one command adding rows to `path` until the block ends. A second command that
     asks while the first is at work is refused at once, not queued behind it."""
     with lock(_lock_path(path), wait=False) as held:

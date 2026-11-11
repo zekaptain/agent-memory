@@ -56,7 +56,7 @@ def read_action(stream: IO[bytes], request_id: int) -> Action:
             raise ValueError
         frame["value"].encode("utf-8")
         return Action(frame["action"], frame["value"])
-    except (ValueError, UnicodeError, TypeError, RecursionError):
+    except (ValueError, TypeError, RecursionError):
         raise JudgeError("Invalid label UI action. Retry or use --plain.") from None
 
 
