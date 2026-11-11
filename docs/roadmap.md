@@ -337,6 +337,27 @@ connection with two adapters; auto-approval in one place. The two ranked
 above these were deepened on 2026-11-11: the ledger session
 (`capture/session.py`) and the model call (`model_call.py`).
 
+The same audit proposed removing the following. Each was looked at on
+2026-11-11 and stays:
+
+- The judge's handling of a draft without claims, and the check that
+  refuses to draft into a run whose drafts another drafter version
+  wrote. A lesson drafted now always has claims, but the drafts stored
+  in exp1 to exp3 have none, and their reports must still reproduce.
+- `build_server`, which declares each MCP tool beside the `MemoryTools`
+  method it calls. The declaration is what a harness is told, so it
+  stays written out. A test fixes every tool's inputs, and each input
+  is handed on by name.
+- The attribution stored with an event. It is described in
+  [phase-1-spec.md](phase-1-spec.md) and fixed by tests.
+- The key builders in `capture/identity.py` that return what they are
+  given. They are the one place the rules for a key are stated
+  ([ADR 0003](adr/0003-deterministic-capture-ids.md)).
+- Ten type-checker warnings, each about a `str()` or an `int()` around
+  a value from a harness payload, a stored row, or a tool call. The
+  annotation says more than that data can promise, so the conversion
+  stays.
+
 ## Open decisions
 
 - Should `mem admit review` and `mem judge label` take their answers
@@ -352,7 +373,7 @@ above these were deepened on 2026-11-11: the ledger session
 - Should timeouts in a row stop a judge command? A timeout can be the
   item's doing, so today only an unreachable model server stops one.
 - Are the `readout` and `jev` backends and the `actionable` question still
-  wanted? May the unreachable v4 fallbacks and `Question.stage` go?
+  wanted?
 - Should the attribution stored with an event go, or hold only what is
   known when it is written? Through the hooks it never names a turn,
   nothing reads it, and an event cannot be rewritten once the outcome

@@ -73,6 +73,11 @@ Use `uv run ruff format <changed-files>` to format only files you touched.
 Ruff targets Python 3.12 with a 100-character line limit. Follow the existing
 typed functions, dataclasses, and small subsystem modules.
 
+Pyrefly reports no errors and ten warnings. Each of the ten is about a
+`str()` or an `int()` around a value from a harness payload, a stored row,
+or a tool call, where the annotation says more than the data can promise.
+Leave those conversions, and treat an eleventh warning as new.
+
 Tests use real DuckDB databases and Quack servers, not just mocks.
 Initialization installs the `fts` and `quack` extensions, so a fresh
 environment needs network access. `tests/conftest.py` supplies temporary
@@ -208,7 +213,9 @@ auto gate. Nothing under `judge/` imports admission. Verdicts use agent
 lesson text into them. Admission writes as agent `admission`, never as
 `judge`.
 
-`--home` and `--port` are root options, before the subcommand. A separate
+`--home` and `--port` are root options, before the subcommand. Every
+command resolves them through `config.command_config`; the judge and
+admission commands add their own checks to what it returns. A separate
 home does not automatically select a different port. Use the same explicit
 home and port for the experiment server and its clients, for example:
 
@@ -286,8 +293,11 @@ do not delete existing homes or runs to resolve a workflow mistake.
 
 Inspect the working tree before editing and leave unrelated user changes
 alone. Reproduce reported bugs and add regression tests through the affected
-CLI, MCP, capture, or judge path. When adding MCP tools, update registration
-assertions and usage docs too; graph work previously exposed this gap.
+CLI, MCP, capture, or judge path. When adding an MCP tool or changing a
+tool's inputs, update the registration assertions, the inputs listed in
+`tests/test_mcp.py` (`TOOL_INPUTS`), and the usage docs too; graph work
+previously exposed this gap. `build_server` hands each input to
+`MemoryTools` by name.
 
 Update the relevant spec's implemented/as-built notes when behavior changes.
 Use the terms in `GLOSSARY.md`, and update it when a term changes. Add a
