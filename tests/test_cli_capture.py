@@ -151,7 +151,7 @@ def test_event_records_compaction_instructions_that_are_not_text(
     sid = ids.session_id("factory-droid", "cli-compact")
     assert live_client.query(
         f"SELECT kind, content FROM events WHERE session_id = {sql_literal(sid)}"
-    )[1] == [("compaction", '{"keep": "decisions"}')]
+    )[1] == [("note", '{"keep": "decisions"}')]
     assert not (
         Spool(live_cfg.spool_dir).failed_dir / "factory-droid" / "cli-compact.jsonl"
     ).exists()

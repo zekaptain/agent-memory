@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pytest
 
 from agent_memory.adapters import UnsupportedTranscript, get_adapter
@@ -182,27 +184,39 @@ def test_droid_prompt_hook_flattens_a_prompt_that_is_not_text():
     assert r.content == ""
 
 
-def test_droid_post_tool_hook_links_result_to_call():
-    call, result = DroidAdapter().from_hook(
-        hook(
-            "PostToolUse",
-            tool_name="Read",
-            tool_input={"file_path": "/x"},
-            tool_response={"content": "data"},
-            tool_use_id="toolu_9",
-        )
+def test_droid_post_tool_hook_records_nothing():
+    # Droid names no call in this hook, so what it wrote could not be told from the
+    # transcript's record of the same call. The transcript is the record of tool calls.
+    payload = hook(
+        "PostToolUse",
+        tool_name="Read",
+        tool_input={"file_path": "/x"},
+        tool_response=[{"type": "text", "text": "data"}],
     )
-    assert (call.kind, call.source_key) == ("tool_call", "toolu_9")
-    assert call.content == 'Read {"file_path": "/x"}'
-    assert (result.kind, result.parent_key) == ("tool_result", "toolu_9")
-    assert result.content == '{"content": "data"}'
+    assert DroidAdapter().from_hook(payload) == []
+    assert DroidAdapter().from_hook({**payload, "tool_use_id": "toolu_9"}) == []
 
 
 def test_droid_pre_tool_hook_is_off_by_default():
-    payload = hook("PreToolUse", tool_name="Read", tool_input={}, message_id="m2")
+    payload = hook("PreToolUse", tool_name="Read", tool_input={})
     assert DroidAdapter().from_hook(payload) == []
     (note,) = DroidAdapter(record_pre_tool=True).from_hook(payload)
-    assert (note.kind, note.source_key) == ("note", "PreToolUse:m2")
+    assert (note.kind, note.source_key) == ("note", f"PreToolUse:{note.ts.isoformat()}")
+    assert note.content == "Read {}"
+
+
+@pytest.mark.parametrize("event", ["Notification", "SubagentStop", "PreToolUse", "BrandNewEvent"])
+def test_droid_hooks_one_message_can_raise_twice_are_separate_events(event, monkeypatch):
+    # The message's id does not tell the first from the second, so when each ran does.
+    ran_at = iter(datetime(2026, 11, 11, 12, 0, second, tzinfo=UTC) for second in (1, 2))
+    monkeypatch.setattr("agent_memory.adapters.droid.now", lambda: next(ran_at))
+    adapter = DroidAdapter(record_pre_tool=True)
+    payload = hook(event, message_id="m7", tool_name="Read", tool_input={})
+    (first,) = adapter.from_hook(payload)
+    (second,) = adapter.from_hook(payload)
+    assert first.source_key == f"{event}:2026-11-11T12:00:01+00:00"
+    assert second.source_key == f"{event}:2026-11-11T12:00:02+00:00"
+    assert first.attribution == {"message_id": "m7"}
 
 
 @pytest.mark.parametrize("event", ["Stop"])
@@ -214,7 +228,9 @@ def test_droid_precompact_and_session_end():
     (c,) = DroidAdapter().from_hook(
         hook("PreCompact", trigger="auto", custom_instructions="keep decisions", message_id="m3")
     )
-    assert (c.kind, c.content) == ("compaction", "keep decisions")
+    # The hook says a compaction was asked for and names the message it follows. The
+    # compaction itself is the transcript's to record.
+    assert (c.kind, c.content, c.source_key) == ("note", "keep decisions", "PreCompact:m3")
     assert c.payload is not None
     assert c.payload["trigger"] == "auto"
     (e,) = DroidAdapter().from_hook(hook("SessionEnd", reason="exit"))
@@ -237,6 +253,20 @@ def test_droid_precompact_instructions_that_are_not_text_become_text():
     assert as_parts.content == "keep decisions"
     (empty,) = DroidAdapter().from_hook(hook("PreCompact", custom_instructions="", message_id="m6"))
     assert empty.content is None
+
+
+def test_droid_notification_hook_keeps_what_it_said():
+    (n,) = DroidAdapter().from_hook(
+        hook(
+            "Notification",
+            message="Droid needs your input",
+            notification_type="elicitation_dialog",
+        )
+    )
+    assert (n.kind, n.content) == ("note", "Droid needs your input")
+    assert n.payload is not None
+    assert n.payload["notification_type"] == "elicitation_dialog"
+    assert n.attribution == {}
 
 
 def test_droid_unknown_hook_becomes_a_note():

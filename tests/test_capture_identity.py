@@ -57,28 +57,70 @@ def test_prompt_hook_import_and_spool_replay_are_one_event(
     )[1] == [(1,)]
 
 
-def test_tool_hook_import_and_replay_keep_call_result_identity(live_cfg, live_client, tmp_path):
+def droid_hook(path, event, **fields):
+    """A hook payload with the fields Droid sends on every event."""
+    return {
+        "session_id": path.stem,
+        "transcript_path": str(path),
+        "cwd": "/synthetic/identity",
+        "permission_mode": "auto-high",
+        "hook_event_name": event,
+        **fields,
+    }
+
+
+def test_a_tool_call_is_one_event_when_a_hook_and_the_transcript_report_it(
+    live_cfg, live_client, tmp_path, monkeypatch
+):
     path = transcript(tmp_path)
-    records = DroidAdapter().from_hook(
-        {
-            "session_id": path.stem,
-            "hook_event_name": "PostToolUse",
-            "tool_use_id": "recall-call",
-            "tool_name": "agent-memory__recall",
-            "tool_input": {"query": "synthetic"},
-            "tool_response": "synthetic",
-        }
+    # What Droid sends after a tool call. Nothing in it names the call.
+    payload = droid_hook(
+        path,
+        "PostToolUse",
+        tool_name="agent-memory__recall",
+        tool_input={"query": "synthetic"},
+        tool_response=[{"type": "text", "text": "synthetic"}],
     )
-    assert deliver(live_cfg, records, deadline=10).written
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(payload)))
+    assert run(live_cfg, "event", "--harness", "droid") == 0
     assert run(live_cfg, "ingest", "--harness", "droid", "--transcript", str(path)) == 0
-    assert deliver(live_cfg, records, spool_only=True).spooled
+    # A replay of what the import wrote finds the same events.
+    assert deliver(live_cfg, DroidAdapter().from_transcript(path), spool_only=True).spooled
     assert run(live_cfg, "ingest", "--spool") == 0
+    sid = ids.session_id("factory-droid", path.stem)
+    assert live_client.query(
+        f"SELECT kind, count(*) FROM events WHERE session_id = {sql_literal(sid)} "
+        "AND kind IN ('tool_call', 'tool_result') GROUP BY kind ORDER BY kind"
+    )[1] == [("tool_call", 2), ("tool_result", 2)]
     call = ids.event_id("factory-droid", path.stem, "tool_call", "recall-call")
     result = ids.event_id("factory-droid", path.stem, "tool_result", "recall-call")
     assert live_client.query(
         "SELECT kind, parent_event_id::VARCHAR FROM events "
         f"WHERE event_id IN ({sql_literal(call)}, {sql_literal(result)}) ORDER BY kind"
     )[1] == [("tool_call", None), ("tool_result", call)]
+
+
+def test_a_compaction_is_one_event_when_a_hook_announced_it(
+    live_cfg, live_client, tmp_path, monkeypatch
+):
+    path = tmp_path / f"{tmp_path.name}.jsonl"
+    path.write_bytes((FIXTURES / "droid_session.jsonl").read_bytes())
+    # Droid's hook names the message the compaction follows, not the compaction.
+    payload = droid_hook(
+        path, "PreCompact", message_id="msg-a2", trigger="auto", estimated_tokens=900
+    )
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(payload)))
+    assert run(live_cfg, "event", "--harness", "droid") == 0
+    run(live_cfg, "ingest", "--harness", "droid", "--transcript", str(path))
+    sid = ids.session_id("factory-droid", path.stem)
+    assert live_client.query(
+        f"SELECT compactions FROM session_summary WHERE session_id = {sql_literal(sid)}"
+    )[1] == [(1,)]
+    assert live_client.query(
+        "SELECT kind, json_extract_string(payload::JSON, '$.trigger') FROM events "
+        f"WHERE session_id = {sql_literal(sid)} "
+        "AND json_extract_string(payload::JSON, '$.hook') = 'PreCompact'"
+    )[1] == [("note", "auto")]
 
 
 @pytest.mark.parametrize("import_first", [False, True])

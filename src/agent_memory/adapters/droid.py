@@ -15,19 +15,28 @@ from .base import UnsupportedTranscript, iter_jsonl, project_of, render_tool_cal
 
 AGENT_ID = "factory-droid"
 
-# Hook events that map to a single event kind. Stop/SubagentStop carry no reply text;
-# the Phase 2 hook script follows them with `mem ingest --transcript`.
+# What each hook event is recorded as. A hook records what the transcript does not hold, or
+# holds only later; the transcript is the record of replies, tool calls, and compactions.
+# None is nothing at all. Stop carries no reply text. PostToolUse names no call, so what it
+# wrote could not be told from the transcript's record of the same call, and it is not sent
+# for a call made inside a script. PreCompact says a compaction was asked for; the
+# compaction itself, with its summary, is a transcript entry.
 _HOOK_KINDS = {
     "SessionStart": "session_start",
     "SessionEnd": "session_end",
     "UserPromptSubmit": "user_msg",
-    "PreCompact": "compaction",
+    "PreCompact": "note",
     "SubagentStop": "note",
     "Notification": "note",
     "Stop": None,
     "PreToolUse": None,
-    "PostToolUse": "tool_call",
+    "PostToolUse": None,
 }
+
+# Events keyed on the message id Droid sends with them, when it sends one: each happens at
+# most once for a message. Any other event is told from the next by when its hook ran,
+# because one message can raise several notifications.
+_ONCE_PER_MESSAGE = frozenset({"SessionStart", "SessionEnd", "PreCompact"})
 
 _ASSISTANT_META = ("modelId", "apiProvider", "reasoningEffort", "compactionSummaryId")
 
@@ -64,50 +73,26 @@ class DroidAdapter:
                 if payload.get(key) is not None
             },
         }
-        key_tail = payload.get("message_id") or payload.get("tool_use_id") or ts.isoformat()
+        named = payload.get("message_id") if event in _ONCE_PER_MESSAGE else None
+        key_tail = str(named or ts.isoformat())
         kind = _HOOK_KINDS.get(event, "note")
 
-        if event == "PostToolUse":
-            tool_id = str(payload.get("tool_use_id") or identity.note_key(event, str(key_tail)))
-            key = identity.tool_call_key(tool_id)
-            call = Record(
-                **base,
-                kind="tool_call",
-                source_key=key,
-                content=render_tool_call(payload.get("tool_name"), payload.get("tool_input")),
-                payload={
-                    "tool_name": payload.get("tool_name"),
-                    "tool_input": payload.get("tool_input"),
-                    "hook": event,
-                },
-            )
-            result = Record(
-                **base,
-                kind="tool_result",
-                source_key=identity.tool_result_key(tool_id),
-                parent_key=key,
-                content=text_of(payload.get("tool_response")),
-                payload={"tool_name": payload.get("tool_name"), "hook": event},
-            )
-            return [call, result]
-        if event == "PreToolUse":
-            if not self.record_pre_tool:
-                return []
+        if event == "PreToolUse" and self.record_pre_tool:
             return [
                 Record(
                     **base,
                     kind="note",
-                    source_key=identity.note_key(event, str(key_tail)),
+                    source_key=identity.note_key(event, key_tail),
                     content=render_tool_call(payload.get("tool_name"), payload.get("tool_input")),
                     payload={"hook": event, "tool_name": payload.get("tool_name")},
                 )
             ]
         if kind is None:
             return []
-        source_key = identity.note_key(event, str(key_tail))
+        source_key = identity.note_key(event, key_tail)
         if event == "SessionStart":
             source_key = identity.session_marker_key(
-                event, str(payload.get("source") or "startup"), str(key_tail)
+                event, str(payload.get("source") or "startup"), key_tail
             )
             session = SessionInfo(
                 cwd=session.cwd,
