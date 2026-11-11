@@ -12,7 +12,7 @@ from rich.markdown import Markdown
 from rich.markup import escape
 from rich.table import Table
 
-from ..config import Config, load_config
+from ..config import Config, command_config
 from .backends.base import REMOTE_ENV
 from .label_frontend import label_session
 from .pipeline import (
@@ -43,8 +43,7 @@ LIVE_DAY = Annotated[
 
 
 def _config(ctx: typer.Context) -> Config:
-    opts = ctx.obj
-    cfg = load_config(home=getattr(opts, "home", None), port=getattr(opts, "port", None))
+    cfg = command_config(ctx)
     ensure_experiment_home(cfg)
     return cfg
 

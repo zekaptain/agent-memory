@@ -6,7 +6,7 @@ import sys
 import threading
 import time
 from collections.abc import Sequence
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -18,7 +18,7 @@ from .adapters import HARNESS_NAMES, UnsupportedTranscript, get_adapter
 from .admission.cli import admit_app
 from .capture.pipeline import IMPORT_DEADLINE, Delivery, catch_up, deliver, replay_spool
 from .capture.spool import Spool
-from .config import Config, ConfigError, load_config
+from .config import Config, ConfigError, RootOptions, command_config
 from .db import (
     AgentMemoryError,
     MemoryClient,
@@ -44,21 +44,6 @@ app = typer.Typer(
     # Local variables in a traceback can include the server token.
     pretty_exceptions_show_locals=False,
 )
-
-
-@dataclass(frozen=True)
-class _GlobalOptions:
-    home: Path | None
-    port: int | None
-
-
-def _config(ctx: typer.Context) -> Config:
-    # Resolved per command rather than in the callback, so `mem <cmd> --help`
-    # works even when the environment is misconfigured.
-    opts = ctx.obj
-    if not isinstance(opts, _GlobalOptions):
-        raise RuntimeError("mem callback did not run")
-    return load_config(home=opts.home, port=opts.port)
 
 
 def _show_version(value: bool) -> None:
@@ -90,13 +75,13 @@ def _root(
         ),
     ] = False,
 ) -> None:
-    ctx.obj = _GlobalOptions(home=home, port=port)
+    ctx.obj = RootOptions(home=home, port=port)
 
 
 @app.command()
 def init(ctx: typer.Context) -> None:
     """Create the data directory, token, and database. Safe to re-run."""
-    cfg = _config(ctx)
+    cfg = command_config(ctx)
     result = initialize_home(cfg)
     print(f"home      {cfg.home}")
     print(f"database  {cfg.db_path}")
@@ -114,7 +99,7 @@ def migrate_command(
     ] = False,
 ) -> None:
     """Apply pending migrations. The server must be stopped."""
-    cfg = _config(ctx)
+    cfg = command_config(ctx)
     con = open_direct(cfg.db_path, read_only=status)
     try:
         if status:
@@ -143,7 +128,7 @@ def serve(
     ] = 14,
 ) -> None:
     """Serve the database to local clients over Quack until interrupted."""
-    cfg = _config(ctx)
+    cfg = command_config(ctx)
     server = MemoryServer(cfg, export_interval_hours=export_interval_hours, export_keep=export_keep)
     stop = threading.Event()
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -181,7 +166,7 @@ def sql(
     """Run a query through the server, or directly against the file with --direct."""
     if write and not direct:
         raise typer.BadParameter("only applies with --direct.", param_hint="--write")
-    cfg = _config(ctx)
+    cfg = command_config(ctx)
     text = sys.stdin.read() if query == "-" else query
     if direct:
         con = open_direct(cfg.db_path, read_only=not write)
@@ -219,7 +204,7 @@ def export(
     ] = 0,
 ) -> None:
     """Write every table to Parquet and point <out>/latest at the snapshot."""
-    cfg = _config(ctx)
+    cfg = command_config(ctx)
     target = (out or cfg.export_dir).expanduser().resolve()
     target.mkdir(parents=True, exist_ok=True)
     if direct:
@@ -247,7 +232,7 @@ def smoke(
     """End-to-end check of the server, its policy, and the client."""
     from .smoke import run_ephemeral, run_live
 
-    checks = run_live(_config(ctx)) if live else run_ephemeral()
+    checks = run_live(command_config(ctx)) if live else run_ephemeral()
     width = max(len(c.name) for c in checks)
     for c in checks:
         print(f"{'PASS' if c.ok else 'FAIL'}  {c.name:<{width}}  {c.detail}")
@@ -341,7 +326,7 @@ def event(
     Droid, Stop and SessionEnd), it also imports what the transcript has gained since the
     last import of it.
     """
-    cfg = _config(ctx)
+    cfg = command_config(ctx)
     try:
         payload = json.loads(sys.stdin.read())
     except json.JSONDecodeError as exc:
@@ -405,7 +390,7 @@ def ingest(
     ] = None,
 ) -> None:
     """Import a transcript, or replay the spool. Exits 0 once the records are kept anywhere."""
-    cfg = _config(ctx)
+    cfg = command_config(ctx)
     if spool == (transcript is not None):
         raise typer.BadParameter("pass exactly one of --transcript PATH or --spool")
     if spool:
@@ -468,7 +453,7 @@ def audit_check(
     only used the MCP tools always have them, so they are listed without failing the check.
     """
     try:
-        cfg = _config(ctx)
+        cfg = command_config(ctx)
         if direct:
             con = open_direct(cfg.db_path, read_only=True)
             try:
@@ -518,7 +503,7 @@ app.add_typer(hooks_app, name="hooks")
 @spool_app.command("status")
 def spool_status(ctx: typer.Context) -> None:
     """Files and lines per agent: pending replay, or rejected by the ledger."""
-    spool = Spool(_config(ctx).spool_dir)
+    spool = Spool(command_config(ctx).spool_dir)
     rows = [("pending", s) for s in spool.status()] + [("rejected", s) for s in spool.rejected()]
     if not rows:
         print("spool is empty")
@@ -539,7 +524,7 @@ def spool_status(ctx: typer.Context) -> None:
 @spool_app.command("retry")
 def spool_retry(ctx: typer.Context) -> None:
     """Return rejected records to the spool, so that the next replay tries them again."""
-    files, lines = Spool(_config(ctx).spool_dir).retry_failed()
+    files, lines = Spool(command_config(ctx).spool_dir).retry_failed()
     if not lines:
         print("no rejected records")
         return

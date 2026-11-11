@@ -10,7 +10,7 @@ import typer
 
 from .. import endpoints
 from ..capture.session import Observed
-from ..config import Config, load_config
+from ..config import command_config
 from ..lifecycle import HUMAN_AGENT
 from ..mcp_server.tools import MemoryTools
 from .recall import relations_of
@@ -43,15 +43,10 @@ PROJECT = Annotated[
 ]
 
 
-def _config(ctx: typer.Context) -> Config:
-    opts = ctx.obj
-    return load_config(home=getattr(opts, "home", None), port=getattr(opts, "port", None))
-
-
 def _tools(ctx: typer.Context, agent: str, project: str | None) -> MemoryTools:
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     return MemoryTools(
-        _config(ctx),
+        command_config(ctx),
         agent,
         harness_session_id=f"graph-{stamp}",
         project=project,

@@ -12,7 +12,7 @@ from typing import Annotated, Any
 import typer
 
 from .capture.session import Observed
-from .config import Config, load_config
+from .config import Config, command_config
 from .db import AgentMemoryError, MemoryClient, sql_literal
 from .lifecycle import HUMAN_AGENT, LifecyclePlan
 from .mcp_server.tools import MemoryTools
@@ -124,11 +124,6 @@ REASON = Annotated[
 ]
 
 
-def _config(ctx: typer.Context) -> Config:
-    opts = ctx.obj
-    return load_config(home=getattr(opts, "home", None), port=getattr(opts, "port", None))
-
-
 def _show(memory: Waiting) -> None:
     when = memory.created_at.astimezone().strftime("%Y-%m-%d %H:%M")
     print(memory.memory_id)
@@ -170,7 +165,7 @@ def _decide(cfg: Config, action: str, memory_id: str, reason: str) -> None:
 def list_waiting(ctx: typer.Context, scope: SCOPES = None) -> None:
     """Every memory that waits for a human, oldest first: those in quarantine, and active
     ones a tool's output asked to put in another memory's place."""
-    with MemoryClient.from_config(_config(ctx)) as client:
+    with MemoryClient.from_config(command_config(ctx)) as client:
         found = waiting(client, scopes=scope)
     if not found:
         print("nothing waits for review")
@@ -190,7 +185,7 @@ def approve(ctx: typer.Context, memory_id: MEMORY_ID, reason: REASON) -> None:
         raise ReviewError(
             "approving a memory takes a human at a terminal; run `mem review approve` yourself"
         )
-    cfg = _config(ctx)
+    cfg = command_config(ctx)
     with MemoryClient.from_config(cfg) as client:
         # A duplicate's id stands for its canonical, as it does in every review.
         target = LifecyclePlan(client).resolve(memory_id)
@@ -214,4 +209,4 @@ def approve(ctx: typer.Context, memory_id: MEMORY_ID, reason: REASON) -> None:
 @review_app.command()
 def retire(ctx: typer.Context, memory_id: MEMORY_ID, reason: REASON) -> None:
     """Withdraw a memory for good, whether or not it waits. Retirement is not undone."""
-    _decide(_config(ctx), "retire", memory_id, reason)
+    _decide(command_config(ctx), "retire", memory_id, reason)

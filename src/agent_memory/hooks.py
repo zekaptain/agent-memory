@@ -17,7 +17,7 @@ from typing import Annotated, Any
 import typer
 
 from .adapters.droid import DroidAdapter
-from .config import Config, load_config
+from .config import Config, command_config
 from .db import AgentMemoryError
 
 hooks_app = typer.Typer(
@@ -216,11 +216,6 @@ def _mem(given: Path | None) -> Path:
     return (given or Path(sys.executable).parent / "mem").expanduser().absolute()
 
 
-def _config(ctx: typer.Context) -> Config:
-    opts = ctx.obj
-    return load_config(home=getattr(opts, "home", None), port=getattr(opts, "port", None))
-
-
 def _counted(count: int, noun: str = "hook") -> str:
     return f"{count} {noun}{'' if count == 1 else 's'}"
 
@@ -266,7 +261,7 @@ def install(
     needs and at no other. Every other hook in the file is left as it is. Run it again
     to change the home, the port, or a flag.
     """
-    cfg = _config(ctx)
+    cfg = command_config(ctx)
     path = (file or DEFAULT_FILE).expanduser()
     command_path = _mem(mem)
     if command_path.name != "mem":
@@ -370,7 +365,7 @@ def status(ctx: typer.Context, file: FILE = None, mem: MEM = None) -> None:
     Exits 0 when `mem event` runs for the home and port in use, once at every hook event
     capture needs and at no other.
     """
-    cfg = _config(ctx)
+    cfg = command_config(ctx)
     path = (file or DEFAULT_FILE).expanduser()
     hooks = _read(path)
     words = _capture_words(_mem(mem), cfg)

@@ -5,8 +5,10 @@ import stat
 from pathlib import Path
 
 import pytest
+import typer
 
-from agent_memory.config import Config, ConfigError, load_config
+from agent_memory.cli import app
+from agent_memory.config import Config, ConfigError, RootOptions, command_config, load_config
 
 
 @pytest.fixture(autouse=True)
@@ -53,6 +55,23 @@ def test_bad_port(monkeypatch):
     monkeypatch.setenv("AGENT_MEMORY_PORT", "ninety")
     with pytest.raises(ConfigError, match="not a port number"):
         load_config()
+
+
+def context(obj: object) -> typer.Context:
+    return typer.Context(typer.main.get_command(app), obj=obj)
+
+
+def test_a_command_takes_its_home_and_port_from_the_root_options(monkeypatch, tmp_path):
+    monkeypatch.setenv("AGENT_MEMORY_HOME", "/nope")
+    monkeypatch.setenv("AGENT_MEMORY_PORT", "1")
+    cfg = command_config(context(RootOptions(home=tmp_path, port=1234)))
+    assert (cfg.home, cfg.port) == (tmp_path, 1234)
+    assert command_config(context(RootOptions())).home == Path("/nope")
+
+
+def test_a_command_without_the_root_options_does_not_run_against_the_default_home():
+    with pytest.raises(RuntimeError, match="root callback did not run"):
+        command_config(context(None))
 
 
 def test_token_checks(tmp_path):

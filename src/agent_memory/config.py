@@ -1,4 +1,5 @@
-"""Paths and connection settings, resolved from the environment."""
+"""Paths and connection settings, resolved from the environment and from what `mem` was
+given before its subcommand."""
 
 from __future__ import annotations
 
@@ -6,6 +7,10 @@ import os
 import stat
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import typer
 
 DEFAULT_HOME = Path("~/.agent-memory")
 DEFAULT_PORT = 9494
@@ -76,3 +81,23 @@ def load_config(home: str | Path | None = None, port: int | None = None) -> Conf
         except ValueError:
             raise ConfigError(f"AGENT_MEMORY_PORT={raw!r} is not a port number.") from None
     return Config(home=home_path, host=host, port=port)
+
+
+@dataclass(frozen=True)
+class RootOptions:
+    """What `mem` was given before its subcommand. The root callback puts it on the context."""
+
+    home: Path | None = None
+    port: int | None = None
+
+
+def command_config(ctx: typer.Context) -> Config:
+    """The configuration of the `mem` command that `ctx` belongs to.
+
+    Each command resolves it, not the root callback, so `mem <cmd> --help` works even when
+    the environment is misconfigured. A context without the root options is refused: the
+    command would otherwise run against the default home."""
+    opts = ctx.obj
+    if not isinstance(opts, RootOptions):
+        raise RuntimeError("mem's root callback did not run")
+    return load_config(home=opts.home, port=opts.port)

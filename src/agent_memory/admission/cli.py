@@ -11,7 +11,7 @@ from typing import Annotated
 
 import typer
 
-from ..config import Config, load_config
+from ..config import Config, command_config
 from ..db import MemoryClient, sql_literal
 from ..judge.store import JudgeError, lock
 from . import approver
@@ -30,8 +30,7 @@ DEFAULT_EMBEDDER = "ollama:nomic-embed-text"
 
 
 def _config(ctx: typer.Context) -> Config:
-    opts = ctx.obj
-    cfg = load_config(home=getattr(opts, "home", None), port=getattr(opts, "port", None))
+    cfg = command_config(ctx)
     with MemoryClient.from_config(cfg) as client:
         _, rows = client.query(
             f"SELECT agent_id FROM agents WHERE agent_id = {sql_literal(ADMISSION_AGENT)}"
