@@ -47,6 +47,31 @@ HOOK = {
 }
 
 
+def kept_raw(client: MemoryClient, harness_session_id: str) -> list[object]:
+    """The hook payload stored with each event of a Droid session, None where there is none."""
+    sid = ids.session_id("factory-droid", harness_session_id)
+    rows = client.query(
+        f"SELECT payload::JSON::VARCHAR FROM events WHERE session_id = {sql_literal(sid)} "
+        "ORDER BY seq"
+    )[1]
+    return [(json.loads(row[0]) if row[0] else {}).get("raw") for row in rows]
+
+
+def serve_then_stop(mem: Mem, monkeypatch) -> tuple[int, str, str]:
+    """Run `mem serve` through its startup and stop it before it waits for clients."""
+    import agent_memory.cli as cli
+
+    real_serve_forever = MemoryServer.serve_forever
+
+    def serve_briefly(self, stop, **kwargs):
+        stop.set()
+        return real_serve_forever(self, stop, **kwargs)
+
+    monkeypatch.setattr(MemoryServer, "serve_forever", serve_briefly)
+    monkeypatch.setattr(cli.signal, "signal", lambda *a: None)
+    return mem("serve")
+
+
 def test_event_writes_through_a_live_server_and_says_nothing(live_mem, live_client, monkeypatch):
     for _ in range(2):
         feed(monkeypatch, HOOK)
@@ -130,6 +155,47 @@ def test_event_records_compaction_instructions_that_are_not_text(
     assert not (
         Spool(live_cfg.spool_dir).failed_dir / "factory-droid" / "cli-compact.jsonl"
     ).exists()
+
+
+def test_event_keeps_the_hook_payload_only_when_asked(live_mem, live_cfg, live_client, monkeypatch):
+    token = live_cfg.read_token()
+    for hsid, flags in (("cli-raw", ["--keep-raw"]), ("cli-no-raw", [])):
+        feed(monkeypatch, {**HOOK, "session_id": hsid, "prompt": f"hello {token}"})
+        assert live_mem("event", "--harness", "droid", *flags) == (0, "", "")
+    assert kept_raw(live_client, "cli-raw") == [
+        {**HOOK, "session_id": "cli-raw", "prompt": "hello [REDACTED:mem_token]"}
+    ]
+    assert kept_raw(live_client, "cli-no-raw") == [None]
+
+
+@pytest.mark.parametrize("replayed_by", ["serve", "ingest"])
+def test_a_kept_hook_payload_survives_the_spool(down_mem, down_cfg, monkeypatch, replayed_by):
+    # Neither replay is told what the hook was asked to keep: the spooled record says so.
+    token = down_cfg.read_token()
+    feed(monkeypatch, {**HOOK, "session_id": "cli-raw", "prompt": f"hello {token}"})
+    assert down_mem("event", "--harness", "droid", "--keep-raw")[0] == 0
+    feed(monkeypatch, {**HOOK, "session_id": "cli-no-raw"})
+    assert down_mem("event", "--harness", "droid")[0] == 0
+    redacted = {**HOOK, "session_id": "cli-raw", "prompt": "hello [REDACTED:mem_token]"}
+    spooled = [json.loads(f.path.read_text()) for f in Spool(down_cfg.spool_dir).pending()]
+    assert {line["harness_session_id"]: line["raw"] for line in spooled} == {
+        "cli-raw": redacted,
+        "cli-no-raw": None,
+    }
+    if replayed_by == "serve":
+        code, _, err = serve_then_stop(down_mem, monkeypatch)
+        assert code == 0, err
+    server = MemoryServer(down_cfg, export_interval_hours=0)
+    server.start()
+    try:
+        if replayed_by == "ingest":
+            assert down_mem("ingest", "--spool")[0] == 0
+        with MemoryClient.from_config(down_cfg) as client:
+            assert kept_raw(client, "cli-raw") == [redacted]
+            assert kept_raw(client, "cli-no-raw") == [None]
+    finally:
+        server.stop()
+    assert Spool(down_cfg.spool_dir).pending() == []
 
 
 def test_event_keeps_a_record_the_ledger_rejects(live_mem, live_cfg, live_client, monkeypatch):
@@ -223,6 +289,11 @@ def test_ingest_argument_validation(live_mem, tmp_path):
         "ingest", "--harness", "droid", "--transcript", str(tmp_path / "missing.jsonl")
     )
     assert code == 2
+    # A transcript has no hook payload to keep, and a spooled record says what it kept.
+    for args in (("--spool",), ("--harness", "droid", "--transcript", str(transcript))):
+        code, _, err = live_mem("ingest", *args, "--keep-raw")
+        assert code == 2
+        assert "No such option" in err
 
 
 def test_ingest_spool_replays_and_purges(down_mem, down_cfg, monkeypatch):
@@ -245,17 +316,7 @@ def test_ingest_spool_replays_and_purges(down_mem, down_cfg, monkeypatch):
 def test_serve_drains_the_spool_at_startup(down_mem, down_cfg, monkeypatch, capsys):
     feed(monkeypatch, HOOK)
     assert down_mem("event", "--harness", "droid")[0] == 0
-    import agent_memory.cli as cli
-
-    real_serve_forever = MemoryServer.serve_forever
-
-    def serve_briefly(self, stop, **kwargs):
-        stop.set()
-        return real_serve_forever(self, stop, **kwargs)
-
-    monkeypatch.setattr(MemoryServer, "serve_forever", serve_briefly)
-    monkeypatch.setattr(cli.signal, "signal", lambda *a: None)
-    code, out, err = down_mem("serve")
+    code, out, err = serve_then_stop(down_mem, monkeypatch)
     assert code == 0, err
     assert "spool replayed: 1 file(s), 2 rows inserted" in out
     assert Spool(down_cfg.spool_dir).pending() == []

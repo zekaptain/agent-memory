@@ -70,6 +70,8 @@ class Record:
     # create at replay, so a queued write becomes a real memory, not just an event.
     memory: dict[str, Any] | None = None
     action: dict[str, Any] | None = None
+    # The harness payload, when the caller chose to keep it. A record that has one keeps
+    # it, redacted, under payload.raw wherever the record goes, the spool included.
     raw: dict[str, Any] | None = field(default=None, compare=False)
     redactions: int = 0
     observation: dict[str, Any] | None = None

@@ -73,13 +73,10 @@ class Writer:
         client: MemoryClient,
         blob_dir: Path,
         redactor: Redactor,
-        *,
-        keep_raw: bool = False,
     ) -> None:
         self.client = client
         self.blob_dir = blob_dir
         self.redactor = redactor
-        self.keep_raw = keep_raw
         self._tiers: dict[str, str] | None = None
 
     # Lookups
@@ -120,7 +117,7 @@ class Writer:
         result = WriteResult()
         if not records:
             return result
-        batch = [self.redactor.record(rec, keep_raw=self.keep_raw) for rec in records]
+        batch = [self.redactor.record(rec) for rec in records]
         groups: dict[tuple[str, str], list[Record]] = {}
         for rec in batch:
             groups.setdefault((rec.agent_id, rec.harness_session_id), []).append(rec)
@@ -347,7 +344,7 @@ class Writer:
         payload = rec.payload
         if rec.attribution:
             payload = {**(payload or {}), "capture_attribution": rec.attribution}
-        if self.keep_raw and rec.raw is not None:
+        if rec.raw is not None:
             payload = {**(payload or {}), "raw": rec.raw}
         return event_row(
             self.blob_dir,

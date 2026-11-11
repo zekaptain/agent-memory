@@ -116,7 +116,7 @@ class Redactor:
 
         return walk(obj), count
 
-    def record(self, rec: Record, *, keep_raw: bool = False) -> Record:
+    def record(self, rec: Record) -> Record:
         """Sanitize every content copy without changing capture identities or references."""
         fields, count = self.value(
             {
@@ -125,7 +125,7 @@ class Redactor:
                 "session": asdict(rec.session) if rec.session else None,
                 "memory": rec.memory,
                 "action": rec.action,
-                "raw": rec.raw if keep_raw else None,
+                "raw": rec.raw,
                 "observation": rec.observation,
                 "attribution": rec.attribution,
             }

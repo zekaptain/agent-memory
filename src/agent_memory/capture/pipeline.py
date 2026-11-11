@@ -63,7 +63,6 @@ def deliver(
     *,
     spool_only: bool = False,
     deadline: float | None = None,
-    keep_raw: bool = False,
 ) -> Delivery:
     """Write records now if the server answers within the deadline, else append to the spool.
 
@@ -83,7 +82,7 @@ def deliver(
         def write() -> None:
             try:
                 with MemoryClient.from_config(cfg) as client:
-                    writer = Writer(client, cfg.blob_dir, redactor, keep_raw=keep_raw)
+                    writer = Writer(client, cfg.blob_dir, redactor)
                     written = writer.write(records)
                     attempt.unreported = [
                         _capture_error(r.record, r.record.to_json(), r.reason)
@@ -111,7 +110,7 @@ def deliver(
                 error=error,
             )
         error = error or "server unavailable"
-    paths = spool.append(redactor.record(rec, keep_raw=keep_raw) for rec in records)
+    paths = spool.append(redactor.record(rec) for rec in records)
     return Delivery(spooled=paths, error=error)
 
 
@@ -133,7 +132,7 @@ class ReplayResult:
     errors: list[str] = field(default_factory=list)
 
 
-def replay_spool(cfg: Config, *, keep_raw: bool = False) -> ReplayResult:
+def replay_spool(cfg: Config) -> ReplayResult:
     """Replay every pending spool file in order. A line that cannot be read, or a record the
     ledger rejects, becomes a capture_error event and is kept under spool/failed/; the rest
     still lands. When the ledger is unavailable this raises and the files stay pending."""
@@ -147,7 +146,7 @@ def replay_spool(cfg: Config, *, keep_raw: bool = False) -> ReplayResult:
             return result
         redactor = make_redactor(cfg)
         with MemoryClient.from_config(cfg) as client:
-            writer = Writer(client, cfg.blob_dir, redactor, keep_raw=keep_raw)
+            writer = Writer(client, cfg.blob_dir, redactor)
             _replay_files(spool, writer, [spool.claim(file) for file in pending], result)
     return result
 
@@ -173,7 +172,7 @@ def _replay_files(
         sanitized: list[str] = []
         for number, line in spool.lines(file.path):
             try:
-                record = writer.redactor.record(Record.from_json(line), keep_raw=writer.keep_raw)
+                record = writer.redactor.record(Record.from_json(line))
             except RecordError as exc:
                 try:
                     unread = json.loads(line)

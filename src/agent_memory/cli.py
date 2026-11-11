@@ -352,7 +352,7 @@ def event(
     if not records:
         return
     try:
-        delivery = deliver(cfg, records, spool_only=spool_only, keep_raw=keep_raw)
+        delivery = deliver(cfg, records, spool_only=spool_only)
     except Exception as exc:
         raise _hook_failure(f"nothing could be kept: {type(exc).__name__}: {exc}") from None
     _report_delivery(delivery, str(payload.get("hook_event_name")), summary=False)
@@ -378,9 +378,6 @@ def ingest(
     include_thinking: Annotated[
         bool, typer.Option("--include-thinking", help="Also record assistant thinking blocks.")
     ] = False,
-    keep_raw: Annotated[
-        bool, typer.Option("--keep-raw", help="Keep raw entries under payload.raw.")
-    ] = False,
     spool_only: Annotated[
         bool, typer.Option("--spool-only", help="Write to the spool without trying the server.")
     ] = False,
@@ -394,7 +391,7 @@ def ingest(
     if spool == (transcript is not None):
         raise typer.BadParameter("pass exactly one of --transcript PATH or --spool")
     if spool:
-        result = replay_spool(cfg, keep_raw=keep_raw)
+        result = replay_spool(cfg)
         print(
             f"spool: {result.files} file(s), {result.inserted} rows inserted, "
             f"{result.skipped} already present, {result.failed_lines} line(s) failed"
@@ -421,7 +418,7 @@ def ingest(
     if not records:
         print(f"{transcript.name}: nothing new to record")
         return
-    delivery = deliver(cfg, records, spool_only=spool_only, keep_raw=keep_raw)
+    delivery = deliver(cfg, records, spool_only=spool_only)
     _report_delivery(delivery, transcript.name)
 
 

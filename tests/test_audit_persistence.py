@@ -124,21 +124,19 @@ def test_spool_redacts_every_persisted_record_copy(live_cfg, live_client):
         session=SessionInfo(cwd=f"/tmp/{secret}", metadata={"nested": [secret]}),
         memory={"content": secret, "metadata": {"nested": [secret]}},
     )
-    delivery = deliver(live_cfg, [record], spool_only=True, keep_raw=True)
+    delivery = deliver(live_cfg, [record], spool_only=True)
     assert secret not in delivery.spooled[0].read_text()
-    replay_spool(live_cfg, keep_raw=True)
+    replay_spool(live_cfg)
     for table in ("events", "sessions", "memories"):
         assert secret not in repr(live_client.query(f"SELECT * FROM {table}")[1])
     sid = ids.session_id(record.agent_id, record.harness_session_id)
-    assert live_client.query(
-        f"SELECT redactions > 0 FROM events WHERE session_id = {sql_literal(sid)}"
-    )[1] == [(True,)]
-
-
-def test_spool_drops_raw_without_opt_in(down_cfg):
-    record = rec("audit-no-raw", "note", "n", raw={"irrelevant": "must not persist"})
-    (path,) = deliver(down_cfg, [record], spool_only=True).spooled
-    assert json.loads(path.read_text())["raw"] is None
+    ((redacted, payload),) = live_client.query(
+        "SELECT redactions > 0, payload::JSON::VARCHAR FROM events "
+        f"WHERE session_id = {sql_literal(sid)}"
+    )[1]
+    assert redacted
+    # The raw input is stored without the secret, not left out.
+    assert json.loads(payload)["raw"] == {"input": "[REDACTED:mem_token]"}
 
 
 def test_writer_redacts_queued_memory_and_action(live_cfg, live_client):
