@@ -318,6 +318,10 @@ _Avoid_: Request, inference, completion, prompt
 One request to a model within a model call, and what came back. A later attempt changes what the earlier one lacked: more room, or no thinking.
 _Avoid_: Retry (which returns rejected records to the spool), try
 
+**Model server**:
+The program a model call is sent to, which runs the model: Ollama, llama-server, or OpenRouter.
+_Avoid_: Server (bare, which is the process that serves the ledger), provider, endpoint, host
+
 **Model reply**:
 What a model sends back in one attempt: its text, any thinking that came before it, and whether it was cut off.
 _Avoid_: Reply (bare, which is an agent's message to its user), response, completion, output, answer
