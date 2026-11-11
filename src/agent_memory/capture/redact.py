@@ -135,6 +135,5 @@ class Redactor:
         return replace(rec, **fields, redactions=rec.redactions + count)
 
 
-def redactor_for(token: str | None, extra: Iterable[str] = ()) -> Redactor:
-    secrets = [token] if token else []
-    return Redactor(extra_secrets=[*secrets, *extra])
+def redactor_for(token: str | None) -> Redactor:
+    return Redactor(extra_secrets=[token] if token else [])

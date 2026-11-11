@@ -68,7 +68,6 @@ class LifecyclePlan:
         self.aliases: dict[str, str] = {}
         self.actions: set[str] = set()
         self.sources: set[tuple[str, str, str]] = set()
-        self.accepted: dict[str, str] = {}
         self.proposals: set[tuple[str, str]] = set()
 
     def resolve(self, memory_id: str) -> str:
@@ -151,7 +150,7 @@ class LifecyclePlan:
             "SELECT successor_id::VARCHAR FROM memory_replacements "
             f"WHERE predecessor_id = {sql_literal(predecessor)}"
         )
-        target = str(accepted[0][0]) if accepted else self.accepted.get(predecessor)
+        target = str(accepted[0][0]) if accepted else None
         if target and target != successor:
             raise LifecycleError(
                 f"stale correction conflict: {predecessor} was replaced by {target}; "

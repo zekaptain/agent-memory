@@ -442,7 +442,6 @@ class MemoryClient:
     """
 
     def __init__(self, uri: str, token: str) -> None:
-        self.uri = uri
         self.con = duckdb.connect(":memory:")
         self.con.execute("LOAD quack")
         try:

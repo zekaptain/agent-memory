@@ -187,7 +187,7 @@ def _ordered(findings: list[Finding]) -> tuple[Finding, ...]:
     )
 
 
-def legacy_preflight(source: AuditSource, *, as_of: datetime | None = None) -> LegacyPreflight:
+def legacy_preflight(source: AuditSource) -> LegacyPreflight:
     """Read legacy rows without migrations or writes; return evidence and blockers.
 
     This also works inside a migration's existing transaction. It neither starts nor
@@ -199,7 +199,7 @@ def legacy_preflight(source: AuditSource, *, as_of: datetime | None = None) -> L
     missing = _missing(_schema(source), _LEGACY_COLUMNS)
     if missing:
         return LegacyPreflight((), missing)
-    return _legacy(source, as_of=as_of or datetime.now(UTC))
+    return _legacy(source, as_of=datetime.now(UTC))
 
 
 def _legacy(source: AuditSource, *, as_of: datetime) -> LegacyPreflight:

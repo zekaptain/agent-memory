@@ -235,7 +235,6 @@ def build_candidates(
     store: RunStore | None = None,
     session_ids: Sequence[str] | None = None,
     exclude_item_ids: Sequence[str] = (),
-    extra_params: dict[str, Any] | None = None,
     log: Log = _quiet,
 ) -> CandidateSummary:
     """Segment turns, apply triggers, sample, project, and write items.jsonl."""
@@ -276,7 +275,6 @@ def build_candidates(
                     "sessions_by_caller": _count_values(c.kind for c in callers.values()),
                     "pool": _count(pool),
                     "pool_callers": _count_values(c.caller for c in pool),
-                    **(extra_params or {}),
                 }
             )
         splits = assign_splits(chosen, seed=seed)

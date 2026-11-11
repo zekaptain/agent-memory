@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from typing import Any, Protocol
 
 from ... import endpoints
@@ -31,16 +31,13 @@ class Answer:
     latency_ms: float = 0.0
     cost_usd: float = 0.0
     model_snapshot: str = ""
-    raw: dict[str, Any] | None = field(default=None, compare=False)
 
     @property
     def p_true(self) -> float | None:
         return self.probabilities.get("yes")
 
     def to_dict(self) -> dict[str, Any]:
-        data = asdict(self)
-        data.pop("raw", None)
-        return data
+        return asdict(self)
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Answer:
