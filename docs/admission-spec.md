@@ -2,8 +2,8 @@
 
 Implemented. Admission lives in `src/agent_memory/admission/`; the judge
 experiment remains separate.
-No migration is added. Existing memory types, the `judge` agent from 0005,
-and client authorization cover the writes.
+Migration 0007 registers the `admission` agent that admission writes as.
+Existing memory types and client authorization cover the writes.
 
 ## Before admission: human calibration
 
@@ -34,8 +34,8 @@ neighbor vote.
 
 ## Production command order
 
-Stop the production server before `mem migrate` if the `judge` agent is
-missing, then restart it. Every admission command checks for that agent
+Stop the production server before `mem migrate` if the `admission` agent
+is missing, then restart it. Every admission command checks for that agent
 before doing work. Use production home and port for admission, not 9495:
 
 ```sh
@@ -169,7 +169,7 @@ Each `write` or `review` creates a memory through `LifecyclePlan.remember`:
 
 Content-hash deduplication confirms an existing rule and adds provenance
 instead of creating a second memory. A `decision` event under agent
-`judge`, harness session `admission-<day>`, records probabilities and
+`admission`, harness session `admission-<day>`, records probabilities and
 identities without rule, claim, or projection text. It holds two results
 side by side: the judge's action and reasons as judged (`payload.judge`),
 and the approver's action, score and reasons (`payload.admission`). Its
@@ -178,9 +178,19 @@ reasons were written over the judge's in `payload.judge`, and
 `payload.admission` had no action; events recorded before then keep that
 shape.
 
-In auto mode only a `write` also gets an `approve`, actor `judge`, with
-approver version and score in its reason. `review` remains quarantined.
-Discards stay in day files and make no ledger writes.
+In auto mode only a `write` also gets an `approve`, actor `admission`,
+with approver version and score in its reason. `review` remains
+quarantined. Discards stay in day files and make no ledger writes.
+
+Admission has written as its own agent since migration 0007 (2026-11-11).
+Until then the decision event, the session that created the memory, and
+the approver's `approve` were recorded under agent and actor `judge`, in
+sessions of scope `judge`; a ledger that admitted lessons before then
+keeps those rows. An admission session now has scope `admission`, says
+`via: mem admit` in its metadata, and has a capture observation in source
+mode `record`. `mem admit run` passes over the sessions of both agents
+when it looks for new turns. The reasons are in
+[ADR 0009](adr/0009-admission-writes-as-its-own-agent.md).
 
 ## Human review and feedback
 
@@ -247,9 +257,11 @@ launchctl bootout "gui/$(id -u)/com.agent-memory.admit"
 `ensure_experiment_home` is unchanged. `mem judge` never writes lessons,
 and no module under `judge/` imports admission. Admission composes
 guard-free judge building blocks: it judges through `judge/verdict.py`
-(`ask_turn`, `judge`) and records a verdict's ledger copy with
-`Verdict.decision_record`, which accepts a harness session and project.
-Its defaults preserve historical experiment events and report behavior.
+(`ask_turn`, `judge`) and takes a verdict's ledger copy from
+`Verdict.decision_record`, which always describes an experiment's event.
+Admission replaces the agent, the session, and the source key with its
+own before it writes the event, so experiment events and reports are
+untouched.
 
 Local drafters are required. Hosted judge arms remain optional behind
 `AGENT_MEMORY_JUDGE_ALLOW_REMOTE=1`; a remote embedder host uses the same

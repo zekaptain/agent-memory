@@ -126,6 +126,12 @@ including the ones already in a ledger. A recall made with `--agent` set
 to a harness's agent is still expected to be cited, and the other
 retrieval checks apply to every session.
 
+The session of such a command now says what it is. Its metadata carries
+`via: mem graph`, and its capture observation has source mode `record` and
+adapter version `mem_cli_v1`. It was recorded as `via: mem-mcp` in mode
+`mcp`, because the command runs through the MCP tools' code. Sessions
+already in a ledger keep what they say.
+
 ### Audit exit code, as built (2026-11-11)
 
 `mem audit check` exits 1 only when a finding is an error: a correction

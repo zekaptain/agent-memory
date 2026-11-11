@@ -495,9 +495,9 @@ uv run mem admit review --day 2026-11-10
 ```
 
 Defaults use local Ollama models: `gemma4:26b` for drafting and judging,
-`nomic-embed-text` for lesson embeddings. All commands need the existing
-`judge` agent row. If missing, stop the server, run `mem migrate`, then
-restart it.
+`nomic-embed-text` for lesson embeddings. All commands need the
+`admission` agent row, which migration 0007 adds. If missing, stop the
+server, run `mem migrate`, then restart it.
 
 Review approves or retires exact lessons and samples 30 rejected drafts
 by default. Add `--plain` for numbered prompts, or `--again` to correct

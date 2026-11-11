@@ -17,7 +17,7 @@ As of 2026-11-11.
 | Phase 1b: in-session tools | Done | [phase-1-spec.md](phase-1-spec.md) |
 | Phase 2: harness adapters | Droid hooks and transcript import and Vibe hooks are built. The Vibe transcript adapter, omp, and Amp are not. Hook installation is manual. | below |
 | Phase 3: audit tooling | Not started. `mem audit check` exists, but as a preflight for migrations, not as the commands below. | below |
-| Phase 4: memory quality | Partly built: the relation graph's first step and lesson admission. | below, [admission-spec.md](admission-spec.md) |
+| Phase 4: memory quality | Partly built: the relation graph's first step and lesson admission (migration 0007). | below, [admission-spec.md](admission-spec.md) |
 | Phase 5: Markdown projection | Not started | below |
 | Lifecycle, coverage, and attribution hardening | Done (migrations 0002 to 0006). No live home has been migrated past 0001. | [logic-hardening-spec.md](logic-hardening-spec.md) |
 | Judge experiment | Built; four runs stored | [judge-experiment-spec.md](judge-experiment-spec.md), [run logs](archive/judge-experiments.md) |
@@ -148,14 +148,8 @@ Verified against the code in the audit of 2026-11 and still open.
 - A Droid hook that carries no message or tool id is keyed on the wall
   clock, so a retry of that hook becomes a second event
   (`adapters/droid.py`).
-- Admission records its ledger sessions under scope `judge`, and an
-  approver's decision is stored with actor `judge`
-  (`admission/ledger.py`). Migration 0005 describes agent `judge` as
-  "Experiment verdicts only; no lesson admission", which admission has
-  since made untrue; the migration cannot be edited.
-- `mem graph` at the CLI records its sessions with source mode `mcp`. A
-  mode of its own needs a migration. Its listing retrieval records every
-  relation even when `--entity-type` shows the model a subset.
+- The listing retrieval of `mem graph resolve` records every relation
+  even when `--entity-type` shows the model a subset.
 
 Reported in the same audit and not yet checked against the code: the
 hand-maintained `ALL_TABLES` list; lockdown happening after the listener
@@ -185,12 +179,11 @@ Proposed in the audit of 2026-11. None of these is approved.
 - Add CI.
 
 Modules that would gain from deepening, in the order the audit ranked
-them: the ledger session (three builders of session and event rows in
-`capture/writer.py`, `mcp_server/tools.py`, and `admission/ledger.py`);
-the model call ladder (`endpoints.py`, the judge backends, the drafter,
-`graph/resolve.py`); one session driver for labeling and admission
-review; a ledger connection with two adapters; auto-approval in one
-place.
+them: the model call ladder (`endpoints.py`, the judge backends, the
+drafter, `graph/resolve.py`); one session driver for labeling and
+admission review; a ledger connection with two adapters; auto-approval in
+one place. The ledger session, ranked first, was deepened on 2026-11-11
+(`capture/session.py`).
 
 ## Open decisions
 
@@ -203,9 +196,6 @@ place.
 - Should `--freeze` require complete calibration labels? May a run be
   relabeled after a freeze?
 - Do Phases 0.5, 3, and 5 stay on this roadmap?
-- Should admission get its own agent through a new migration, or is the
-  note in migration 0005 a documented caveat?
 - `--keep-raw` for transcripts: implement or remove?
 - Is the Parquet export a backup or a browsing aid?
-- Should CLI graph sessions get their own capture source mode?
 - What happens to `example-memory-db-schema.sql` and the prototype branch?

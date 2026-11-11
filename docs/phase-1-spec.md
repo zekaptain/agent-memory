@@ -381,6 +381,7 @@ src/agent_memory/
     redact.py      # rules and Redactor; cases in tests/fixtures/redact_cases.json
     blobs.py       # write_blob(), threshold constants
     writer.py      # records -> staged rows -> idempotent insert, or spool
+    session.py     # the session and event rows of every writer (added later)
     spool.py       # append, iterate, mark done/failed, status
     pipeline.py    # deliver to the ledger or the spool; replay the spool
     observations.py  # observed capture boundaries (added with hardening)
@@ -400,6 +401,7 @@ src/agent_memory/
     model.py       # relations as fact memories with normalized keys
     sql.py         # SQL builders for the graph
     recall.py      # graph_hop_v1 and graph_relations_v1 strategies
+    merge.py       # entity merges as append-only history
     resolve.py     # entity resolution with a local model
     cli.py         # mem graph
   cli.py           # + event, ingest, spool
@@ -412,7 +414,8 @@ src/agent_memory/
 The Phase 1 test plan and the four questions put to review are in
 [archive/phase-1-original-design.md](archive/phase-1-original-design.md#tests).
 The tests are `tests/test_capture.py`, `test_writer.py`, `test_spool.py`,
-`test_adapters.py`, `test_cli_capture.py`, and `test_mcp.py`.
+`test_adapters.py`, `test_cli_capture.py`, `test_mcp.py`, and
+`test_ledger_session.py`.
 
 ## As built (2026-10-25)
 
@@ -661,3 +664,40 @@ relations with no retrieval at all.
   to three sentences per entity drawn from those relations, narrowed by
   `--entity-type` when it is given; the retrieval lists every relation
   read, not only the ones that reached the prompt.
+
+### One ledger session for every writer (2026-11-11)
+
+The capture writer, the MCP tools, and admission each built session and
+event rows by hand, and the three had drifted apart. `capture/session.py`
+now holds the one shape of both rows, and a `LedgerSession` that the MCP
+tools, `mem graph`, and admission open once and then give events in
+their own transactions.
+
+- A tool write failed when a hook of the same harness session committed
+  the session row between the tool's read and its insert. The duplicate
+  key was neither retried nor queued. Opening a session is now repeated
+  after a lost race, as a capture write is, and finds the row.
+- A queued tool write that reached the ledger before its session did
+  left a session with no project, no working directory, and no metadata,
+  and a generic observation (adapter `<agent>_records_v1`). A queued
+  write now carries what the session row and the observation are made
+  from, so the session is the same whichever arrives first. Lines queued
+  by an earlier version do not carry it and replay as they did.
+- Online, a tool's event kept its whole content inline with no byte
+  count, blob, or token estimate; the same write replayed from the spool
+  got all three. Every event's content now follows the rule in "Large
+  content and blobs" above. A `memory_recall` event gains its byte count
+  and token estimate, and the event of an empty query stores the hash of
+  the empty text where it stored none.
+- `mem graph` runs through the MCP tools' code, and its sessions said so:
+  `via: mem-mcp`, observed in source mode `mcp`. A command's session now
+  says `via: mem graph` and is observed in mode `record` with adapter
+  version `mem_cli_v1`. `own_session` and `session_link` are kept for MCP
+  sessions only. Sessions already recorded keep what they say.
+- The session row and its observation go in one insert, where the
+  observation used to follow in a second.
+- An entity merge is built and applied in `graph/merge.py` (`EntityMerge`,
+  `apply_merge`). `merge_entity` on the tools supplies the session and
+  turns a failure into a tool error or a degraded result, as before.
+- What `recall`, `remember`, `review`, `cite`, `relate`, and `graph`
+  return is unchanged.

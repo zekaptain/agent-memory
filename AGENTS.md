@@ -95,9 +95,9 @@ All runtime paths below are under `src/agent_memory/`.
 | `lifecycle.py` | Shared append-only memory writes, correction proposals, bounded due work | `test_lifecycle` |
 | `audit.py` | Read-only `mem audit check` diagnostics, legacy replacement reconstruction | `test_audit_check` |
 | `endpoints.py` | Model HTTP calls and the opt-in check for sending data off-machine | `test_endpoints` |
-| `adapters/`, `capture/` | Harness input to records, redaction, blobs, idempotent writes, spool/replay, capture identity, observed coverage, answer attribution | `test_adapters`, `test_capture`, `test_writer`, `test_spool`, `test_capture_identity`, `test_observed_capture`, `test_answer_bindings`, `test_audit_persistence` |
+| `adapters/`, `capture/` | Harness input to records, redaction, blobs, idempotent writes, spool/replay, capture identity, the session and event rows every writer shares, observed coverage, answer attribution | `test_adapters`, `test_capture`, `test_writer`, `test_spool`, `test_capture_identity`, `test_ledger_session`, `test_observed_capture`, `test_answer_bindings`, `test_audit_persistence` |
 | `mcp_server/` | Stdio tools, the recorded recall path and its query strategies, writes, reviews, citations | `test_mcp` |
-| `graph/` | Relation metadata, traversal SQL, graph recall strategies, entity resolution | `test_graph` |
+| `graph/` | Relation metadata, traversal SQL, graph recall strategies, entity merges, entity resolution | `test_graph` |
 | `judge/` | Import, provenance, candidates, projection, draft, decide, label (including the Go helper in `label_ui/`), report | `test_judge`, `test_judge_pipeline`, `test_judge_verdict`, `test_judge_unanswered`, `test_judge_core_regressions`, `test_judge_store`, `test_judge_admission`, `test_label_ui` |
 | `admission/` | Production lesson admission, fitting and blinded review | `test_admission`, `test_admission_fit` |
 | `cli.py`, `smoke.py` | Typer entry point and end-to-end check | `test_cli`, `test_cli_capture` |
@@ -137,6 +137,10 @@ Entry points are `mem` (`agent_memory.cli:main`) and `mem-mcp`
   event` runs as a hook, so it prints nothing on stdout and never exits 2.
   Add regression coverage for replay, partial failures, and parent/result
   linkage.
+- Session and event rows come from `capture/session.py`, whoever writes
+  them: the capture writer, the MCP tools, `mem graph`, and admission. A
+  new writer opens a `LedgerSession` and builds its events with
+  `event_row`; it does not assemble either row itself.
 - Tool-derived memories start quarantined. Every recall reads active
   memories and records retrieval provenance, including misses, whatever
   its strategy: a query, a walk of relations from an entity, or the
@@ -157,7 +161,8 @@ it reads human v4 experiment labels and writes production lessons through
 the lifecycle, quarantined unless human-approved or enabled by the held-out
 auto gate. Nothing under `judge/` imports admission. Verdicts use agent
 `judge` and may be recorded as `decision` events without copying state or
-lesson text into them.
+lesson text into them. Admission writes as agent `admission`, never as
+`judge`.
 
 `--home` and `--port` are root options, before the subcommand. A separate
 home does not automatically select a different port. Use the same explicit

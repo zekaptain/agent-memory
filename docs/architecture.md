@@ -102,6 +102,11 @@ turns into the real memory or action.
 ledger session with hooks when the harness can pass it, otherwise the server
 opens its own `partial` session.
 
+The capture writer, these tools, `mem graph`, and admission take their
+session and event rows from one module, `capture/session.py`. A session is
+therefore the same row whether it is opened online or from the spool, and
+every event's content is hashed, measured, and moved to a blob by one rule.
+
 ## Data model
 
 Every table is append-only. Nothing is ever updated or deleted, so the
@@ -113,8 +118,9 @@ Vocabulary (seeded by migrations, not writable by clients):
 
 Ledger:
 
-- `sessions`: one row per harness session, with agent, model, project, cwd,
-  `capture_completeness`, and a `VARIANT` metadata column.
+- `sessions`: one row per session (a conversation in a harness, a judge
+  run, a day of admission, or a `mem graph` command), with agent, model,
+  project, cwd, `capture_completeness`, and a `VARIANT` metadata column.
 - `events`: everything that happened, ordered by `seq` within a session.
   Kinds include `user_msg`, `assistant_msg`, `system_context`, `tool_call`,
   `tool_result`, `memory_recall`, `memory_write`, `compaction`, `decision`,
@@ -245,7 +251,7 @@ schema was written. The tests pin the ones the design depends on.
 | `BEFORE` triggers cannot use transition tables. | Guards are `AFTER ... REFERENCING OLD TABLE ... FOR EACH STATEMENT`. Zero-row updates and deletes pass. |
 | A trigger cannot modify its own table ("recursive trigger chain"). | Status cannot be kept in a column updated by triggers. Status is derived in views instead. |
 | `INSERT OR IGNORE` and `ON CONFLICT` run as `MERGE`, which fails on tables with triggers. | Idempotent writes pre-read existing ids and insert only the missing rows (below). |
-| An `INSERT ... SELECT ... WHERE NOT EXISTS (SELECT ... FROM mem.main.t)` through the attached Quack catalog fails: "multiple streaming scans + insert in the same query are not currently supported". | The writer looks up incoming event IDs and their parent IDs in batches of 500, filters client-side, and inserts. Deterministic ids make a lost race a duplicate-key error, which triggers one re-read and retry. |
+| An `INSERT ... SELECT ... WHERE NOT EXISTS (SELECT ... FROM mem.main.t)` through the attached Quack catalog fails: "multiple streaming scans + insert in the same query are not currently supported". | The writer looks up incoming event IDs and their parent IDs in batches of 500, filters client-side, and inserts. Deterministic ids make a lost race a duplicate-key error, which triggers a re-read and a retry, up to three times. |
 | Within one `INSERT` statement, a self-referencing foreign key (`events.parent_event_id`) is checked before the statement's own rows are indexed, so a child in the same statement as its parent fails. | `MemoryClient.insert` accepts ordered `(table, rows)` pairs; the writer sends one statement per parent depth, parents first, all in one transaction. |
 | A column alias on `match_bm25(...)` cannot be referenced ("expression has side effects"). | Recall wraps the FTS call in a CTE and joins on it. The FTS tokenizer keeps curly quotes attached to words, so queries are lowercased and stripped of punctuation first. |
 | Bound parameters are not forwarded through the attached catalog either (`WHERE x = ?` fails). | Lookups by id use `sql_literal` over validated UUIDs; content never enters SQL text except the recall query, which is literal-quoted and tested against injection. |
@@ -302,6 +308,9 @@ the design-only usefulness study.
   tables a client may insert into.
 - Migration 0006 lets an answer binding join a placeholder and a captured
   reply that belong to different harness sessions.
+- Migration 0007 registers the `admission` agent, so that admission no
+  longer writes as `judge`
+  ([ADR 0009](adr/0009-admission-writes-as-its-own-agent.md)).
 - `mem audit check` provides read-only, ID-based preflight diagnostics,
   including an old-schema direct mode. Live rollout requires separate
   approval and a verified backup including blobs.

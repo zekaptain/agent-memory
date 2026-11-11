@@ -9,8 +9,8 @@ IGNORE` and `ON CONFLICT` are not available, because DuckDB runs them as
 `MERGE`, which fails on tables with triggers, and an anti-join through
 the attached Quack catalog fails too. So the writer looks up the incoming
 ids in batches, drops the ones the ledger already holds, and inserts the
-rest. A lost race is a duplicate-key error, which triggers one re-read
-and retry.
+rest. A lost race is a duplicate-key error, which triggers a re-read and
+a retry, up to three times.
 
 ## Consequences
 
