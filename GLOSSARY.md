@@ -310,6 +310,26 @@ _Avoid_: Autopilot, unattended mode
 
 ### Model calls
 
+**Model call**:
+Asking a model for one piece of work: one set of answers from a judge, one lesson from a drafter, or one block of entity clusters. It may take several attempts.
+_Avoid_: Request, inference, completion, prompt
+
+**Attempt**:
+One request to a model within a model call, and what came back. A later attempt changes what the earlier one lacked: more room, or no thinking.
+_Avoid_: Retry (which returns rejected records to the spool), try
+
+**Model reply**:
+What a model sends back in one attempt: its text, any thinking that came before it, and whether it was cut off.
+_Avoid_: Reply (bare, which is an agent's message to its user), response, completion, output, answer
+
+**Thinking**:
+Text a model writes for itself before its reply. It uses the same token budget as the reply, so a model can spend the whole budget thinking and say nothing.
+_Avoid_: Reasoning (kept only in "reasoning judge"), chain of thought
+
+**Cut off**:
+Said of a model reply that ended because its token budget ran out, not because the model finished.
+_Avoid_: Truncated, incomplete
+
 **Egress**:
 Sending session text to a model that is not on this machine. It is off unless the user opts in explicitly.
 _Avoid_: Remote call, external access
