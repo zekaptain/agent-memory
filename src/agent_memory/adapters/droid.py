@@ -127,6 +127,13 @@ class DroidAdapter:
                 metadata={
                     **(session.metadata or {}),
                     "permission_mode": payload.get("permission_mode"),
+                    # Sent for a session another session started, as the transcript's first
+                    # entry says it. The hook is the first to write such a session's row.
+                    **(
+                        {"calling_session_id": str(payload["calling_session_id"])}
+                        if payload.get("calling_session_id")
+                        else {}
+                    ),
                 },
             )
             base["session"] = session

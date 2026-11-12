@@ -364,6 +364,26 @@ def test_droid_session_start_hook():
     }
 
 
+def test_droid_start_hook_of_a_session_another_session_started_names_the_caller():
+    # What Droid sends for a session the Task tool started: once at its start and, within a
+    # second and before anything is said, once more as a resume that names no message.
+    for source in ("startup", "resume"):
+        payload = hook("SessionStart", source=source, calling_session_id="parent-1")
+        (r,) = DroidAdapter().from_hook(payload)
+        assert r.session is not None
+        assert r.session.metadata == {
+            "transcript_path": "/Users/tester/.factory/sessions/x/abc-123.jsonl",
+            "permission_mode": "default",
+            "calling_session_id": "parent-1",
+        }
+        assert r.payload is not None
+        assert r.payload["calling_session_id"] == "parent-1"
+    # No other hook of such a session names the caller, and none is made up for one.
+    (prompt,) = DroidAdapter().from_hook(hook("UserPromptSubmit", prompt="hi", message_id="m1"))
+    assert prompt.session is not None
+    assert "calling_session_id" not in (prompt.session.metadata or {})
+
+
 def test_droid_startup_hook_is_the_start_the_transcript_records():
     # A session starts once, and the transcript's first entry names that start by the
     # session's id. The hook says the same thing, so it says it under the same key.
