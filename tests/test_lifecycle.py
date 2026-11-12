@@ -122,13 +122,35 @@ def wait_until(at):
     time.sleep(max(0, (at - datetime.now(UTC)).total_seconds()) + 0.02)
 
 
+def waiting_correction(old, write, leads=(1.2, 5.0, 20.0, 80.0)):
+    """Write a correction of `old` that waits for its time, on a machine of any speed.
+
+    `write(old, due)` writes one dated `due` and returns its id and the status the ledger
+    then gives it. `pending` says the writes were there first. Any other status says the
+    time had already come: a correction that arrives then is applied at once and never
+    waits as due work, so it becomes the memory to correct, with more time ahead.
+
+    Returns the memory corrected, its correction, and the time the correction comes due.
+    """
+    for lead in leads:
+        due = datetime.now(UTC) + timedelta(seconds=lead)
+        new, status = write(old, due)
+        if status == "pending":
+            return old, new, due
+        old = new
+    raise AssertionError(f"a correction dated {leads[-1]} s ahead did not wait")
+
+
 def test_due_approval_withdrawal_and_reapproval(tools, human):
-    due = datetime.now(UTC) + timedelta(seconds=1.2)
-    old = tools.remember("old", "fact")["memory_id"]
-    new = tools.remember(
-        "future", "fact", supersedes=old, trust_level="tool", valid_from=due.isoformat()
-    )["memory_id"]
-    assert human.review("approve", new, "approved future correction")["status"] == "pending"
+    def propose_and_approve(old, due):
+        new = tools.remember(
+            f"due {due}", "fact", supersedes=old, trust_level="tool", valid_from=due.isoformat()
+        )["memory_id"]
+        return new, human.review("approve", new, "approved future correction")["status"]
+
+    old, new, due = waiting_correction(
+        tools.remember("old", "fact")["memory_id"], propose_and_approve
+    )
     tools.review("quarantine", new, "withdraw before due")
     wait_until(due)
     assert [x["memory_id"] for x in tools.recall("")["items"]] == [old]
@@ -165,16 +187,18 @@ def test_bounded_due_batch_never_exposes_two_versions(down_cfg):
     server = MemoryServer(down_cfg, export_interval_hours=0)
     server.start()
     tool = MemoryTools(down_cfg, "factory-droid", project="bounded")
+
+    def propose(old, due):
+        new = tool.remember(f"due {due}", "fact", supersedes=old, valid_from=due.isoformat())
+        return new["memory_id"], new["status"]
+
     try:
-        due = datetime.now(UTC) + timedelta(seconds=1.2)
-        pairs = []
-        for index in range(3):
-            old = tool.remember(f"old {index}", "fact")["memory_id"]
-            new = tool.remember(f"new {index}", "fact", supersedes=old, valid_from=due.isoformat())[
-                "memory_id"
-            ]
-            pairs.append((old, new))
-        wait_until(due)
+        waiting = [
+            waiting_correction(tool.remember(f"old {index}", "fact")["memory_id"], propose)
+            for index in range(3)
+        ]
+        pairs = [(old, new) for old, new, _ in waiting]
+        wait_until(max(due for _, _, due in waiting))
         client = tool._client_or_raise()
         assert maintain_corrections(client, limit=1) == 1
         assert sum(states(tool, old, new) == ["superseded", "active"] for old, new in pairs) == 1
