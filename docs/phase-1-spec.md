@@ -344,17 +344,18 @@ new row is written; the tool inserts `memory_actions(action='confirm')` and
 returns the existing id with `deduplicated = true`.
 
 **`cite(retrieval_id: str | None, memory_ids: list[str] = [], context_event_ids: list[str] = [], answer_event_id: str | None)`**
-Writes `context_links` for the answer. When `answer_event_id` is omitted the
+Writes `context_links` for the reply. When `answer_event_id` is omitted the
 server inserts an `events(kind='assistant_msg', content=NULL,
 payload={"placeholder": true})` row and returns its id so the transcript
-ingest can later link the real reply. A captured, server-qualified `cite`
+import can later link the real reply. A captured, server-qualified `cite`
 tool result identifies that placeholder by UUID; a complete captured turn
 must have one unique reply. The placeholder can live in an MCP-owned
 session, while calls, results, and replies must belong to the observed
 transcript session. Binding evidence records `placeholder_session_id`.
-Explicit answer IDs take priority. Missing or ambiguous evidence remains
-unresolved; there is no nearest-message fallback. This also gives Tier C
-harnesses partial `why_answer` coverage without a captured reply.
+An explicit `answer_event_id` takes priority. Missing or ambiguous
+evidence remains unresolved; there is no nearest-message fallback. This
+also gives Tier C harnesses partial `why_answer` coverage without a
+captured reply.
 
 **`review(action: "approve"|"retire"|"quarantine"|"confirm"|"flag_contradiction", memory_id: str, reason: str, related_memory_id: str | None)`**
 Inserts `memory_actions` with `actor = AGENT_MEMORY_AGENT` and the session id,
@@ -412,7 +413,7 @@ src/agent_memory/
     spool.py       # append, iterate, mark done/failed, status
     pipeline.py    # deliver to the ledger or the spool; replay the spool
     observations.py  # observed capture boundaries (added with hardening)
-    attribution.py   # answer attribution from captured tool results
+    attribution.py   # attribution of citations, from captured tool results
   adapters/
     __init__.py    # registry: {"droid": DroidAdapter}
     base.py        # Adapter protocol
@@ -519,8 +520,8 @@ replay 50 ms).
   retained as SHA-256 digests with diagnostics, not raw text that may hide
   escaped credentials.
 - MCP recall and graph queries are redacted before normalization and SQL
-  generation. Review reasons, memory keys/scopes, and merge inputs use the
-  same redactor before constructing their persisted copies.
+  generation. Review action reasons, memory keys/scopes, and merge inputs
+  use the same redactor before constructing their persisted copies.
 - Appenders and replay share a short per-session file lock. Replay moves
   each pending file into `spool/replaying/<agent>/` under that lock, then
   releases it before contacting the ledger. New appends go into a new
@@ -572,15 +573,16 @@ Captured tool identity must identify the configured `agent-memory` MCP
 server, not an unrelated tool with a `cite` suffix. Override the default
 name with `AGENT_MEMORY_MCP_SERVER_NAME` in the capture environment when
 needed. Missing server identity leaves attribution unresolved. An explicit
-answer ID supplied before import is retained on a placeholder and bound
-when that exact reply arrives.
+`answer_event_id` supplied before import is retained on a placeholder and
+bound when that exact reply arrives.
 
 Replay resolves dependencies across the claimed spool snapshot rather than
 relying on file modification times. This preserves cross-session queued
-corrections and reviews, including interleaved files whose records form an
-acyclic dependency graph. Interrupted and newly appended files for the same
-session get distinct claim paths. As before, a record that fails validation
-is rejected, while a transport interruption leaves claimed files pending.
+corrections and review actions, including interleaved files whose records
+form an acyclic dependency graph. Interrupted and newly appended files for
+the same session get distinct claim paths. As before, a record that fails
+validation is rejected, while a transport interruption leaves claimed
+files pending.
 
 `why_answer` preserves raw link and placeholder identities, exposes resolved
 attribution, and retains zero-result FTS and graph searches. A miss has
@@ -599,7 +601,7 @@ agent on exit 2 and can add a hook's stdout to the agent's context.
 
 - `Writer.write` returns what it wrote together with the records the ledger
   rejected, each with its position in the batch and the reason. It raises
-  only when the ledger is unavailable. A failed answer-binding pass is
+  only when the ledger is unavailable. A failed binding pass is
   returned as a warning; the write it follows has already committed.
 - A write that loses a race is repeated. Another capturer can commit the
   same session or event between the pre-read and the commit, which DuckDB
@@ -796,20 +798,21 @@ Outside admission, no command showed a human what was quarantined.
 - A queued approval is checked again at replay. One from any other agent
   is rejected: it becomes a `capture_error` event and is kept under
   `spool/failed/`, like any record the ledger refuses.
-- The actor of a queued review is the agent of the record's session. The
-  record's own `actor` field is ignored, so a spool line cannot name
-  another actor.
+- The actor of a queued review action is the agent of the record's
+  session. The record's own `actor` field is ignored, so a spool line
+  cannot name another actor.
 - `mem-mcp` exits at start when `AGENT_MEMORY_AGENT=human`.
-- `mem review` is the human's route (`review.py`). `list` prints what
-  waits, oldest first: quarantined memories, and active ones that a
-  tool's output asked to put in another memory's place. It is a human's
-  read of memories that no agent may be shown, so it is not a recall and
-  records nothing. `approve` takes one waiting memory, shows it, and asks
-  for a yes typed at a terminal. It needs the server, so an approval is
-  never queued unseen. `retire` withdraws any memory and is queued when
-  the server is down. Both need `--reason`. Both write as agent `human`
-  in a session of their own (`via: mem review`, source mode `record`,
-  adapter version `mem_cli_v1`), through the same code as the tool.
+- `mem review` is the human's route (`review.py`). `list` prints the
+  memories awaiting approval, oldest first: quarantined memories, and
+  active ones that a tool's output asked to put in another memory's
+  place. It is a human's read of memories that no agent may be shown, so
+  it is not a recall and records nothing. `approve` takes one memory
+  awaiting approval, shows it, and asks for a yes typed at a terminal.
+  It needs the server, so an approval is never queued unseen. `retire`
+  withdraws any memory and is queued when the server is down. Both need
+  `--reason`. Both write as agent `human` in a session of their own
+  (`via: mem review`, source mode `record`, adapter version
+  `mem_cli_v1`), through the same code as the tool.
 - The check is made where an approval is asked for: the tool and the
   replay (`lifecycle.check_asker`). `LifecyclePlan.review` does not make
   it, so the approval that an entity merge carries over and admission's
@@ -1164,7 +1167,7 @@ Regressions are in `tests/test_hooks.py` and `tests/test_adapters.py`.
 The Droid adapter gives each record an attribution: the transcript
 message it was made from and, once an outcome names it, its turn. An
 import reads the attributions of the whole transcript to find the reply
-a `cite` answered. The writer also stores each record's attribution
+a `cite` was made for. The writer also stores each record's attribution
 with its event, in the payload under `capture_attribution`. Nothing
 reads the stored copy. It is kept for a person who asks why a reply
 was, or was not, bound to a citation. No test fixed what it held: with

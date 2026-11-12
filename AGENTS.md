@@ -25,8 +25,8 @@ Read the relevant spec before changing a subsystem:
   `docs/archive/judge-experiments.md`, and the definitions only stored
   runs still use are in `docs/archive/judge-earlier-versions.md`. Check
   the later amendments and current code before implementing.
-- `docs/admission-spec.md`: production admission, fitted approver, human
-  review, and calibration/held-out safeguards.
+- `docs/admission-spec.md`: production admission, fitted approver,
+  admission review, and calibration/held-out safeguards.
 - `docs/logic-hardening-spec.md`: lifecycle, coverage, attribution,
   `mem audit check` preflight, and rollout policy.
 - `docs/judge-how-to.md`: step-by-step experiment commands.
@@ -99,15 +99,15 @@ All runtime paths below are under `src/agent_memory/`.
 | `config.py`, `db.py`, `migrations/` | Configuration, migrations, authorization, Quack, export | `test_config`, `test_schema`, `test_migrations`, `test_attribution_migrations`, `test_authorize`, `test_server` |
 | `lifecycle.py` | Shared append-only memory writes, correction proposals, bounded due work | `test_lifecycle` |
 | `audit.py` | Read-only `mem audit check` diagnostics, legacy replacement reconstruction | `test_audit_check` |
-| `review.py` | `mem review`: the memories that wait for a human, and the human's approval or retirement of one | `test_review` |
+| `review.py` | `mem review`: the memories awaiting approval, and a human's approval or retirement of one | `test_review` |
 | `hooks.py` | `mem hooks`: mem's capture command in Droid's hooks file, written, checked, and taken out, with every other hook left as it is | `test_hooks` |
 | `endpoints.py` | The HTTP transport to model servers and the opt-in check for sending data off-machine | `test_endpoints` |
 | `model_call.py` | A model call that must return a JSON object: its attempts, the three model servers, latency and cost over every attempt | `test_model_call` |
-| `adapters/`, `capture/` | Harness input to records, redaction, blobs, idempotent writes, spool/replay, capture identity, the session and event rows every writer shares, observed coverage, answer attribution | `test_adapters`, `test_capture`, `test_writer`, `test_spool`, `test_capture_identity`, `test_ledger_session`, `test_observed_capture`, `test_answer_bindings`, `test_audit_persistence` |
-| `mcp_server/` | Stdio tools, the recorded recall path and its query strategies, writes, reviews, citations | `test_mcp` |
+| `adapters/`, `capture/` | Harness input to records, redaction, blobs, idempotent writes, spool/replay, capture identity, the session and event rows every writer shares, observed coverage, attribution | `test_adapters`, `test_capture`, `test_writer`, `test_spool`, `test_capture_identity`, `test_ledger_session`, `test_observed_capture`, `test_answer_bindings`, `test_audit_persistence` |
+| `mcp_server/` | Stdio tools, the recorded recall path and its query strategies, writes, review actions, citations | `test_mcp` |
 | `graph/` | Relation metadata, traversal SQL, graph recall strategies, entity merges, entity resolution | `test_graph` |
-| `judge/` | Import, provenance, candidates, projection, draft, decide, label (including the Go helper in `label_ui/`), report | `test_judge`, `test_judge_pipeline`, `test_judge_verdict`, `test_judge_unanswered`, `test_judge_core_regressions`, `test_judge_store`, `test_judge_admission`, `test_label_ui` |
-| `admission/` | Production lesson admission, fitting and blinded review | `test_admission`, `test_admission_fit` |
+| `judge/` | Import, callers and authors, candidates, projection, draft, decide, label (including the Go helper in `label_ui/`), report | `test_judge`, `test_judge_pipeline`, `test_judge_verdict`, `test_judge_unanswered`, `test_judge_core_regressions`, `test_judge_store`, `test_judge_admission`, `test_label_ui` |
+| `admission/` | Production lesson admission, fitting, and admission review | `test_admission`, `test_admission_fit` |
 | `cli.py`, `smoke.py` | Typer entry point and end-to-end check | `test_cli`, `test_cli_capture` |
 
 Test names in the table refer to `tests/<name>.py`. The Go helper's own
@@ -118,7 +118,7 @@ Entry points are `mem` (`agent_memory.cli:main`) and `mem-mcp`
 ## Ledger and capture invariants
 
 - Ledger tables are append-only. Corrections use superseding memories or
-  review actions, never an in-place update or delete. Current state is
+  review actions, never an in-place update or delete. Current status is
   derived through views such as `memory_status` and `active_memories`.
 - Add schema changes as new `NNNN_name.sql` files in `migrations/`.
   Applied migrations are checksummed and immutable. The root
@@ -192,9 +192,9 @@ Entry points are `mem` (`agent_memory.cli:main`) and `mem-mcp`
   to run as `human`, and `mem review approve` takes its answer from a
   terminal only. Do not add a route by which an agent's session approves.
 - Tool-derived memories start quarantined. Every recall reads active
-  memories and records retrieval provenance, including misses, whatever
-  its strategy: a query, a walk of relations from an entity, or the
-  listing of every relation that `mem graph entities` and `resolve` read.
+  memories and records a retrieval, a miss included, whatever its
+  strategy: a query, a walk of relations from an entity, or the listing
+  of every relation that `mem graph entities` and `resolve` read.
   Add a new way of choosing memories as a strategy for `run_recall`, never
   as a read beside it. Preserve `retrieval_items`, citations, and
   `why_answer` coverage.
@@ -207,12 +207,12 @@ Entry points are `mem` (`agent_memory.cli:main`) and `mem-mcp`
 The experiment must stay separate from production. Never remove
 `ensure_experiment_home`. Experiment commands never write lessons into the
 memory ledger; lessons stay in run files. Admission lives in `admission/`:
-it reads human v4 experiment labels and writes production lessons through
-the lifecycle, quarantined unless human-approved or enabled by the held-out
-auto gate. Nothing under `judge/` imports admission. Verdicts use agent
-`judge` and may be recorded as `decision` events without copying state or
-lesson text into them. Admission writes as agent `admission`, never as
-`judge`.
+it reads human v4 experiment labels and admits lessons as memories through
+the lifecycle, quarantined unless a human approves them or auto mode is
+on, which the held-out bar has to allow. Nothing under `judge/` imports
+admission. Verdicts use agent `judge` and may be recorded as `decision`
+events without copying projection or lesson text into them. Admission
+writes as agent `admission`, never as `judge`.
 
 `--home` and `--port` are root options, before the subcommand. Every
 command resolves them through `config.command_config`; the judge and
@@ -232,7 +232,7 @@ do not delete existing homes or runs to resolve a workflow mistake.
 
 - Distinguish a human request, parent-agent instructions, and harness
   notifications. A transcript's `user` role does not prove a human wrote
-  it. Read full blob-backed messages when needed for provenance.
+  it. Read full blob-backed messages when needed to tell who wrote one.
 - Keep interrupted/incomplete turns distinct from failures. Preserve
   `closed_by` and clean controls. The drafter's view excludes the next
   message so unrelated steering is not fused into a lesson about the turn.
@@ -255,15 +255,15 @@ do not delete existing homes or runs to resolve a workflow mistake.
   `report --freeze` refuses while a calibration item has no label or a
   label with questions left; `--partial` overrides that and the run
   records how many items were short. Keep "fully labeled" meaning what a
-  labeling session would still ask (`labeling.questions_left`), not a
-  second definition.
+  sitting would still ask (`labeling.questions_left`), not a second
+  definition.
 - Read and write a run's files through `RunStore` only. The rules that
   keep them whole are at the top of `judge/store.py`: one command at a
   time adds rows to a file, so a second `draft`, or a `decide` for a
-  backend already being judged, is refused at once; a label save adds one
-  label to what is on disk and is refused if another session saved that
-  item first. Admission keeps its files through the same code, with its
-  stricter rules in `admission/store.py`.
+  judge another `decide` is asking, is refused at once; a label save adds
+  one label to what is on disk and is refused if another sitting saved
+  that item first. Admission keeps its files through the same code, with
+  its stricter rules in `admission/store.py`.
 - Labeling is human ground truth, not an LLM's substitute judgment. Keep
   labels blinded, correctable, and resumable with edit history. Each group
   of questions must clearly identify its subject (turn, draft A/B, or
@@ -286,14 +286,14 @@ do not delete existing homes or runs to resolve a workflow mistake.
 - A draft or verdict that fails is skipped, and the next command asks it
   again; `draft`, `decide`, and `live` then exit 1. A command stops early
   only when the fault cannot be the items': after three failures in a row
-  with the model server unreachable, or from a drafter or backend that has
+  with the model server unreachable, or from a drafter or judge that has
   written nothing in the run yet. Do not let one item's failure end a run,
   and do not count a timeout or an HTTP rejection against the server:
   either can be the item's doing.
-- Prefer local backends. Hosted judge/drafter calls require explicit user
-  permission and `AGENT_MEMORY_JUDGE_ALLOW_REMOTE=1`; redaction does not make
-  session text public. Mock model HTTP in regression tests rather than
-  making paid or private-data-bearing calls.
+- Prefer local model servers. Hosted judge/drafter calls require explicit
+  user permission and `AGENT_MEMORY_JUDGE_ALLOW_REMOTE=1`; redaction does
+  not make session text public. Mock model HTTP in regression tests rather
+  than making paid or private-data-bearing calls.
 
 ## Change discipline and research
 

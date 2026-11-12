@@ -112,12 +112,13 @@ Parquet export for browsing.
 
 **Phase 4: memory quality.** Dedupe by `content_hash` and similarity,
 contradiction detection (`flag_contradiction`), confirmation and decay of
-`confidence`. The quarantined lesson review queue now exists as
-`mem admit review`, with seeded discard sampling and feedback into the
-fitted approver. `mem review` lists every memory that waits and lets a
-human approve or retire one. `mem admit run` drafts from captured
-production turns; auto-approval requires held-out precision of at least
-0.8 over 20 scored writes. See [admission-spec.md](admission-spec.md). The
+`confidence`. Admission review of the memories that lessons became now
+exists as `mem admit review`, with a seeded sample of the discarded
+lessons and feedback into the fitted approver. `mem review` lists every
+memory awaiting approval and lets a human approve or retire one.
+`mem admit run` drafts from captured production turns; auto mode
+requires held-out precision of at least 0.8 over 20 scored writes. See
+[admission-spec.md](admission-spec.md). The
 relation graph's first step is in: `relate`, `graph`, and `mem graph resolve`
 (see the "Relation graph" paragraph in
 [architecture.md](architecture.md#data-model)). Still open: offline
@@ -204,13 +205,13 @@ Verified against the code in the audit of 2026-11 and still open.
   apart from a slow item. `mem judge draft` and `decide` then wait out
   the timeout twice for every remaining item and skip each one
   (`endpoints.py`, `judge/pipeline.py`).
-- `mem judge report --freeze` does not check that every backend has
-  judged every calibration item. A backend that skipped items gets its
+- `mem judge report --freeze` does not check that every judge has
+  judged every calibration item. A judge that skipped items gets its
   thresholds from the ones it judged, and nothing says so
   (`judge/report.py`).
 - A caller chooses the `trust_level` of what it remembers and nothing
   checks it. A memory an agent writes with `user` trust is recalled
-  without review (`mcp_server/tools.py`).
+  without an approval (`mcp_server/tools.py`).
 - Only a human approves a memory, but the tools keep that rule and the
   server does not. Every client holds the same token, so a process that
   inserts into the ledger directly can record an approval as `human`.
@@ -396,10 +397,10 @@ The same audit proposed removing the following. Each was looked at on
   fully covered, and what would have to be true of it?
 - Should timeouts in a row stop a judge command? A timeout can be the
   item's doing, so today only an unreachable model server stops one.
-- Are the `readout` and `jev` backends and the `actionable` question still
+- Are the `readout` and `jev` judges and the `actionable` question still
   wanted?
 - May a run be relabeled after a freeze? Should `--freeze` also ask for
-  every backend's verdicts on the calibration items?
+  every judge's verdicts on the calibration items?
 - Do Phases 0.5, 3, and 5 stay on this roadmap?
 - Is the Parquet export a backup or a browsing aid?
 - What happens to `example-memory-db-schema.sql` and the prototype branch?

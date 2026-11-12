@@ -1,6 +1,6 @@
 # Hardening the memory contracts
 
-Approved scope: ledger transitions, observed capture, answer attribution, and
+Approved scope: ledger transitions, observed capture, attribution, and
 versioned judge admission. This document records the contract, not evidence
 that a live home has been migrated. No live rollout, hook installation,
 private transcript import, model experiment, or hosted call is authorized.
@@ -9,7 +9,8 @@ private transcript import, model experiment, or hosted call is authorized.
 
 `memories.supersedes` proposes a correction. It does not establish acceptance.
 An append-only acceptance record commits one replacement per predecessor,
-with its proposal, supporting event or review, acceptance time, and method.
+with its proposal, supporting event or review action, acceptance time, and
+method.
 Further corrections must target the accepted successor.
 
 Before acceptance, the predecessor remains eligible under its own status.
@@ -44,7 +45,7 @@ An already-existing replacement uses a proposal in `memory_actions`.
 A queued ID remains a valid ledger identity. If replay finds a canonical
 duplicate, it records a deduplication link and resolves dependent queued
 operations through that link. Ordinary supersession is not an ID alias:
-reviewing a predecessor must not review its successor by accident.
+a review action on a predecessor must not act on its successor by accident.
 
 Graph merges carry approval from an active relation, including tool-origin
 relations. Existing canonical relations keep the incoming source and alias
@@ -66,8 +67,8 @@ terminal.
 
 Two approvals are still written without a human. A graph merge carries
 over the approval of the relation it replaces, which is not a new
-decision. The approver approves a lesson in admission's auto mode, which
-`mem admit enable --auto` allows only after the held-out gate passes. The
+decision. The approver approves a memory in admission's auto mode, which
+`mem admit enable --auto` allows only once the held-out bar is met. The
 check is therefore made where an approval is asked for, not where one is
 written.
 
@@ -76,9 +77,9 @@ every agent. `trust_level` is still the writer's claim: a memory written
 with `user` trust needs no approval.
 
 `mem review` writes in a session of the `human` agent, like `mem graph`
-run with the default `--agent`. Its listing of what waits is not a
-recall: it reads memories that no agent may be shown, and records
-nothing.
+run with the default `--agent`. Its listing of the memories awaiting
+approval is not a recall: it reads memories that no agent may be shown,
+and records nothing.
 
 The commands, the replay rule, and the limits of a rule that the tools
 keep and the server does not are in "Only a human approves a memory" in
@@ -135,12 +136,12 @@ Append-only `answer_bindings` connect placeholders to captured replies with
 evidence, method/version, and correction history. Effective links preserve
 the original placeholder and raw `context_links`.
 
-Explicit answer IDs take priority. Otherwise, the adapter preserves each
-message's ID and the turn its outcome names; a captured cite result can
-identify its placeholder and the unique reply in that captured turn. No
-timestamp-nearest or next-assistant heuristic is allowed. Absent or
-ambiguous evidence leaves the placeholder unresolved. Arrival order,
-incremental imports, and retries must not change that rule.
+An explicit `answer_event_id` takes priority. Otherwise, the adapter
+preserves each message's ID and the turn its outcome names; a captured
+cite result can identify its placeholder and the unique reply in that
+captured turn. No timestamp-nearest or next-assistant heuristic is
+allowed. Absent or ambiguous evidence leaves the placeholder unresolved.
+Arrival order, incremental imports, and retries must not change that rule.
 
 `why_answer` reports both attribution and raw identities. Its retrieval item
 join is outer, so a cited zero-result FTS or graph retrieval produces an
@@ -157,8 +158,9 @@ MCP need not share the harness session. A captured `cite` result carries the
 placeholder UUID returned to that agent, so reconciliation looks up that
 placeholder without a session filter. Calls, results, retrieval evidence,
 and candidate replies still require the transcript session. Evidence stores
-`placeholder_session_id`; explicit future answer IDs use the same rule.
-Late citations revisit persisted observations by returned placeholder ID.
+`placeholder_session_id`; an explicit id for a reply still to come uses the
+same rule. Late citations revisit persisted observations by returned
+placeholder ID.
 
 Migration `0006_cross_session_answer_bindings` removes session equality from
 the binding validation trigger without rewriting events or old bindings.
@@ -171,7 +173,7 @@ not become a successful binding.
 
 ### Recalls at the CLI, as built (2026-11-11)
 
-A human at the `mem` CLI reads and never answers, so nothing can cite a
+A human at the `mem` CLI reads and never replies, so nothing can cite a
 recall made in a session of the `human` agent. `mem audit check` reported
 each one as `retrieval_missing_attribution` for good. It no longer expects
 a citation for those recalls. This covers
@@ -230,7 +232,7 @@ finished; ledger migrations do not rewrite experiment files.
 
 `mem audit check` is read-only, supports JSON, and reports IDs/reason codes,
 not transcript text. It covers invalid/pending/ambiguous corrections,
-conflicting histories, unverified coverage, gaps, unresolved answers, and
+conflicting histories, unverified coverage, gaps, unresolved bindings, and
 retrieval attribution gaps. It must work against the old schema.
 
 Use separate numbered migrations for lifecycle, observations, and bindings.
@@ -238,8 +240,9 @@ Never edit an applied migration. Update append-only guards, export ordering,
 client write lists, and authorization coverage together.
 
 Legacy supersedes edges are not automatic acceptance. Reconstruct only when
-recorded trust, validity, and review history support it; record method and
-evidence. Ambiguous histories block migration pending explicit review.
+recorded trust, validity, and review actions support it; record method and
+evidence. Ambiguous histories block migration until a person has checked
+them.
 Preserve raw rows and retrieval snapshots. Do not invent an approval or
 silently reactivate a previously hidden fact.
 

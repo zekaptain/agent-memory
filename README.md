@@ -7,7 +7,7 @@ The ledger keeps a history instead of overwriting records. Use it to find:
 
 - What an agent was shown.
 - Where that information came from.
-- Which memories the agent declared it used in its answer.
+- Which memories the agent declared it used in its reply.
 
 Storage, capture, a hook installer for Factory Droid, MCP tools, the
 relation graph, judge experiments, and admission are implemented.
@@ -270,14 +270,15 @@ If you changed the database home or port, include `AGENT_MEMORY_HOME` and
 |---|---|
 | `recall` | Search active memories with full-text ranking and log what was retrieved. |
 | `remember` | Store a memory. Identical content is confirmed, not duplicated. |
-| `cite` | Record which retrieved memories an answer used. |
+| `cite` | Record which retrieved memories a reply used. |
 | `review` | Quarantine, retire, confirm, or flag a contradiction. It refuses to approve. |
 | `relate` | Record a relation between two entities. |
 | `graph` | Retrieve relations around an entity. |
 | `status` | Check the server connection, the spool, and rejected records. |
 
 Memories derived from tools start quarantined. Only a human approves one,
-with `mem review` (see [Review what waits](#review-what-waits)). The
+with `mem review` (see
+[Memories awaiting approval](#memories-awaiting-approval)). The
 `review` tool refuses `approve` and tells the agent to ask you. If the
 server is down, `recall` returns `degraded: true` and writes are queued
 to the spool.
@@ -291,13 +292,13 @@ upper bounds. Confirmation is evidence, not approval.
 
 Queued write IDs remain traceable if replay finds a duplicate. Inspect
 `memory_deduplications` for their canonical identity; ordinary supersession
-does not redirect later reviews.
+does not redirect later review actions.
 
-## Review what waits
+## Memories awaiting approval
 
 A quarantined memory is not recalled until a human approves it. With the
-server running, list what waits, then approve or retire a memory by its
-ID:
+server running, list the memories awaiting approval, then approve or
+retire one by its ID:
 
 ```sh
 uv run mem review list --scope my-project
@@ -305,17 +306,18 @@ uv run mem review approve <memory-id> --reason "checked against the runbook"
 uv run mem review retire <memory-id> --reason "the service was renamed"
 ```
 
-`list` prints each waiting memory with its scope, the agent that wrote
-it, why it waits, and any memory that approving it would replace. Without
-`--scope` it reads every scope. `approve` shows the memory and asks for
-`y` typed at a terminal. It refuses piped input, and it refuses a memory
-that does not wait. `retire` withdraws any memory for good and does not
-ask. Both require `--reason` and are recorded as a review by the `human`
-agent.
+`list` prints each memory awaiting approval with its scope, the agent
+that wrote it, why it awaits approval, and any memory that approving it
+would replace. Without `--scope` it reads every scope. `approve` shows
+the memory and asks for `y` typed at a terminal. It refuses piped input,
+and it refuses a memory that is not awaiting approval. `retire` withdraws
+any memory for good and does not ask. Both require `--reason` and are
+recorded as a review action by the `human` agent.
 
-Review the lessons that admission wrote with `mem admit review` instead
-(see [Admit lessons into memory](#admit-lessons-into-memory)). It also
-keeps your answer as an example for the fitted approver.
+For the lessons that admission wrote, use admission review
+(`mem admit review`) instead (see
+[Admit lessons into memory](#admit-lessons-into-memory)). It also keeps
+your answer as an example for the fitted approver.
 
 ## Relations and the graph
 
@@ -348,7 +350,7 @@ First, preview the proposed merges:
 uv run mem graph resolve --scope my-project
 ```
 
-After reviewing the proposal, rerun with `--apply` to record merges:
+After reading the proposal, rerun with `--apply` to record merges:
 
 ```sh
 uv run mem graph resolve --scope my-project --apply
@@ -380,13 +382,13 @@ See the [architecture](docs/architecture.md#data-model) for storage details.
 ## Asking why
 
 Use these queries to inspect the ledger. Replace `<event id>` with the
-answer event ID you want to trace:
+event ID of the reply you want to trace:
 
 ```sh
 # Recent sessions, with capture tier and counts
 uv run mem sql "SELECT * FROM session_summary ORDER BY started_at DESC LIMIT 10"
 
-# What an answer was based on, and where each memory came from
+# What a reply was based on, and where each memory came from
 uv run mem sql "SELECT via, rank, memory_content, status_at_recall, memory_status_now,
                        source_kind, source_agent_id, source_content
                 FROM why_answer WHERE answer_event_id = '<event id>'"
@@ -409,7 +411,7 @@ session: its row's start or its first event, whichever is earlier.
 
 `cite` can return a placeholder before the reply has been imported.
 `answer_bindings` records a reply only when captured turn evidence uniquely
-identifies it. `why_answer` exposes the effective answer, original
+identifies it. `why_answer` exposes the effective reply, original
 placeholder, and raw link IDs. Ambiguous or MCP-only attribution remains
 unresolved. Cited zero-result searches remain visible with `returned = 0`.
 Returned, captured in context, and declared used are separate observations,
@@ -479,15 +481,15 @@ uv run mem audit check --direct --json
 ```
 
 Diagnostics contain IDs and reason codes, not transcript text. Ambiguous
-legacy correction histories need review; an old `supersedes` edge is not
-proof of approval or acceptance.
+legacy correction histories need a person to check them; an old
+`supersedes` edge is not proof of approval or acceptance.
 
 The check exits 1 when it finds an error and 2 when it could not complete.
 Warnings about capture coverage and attribution are listed without failing
 it, because a session that only used the MCP tools always has them. Add
 `--strict` to exit 1 on a warning too.
 
-A live rollout is a separate operation: review preflight, verify a
+A live rollout is a separate operation: read the preflight, verify a
 consistent backup of the database **and blobs**, stop the server, migrate,
 restart, and verify read-only. Parquet exports alone do not back up blobs.
 Restore the backup with its matching application version for rollback.
@@ -573,8 +575,8 @@ rewrite run files.
 ## Admit lessons into memory
 
 Admission is separate from the sealed judge experiment. It reads captured
-production turns and quarantines lessons for review. Auto-approval is off
-by default.
+production turns and writes their lessons as quarantined memories, which
+then await approval. Auto mode is off by default.
 
 First create, human-label and freeze a **v4** experiment run such as
 `exp5`. Older turn labels and unlabeled model verdicts cannot train the
@@ -594,11 +596,12 @@ Defaults use local Ollama models: `gemma4:26b` for drafting and judging,
 `admission` agent row, which migration 0007 adds. If missing, stop the
 server, run `mem migrate`, then restart it.
 
-Review approves or retires exact lessons and samples 30 rejected drafts
-by default. Add `--plain` for numbered prompts, or `--again` to correct
-saved reviews. Refit after reviewing to refresh the model and its held-out
-estimate. `mem admit enable --auto` refuses unless held-out precision is
-at least 0.8 over 20 scored writes. A refit returns to shadow mode.
+Admission review approves or retires exact lessons and samples 30
+discarded ones by default. Add `--plain` for numbered prompts, or
+`--again` to correct saved answers. Refit afterwards to refresh the
+approver and its held-out estimate. `mem admit enable --auto` refuses
+unless held-out precision is at least 0.8 over 20 scored writes. A refit
+returns to shadow mode.
 
 See the [admission spec](docs/admission-spec.md) for calibration commands,
 provenance, safety rules, and an opt-in daily launchd template. No
@@ -634,7 +637,7 @@ go build -mod=readonly -o /tmp/agent-memory-label-ui .
 ### Labeling helper cache
 
 The Python wheel and source distribution include the Go sources.
-The first labeling session with pending work builds a private cached helper:
+The first sitting with pending work builds a private cached helper:
 
 - macOS: `~/Library/Caches/agent-memory/label-ui`
 - Linux: `${XDG_CACHE_HOME:-~/.cache}/agent-memory/label-ui`
@@ -663,7 +666,7 @@ Applied migrations are checksummed and must not be edited.
   runs. The [logs of earlier runs](docs/archive/judge-experiments.md) are
   archived.
 - [Admission spec](docs/admission-spec.md): calibration, the fitted approver,
-  human review, and safeguards.
+  admission review, and safeguards.
 - [Contract hardening](docs/logic-hardening-spec.md): lifecycle, coverage,
   attribution, preflight, and rollout policy.
 - [Memory usefulness evaluation](docs/memory-utility-evaluation-spec.md):

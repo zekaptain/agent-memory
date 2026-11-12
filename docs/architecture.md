@@ -2,7 +2,7 @@
 
 One local, shared, auditable memory database for AI coding agents, built on
 DuckDB 2.0. Every harness writes to the same append-only ledger, so for any
-answer an agent gave you can ask: what was it shown, where did that come from,
+reply an agent gave you can ask: what was it shown, where did that come from,
 and what did it do next.
 
 Inspirations: Karpathy's "LLM wiki" idea (curated, human-readable memory that
@@ -102,9 +102,9 @@ harness has an adapter (see [roadmap.md](roadmap.md#phases)).
 `fts_bm25_v1` for a query, `recent_v1` for an empty query, and
 `graph_hop_v1` for a walk of relations with `graph`. `remember` and `review`
 write a `memory_write` event; `remember` dedupes on `(scope, content_hash)`
-with a `confirm` action. When the server is down, `recall` answers
+with a `confirm` action. When the server is down, `recall` returns
 `degraded`, and `remember` and `review` queue a spool record that replay
-turns into the real memory or action. `review` refuses `approve`: only
+turns into the real memory or review action. `review` refuses `approve`: only
 the `human` agent approves a memory, at `mem review`, and replay rejects
 a queued approval from any other agent.
 `AGENT_MEMORY_AGENT` names the agent; `AGENT_MEMORY_SESSION` shares the
@@ -149,7 +149,7 @@ Memory:
   and expiry times, and `supersedes` for corrections.
 - `memory_sources`: which events a memory came from (`user_stated`,
   `derived_from`, `supports`, `contradicts`).
-- `memory_actions`: review history (`quarantine`, `approve`, `retire`,
+- `memory_actions`: the review actions (`quarantine`, `approve`, `retire`,
   `confirm`, `flag_contradiction`, and from 0002 `propose_correction` and
   `merge_lineage`), with actor and reason.
 - `memory_deduplications` (0002): a memory recorded as a duplicate of a
@@ -160,13 +160,13 @@ Memory:
   corrections due for acceptance, and the record that closes each one.
   Clients cannot insert correction work; a ledger trigger does.
 
-Retrieval provenance:
+Retrievals and citations:
 
 - `retrievals`: each recall, with query, scopes, strategy, SQL, params,
   candidate and returned counts, latency.
 - `retrieval_items`: each ranked result, its score breakdown, whether it was
   injected into context, and its status at recall time.
-- `context_links`: what an answer was based on. A link points at a retrieval,
+- `context_links`: what a reply was based on. A link points at a retrieval,
   a cited memory, or a context event (for example an injected AGENTS.md).
   `link_id` gives each link a stable identity so a replayed capture can skip
   what it already wrote.
@@ -193,12 +193,12 @@ Derived views:
 - `memory_proposal_status` (0002): each proposed correction as `accepted`,
   `conflict`, or `pending`, with the reason a pending one is waiting.
 - `memory_history`: one feed of creations, supersessions, and review actions.
-- `session_summary`: per-session counts of answers, recalls, compactions, and
+- `session_summary`: per-session counts of replies, recalls, compactions, and
   capture errors, plus capability tier and separately observed coverage.
   Placeholders are not counted as captured replies. A session starts at the
   earlier of its row's start and its first event (0008); the row's own start
   is `recorded_started_at`.
-- `why_answer`: for an answer event, every retrieval item, cited memory, and
+- `why_answer`: for a reply, every retrieval item, cited memory, and
   context event behind it, each memory's source events and agent, its status
   at recall, and its status now.
 - `effective_answer_bindings` and `effective_context_links` (0004): the
@@ -326,12 +326,12 @@ the design-only usefulness study.
   preserves queued identities through deduplication links, and records due
   work without reviving withdrawn predecessors.
 - Migration 0003 adds append-only capture observations and bounded coverage.
-- Migration 0004 adds correctable answer bindings and keeps retrieval misses
-  in the answer audit. Historical retrieval status snapshots remain intact.
+- Migration 0004 adds correctable bindings and keeps misses in
+  `why_answer`. Historical retrieval status snapshots remain intact.
 - Migration 0005 registers the `judge` agent, so that a verdict is recorded
-  as a machine's decision, and removes `memory_correction_work` from the
+  as a machine's work, and removes `memory_correction_work` from the
   tables a client may insert into.
-- Migration 0006 lets an answer binding join a placeholder and a captured
+- Migration 0006 lets a binding join a placeholder and a captured
   reply that belong to different harness sessions.
 - Migration 0007 registers the `admission` agent, so that admission no
   longer writes as `judge`

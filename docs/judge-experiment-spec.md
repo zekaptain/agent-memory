@@ -1,4 +1,4 @@
-# Judge experiment spec: decision models as failure and lesson triage
+# Judge experiment spec: judges as failure and lesson triage
 
 Status: approved and implemented, 2026-10-26; exp3 changes implemented
 2026-11-07; structured drafts and per-claim Stage B implemented 2026-11-08
@@ -6,7 +6,7 @@ Status: approved and implemented, 2026-10-26; exp3 changes implemented
 Builds on Phase 0 and Phase 1 ([roadmap.md](roadmap.md),
 `docs/phase-1-spec.md`, migration
 0001). Not part of the Phase 4 roadmap yet; this is the bounded experiment
-that decides whether a decision model earns a place there. The experiment
+that decides whether a judge earns a place there. The experiment
 runs against a separate home and never touches the production ledger.
 
 For setup commands and the step-by-step workflow, see
@@ -28,13 +28,13 @@ and project for admission events, with its historical defaults preserved.
 
 ## Goal
 
-Answer one question with this project's own sessions: over a state
-projection built from ledger events, can a calibrated decision model
-(a) decide whether a turn failed in a way worth a lesson and (b) decide
-whether a drafted lesson is supported by the events it cites, within 3
-points of a reasoning LLM judge, at a fraction of its cost and latency, with
-a confidence signal that separates its own errors, and what write and discard
-error rates result at a threshold frozen before a live test?
+Answer one question with this project's own sessions: over a projection
+built from ledger events, can a calibrated judge (a) decide whether a turn
+failed in a way worth a lesson and (b) decide whether a drafted lesson is
+supported by the events it cites, within 3 points of a reasoning LLM
+judge, at a fraction of its cost and latency, with a confidence signal
+that separates its own errors, and what write and discard error rates
+result at a threshold frozen before a live test?
 
 Grounding: the paper's §6.5 ("failure-derived lessons require a judge of
 failure, and self-judgement is noisy") and §13.3 (trust-scoring calibration
@@ -113,7 +113,7 @@ Two tags, both deterministic:
   entry; the adapter now records it in session metadata, and sessions
   imported before that are resolved from the transcript the import log
   points at.
-- **Provenance** of each user message: `harness` when, after removing
+- **Author** of each user message: `harness` when, after removing
   `<system-reminder>` and `<system-notification>` blocks, nothing is left or
   what is left is a harness notice ("Request interrupted by user", "Script
   Output from …", "Background task completed", …); `parent_agent` when the
@@ -146,7 +146,7 @@ read:
 A turn enters the pool only if a person or a parent agent opened it and it
 did work (an assistant message or a tool call). Stratum is the first matching
 flag in priority order T2, T1, T3, T4, T5, T0. Each item records its caller
-and the provenance of its opener and next message.
+and the author of its opener and of its next message.
 
 Each turn also records `closed_by`: `outcome`, `next_message`, or
 `session_end`. T0 controls must be `completed`; triggered strata keep turns
@@ -166,24 +166,24 @@ calibration or held-out split (60/40, stratified by stratum and caller) at
 sampling time. The report scores each caller's items separately as well as
 together.
 
-Per turn the pipeline also records facts the rules backend and the report
+Per turn the pipeline also records facts the rules judge and the report
 share: tool count, error count, which tools errored, whether the same tool
 errored twice, whether a later result succeeded, and whether the last result
 was clean.
 
-### State projection (`projection_v3`)
+### Projection (`projection_v3`)
 
 Deterministic, versioned, hashed. One header line (project, who started the
 session, how the turn closed, outcome, tool and error counts), then
-numbered evidence lines: the
-request (≤1,500 chars, labelled `human` or `parent agent`, harness blocks
-removed with a note saying how many), each tool call (name and input, ≤200)
-with its result (`ok` ≤120 chars, `error` ≤300), the final assistant text
-(≤1,500), the recorded outcome, and the next message (≤1,000, labelled with
-its author) or a note that the session ended. At most 12 tool calls are shown (first and last
-six); the whole text is capped at 24,000 characters. The redactor runs again
-over the finished text. Event ids never appear in the text; a sidecar maps
-line numbers to events so a cited lesson can be traced without the state
+numbered evidence lines: the request (≤1,500 chars, marked `human` or
+`parent agent`, harness blocks removed with a note saying how many), each
+tool call (name and input, ≤200) with its result (`ok` ≤120 chars, `error`
+≤300), the final assistant text (≤1,500), the recorded outcome, and the
+next message (≤1,000, marked with its author) or a note that the session
+ended. At most 12 tool calls are shown (first and last six); the whole
+text is capped at 24,000 characters. The redactor runs again over the
+finished text. Event ids never appear in the text; a sidecar maps line
+numbers to events so a cited lesson can be traced without the text
 leaving the machine. Projections are written 0600 under the run directory
 and `mem judge purge` deletes them.
 
@@ -232,11 +232,11 @@ plus the draft:
 
 Derived action: `write_lesson` when `grounded`, `faithful`, `generalizable`
 (levels 1 and 2), `enforced = none`, and `rule_supported` all clear their
-thresholds; `review` when any of them lies inside the uncertainty band
+thresholds; `review` when any of them lies inside the review band
 (default 0.15) around its threshold or was left unanswered; else `discard`,
 and always `discard` for a declined draft. `failed` and `recurrence`
 describe the turn and do not gate a write. Defaults are 0.5 everywhere
-until `--freeze` replaces them per backend. The details are under "exp4
+until `--freeze` replaces them per judge. The details are under "exp4
 design", "Exact-rule admission", and "Unanswered gates" below.
 
 The code still applies `questions_v1` to `questions_v3` when it reports the
@@ -246,7 +246,7 @@ and `questions_v2` under "Run `exp3`: changes from `exp2`" in
 [archive/judge-experiments.md](archive/judge-experiments.md#run-exp3-changes-from-exp2).
 `questions_v3` is `questions_v4` without `rule_supported`.
 
-### Backends
+### Judges
 
 One interface, five implementations:
 
@@ -306,13 +306,14 @@ class DecisionBackend(Protocol):
   e.g. `llamacpp:ggml-org/Qwen3.8-27B-GGUF:Q8_0`; in single-model mode the
   server answers with whatever it loaded. An unknown id fails with the list
   of ids the server knows. The response's `model` is recorded as the
-  snapshot. A separate backend name, so one run can hold both servers'
-  verdicts and the report compares them; only an `llm:` backend is ever
+  snapshot. A judge of its own name, so one run can hold both servers'
+  verdicts and the report compares them; only an `llm:` judge is ever
   the reference judge.
 - `jev`: the OpenRouter Decisions API (`POST /api/alpha/decisions`, model
   pinned to `typesafe/jev-1.14`), standard-library HTTP, key from
-  `OPENROUTER_API_KEY`. It sends redacted state off the machine, so it runs
-  only with `AGENT_MEMORY_JUDGE_ALLOW_REMOTE=1`. State is never logged.
+  `OPENROUTER_API_KEY`. It sends redacted projections off the machine, so
+  it runs only with `AGENT_MEMORY_JUDGE_ALLOW_REMOTE=1`. Projection text is
+  never logged.
 
 Stage A is asked on the projection alone; Stage B on the projection with the
 draft appended, so the draft cannot colour the failure verdict.
@@ -324,20 +325,21 @@ experiment ledger as a `decision` event in a session of agent `judge`
 question and projection versions, projection hash, trigger flags, each
 answer's value, distribution, confidence and method, latency, cost, the
 derived action and its reasons, and the thresholds in force. The event id
-is derived from the backend, item, question version, projection hash, draft
-hash, and drafter, so re-running a backend on unchanged inputs is a no-op in
+is derived from the judge, item, question version, projection hash, draft
+hash, and drafter, so asking a judge again on unchanged inputs is a no-op in
 the ledger, while a verdict made before a draft existed is superseded in the
 verdict file and appended to the ledger as a second event once the item has
-a draft. No state text enters the ledger.
+a draft. No projection text enters the ledger.
 
 ## Labeling (`mem judge label`)
 
-Blinded human review in the terminal. The reviewer sees the projection and
-the drafts, never a verdict or a drafter's name, in a seeded random order.
+Blinded labeling by a human in the terminal. The labeler sees the
+projection and the drafts, never a verdict or a drafter's name, in a
+seeded random order.
 The interface is described under "Charmbracelet labeling interface" below;
 `--plain` gives numbered prompts without it. New runs use `labels_v4`: the
 per-claim labels are under "exp4 design" and `rule_supported` and
-`store_exact` under "Exact-rule admission" below. The reviewer's guide is
+`store_exact` under "Exact-rule admission" below. The labeler's guide is
 `GUIDE` in `judge/label_questions.py`.
 
 The first labeling screens, rendered with Rich, and their rubric are in
@@ -349,14 +351,14 @@ changes from `exp2`" in
 ## Metrics and procedure (`mem judge report`)
 
 Verdicts are joined to labels by item and to the current projection by
-hash. On the calibration split, per backend: accuracy, AUROC, Brier, and
-ECE (10 bins) for `failed` and `supported`; the AUROC of the backend's
+hash. On the calibration split, per judge: accuracy, AUROC, Brier, and
+ECE (10 bins) for `failed` and `supported`; the AUROC of the judge's
 confidence as a detector of its own errors; `category` and `generalizable`
 accuracy; paired discrimination (share of same-project (failed, clean)
 label pairs where the failed turn received the higher `failed`
-probability); mean latency and total cost per item; and the write decision
+probability); mean latency and total cost per item; and the derived action
 against the label. For `questions_v4` runs a write is correct when the
-reviewer answered yes to `store_exact` for that draft (see "Exact-rule
+labeler answered yes to `store_exact` for that draft (see "Exact-rule
 admission" below); for earlier question sets, when the item is
 `worth_remembering` and `enforced_by` is `none` (or absent). The report
 gives precision of
@@ -367,13 +369,14 @@ session and, over labeled turns with a tool error, the share where the error
 was intended and the share labeled failed (the precision a bare T3 trigger
 would have).
 
-The reference judge is the `llm:` backend with the most verdicts. For every
-other backend the report fits a cascade: accept the cheap verdict when its
-confidence reaches a gate `q`, otherwise pay for the reference; `q` is the
-cheapest gate whose cascade accuracy is within 1 point of the reference.
+The reference judge is the `llm:` judge with the most verdicts. For every
+other judge the report fits a cascade: accept the cheap verdict when its
+confidence reaches a threshold `q`, otherwise pay for the reference; `q`
+is the cheapest threshold whose cascade accuracy is within 1 point of the
+reference. Reports and `run.json` call `q` the cascade gate.
 
-`--freeze` chooses, on calibration items only, each backend's
-accuracy-maximising cut on `failed` and `supported` and its cascade gate,
+`--freeze` chooses, on calibration items only, each judge's
+accuracy-maximising threshold on `failed` and `supported` and its `q`,
 writes them to `run.json`, and refuses to run twice. It also refuses while
 calibration items are not fully labeled, unless `--partial` is given (see
 "A freeze asks for the calibration labels" under As built). The held-out
@@ -405,9 +408,9 @@ All under `mem judge`, all refusing the default home:
 |---|---|
 | `import --sessions-dir PATH [--limit N] [--project SLUG] [--since DATE]` | write transcripts to the experiment ledger; unchanged files are skipped |
 | `candidates --run ID [--n 200] [--seed 1] [--clean-share 0.25] [--human-share 0.5]` | segment, trigger, sample, project; creates the run |
-| `draft --run ID [--drafter SPEC ...] [--limit N]` | draft lessons, one arm per `--drafter` (default `ollama:gemma4:26b`); resumable per drafter |
-| `decide --run ID --backend SPEC [--backend SPEC ...] [--limit N] [--no-events]` | run backends; resumable per backend |
-| `label --run ID [--limit N] [--seed 1] [--item ID ...] [--review] [--plain]` | blinded review; `--item` relabels in full, `--review` steps through labeled items, `--plain` uses numbered prompts without the Go helper |
+| `draft --run ID [--drafter SPEC ...] [--limit N]` | draft lessons, once per `--drafter` (default `ollama:gemma4:26b`); resumable per drafter |
+| `decide --run ID --backend SPEC [--backend SPEC ...] [--limit N] [--no-events]` | ask judges; resumable per judge |
+| `label --run ID [--limit N] [--seed 1] [--item ID ...] [--review] [--plain]` | blinded labeling; `--item` relabels in full, `--review` steps through labeled items, `--plain` uses numbered prompts without the Go helper |
 | `report --run ID [--freeze [--partial]] [--raw]` | score, optionally freeze, write `report.md`; `--partial` freezes although calibration items are not fully labeled |
 | `live --run ID --since DATE [--sessions-dir PATH] [--backend SPEC ...] [--drafter SPEC ...] [--day D]` | one live-week step |
 | `status --run ID` | items per stratum, drafts, verdicts, labels, frozen or not |
@@ -423,7 +426,7 @@ they skipped any; see "A failed item is skipped" under As built.
 
 `src/agent_memory/judge/`: `store.py` (the run's files, the rules that
 keep them whole, home guard),
-`provenance.py` (session callers, message provenance), `triggers.py`
+`provenance.py` (session callers, message authors), `triggers.py`
 (segmentation, triggers, sampling), `projection.py`,
 `questions.py`, `lesson.py` (the structured lesson and its sampler schema),
 `drafter.py`, `backends/{base,rules,readout,llm,jev}.py`,
@@ -463,8 +466,8 @@ first build is in
 Hosted calls are opt-in, over projections that were redacted at import and
 again at projection time; the server token is a redaction rule. Projections
 are 0600 under the experiment home and `purge` removes them. Verdict files
-and ledger events exclude state. The experiment home is never the production
-home.
+and ledger events exclude projection text. The experiment home is never the
+production home.
 
 ## As built
 
@@ -488,11 +491,11 @@ Implemented 2026-10-26 as specified, with these deviations:
 
 - HTTP uses `urllib` rather than `httpx`; `httpx` is not a declared
   dependency of the project.
-- The readout backend uses Ollama's native `/api/chat` with
+- The readout judge uses Ollama's native `/api/chat` with
   `logprobs`/`top_logprobs`; the OpenAI-compatible endpoint does not return
   logprobs.
-- Thresholds and cascade gates are frozen per backend, not globally, because
-  each backend's probabilities are calibrated differently.
+- Thresholds, the cascade's among them, are frozen per judge, not globally,
+  because each judge's probabilities are calibrated differently.
 - Labeling renders with Rich instead of plain `input()`.
 - The Droid adapter change for timestamp-less `agent_turn_outcome` entries
   was required for segmentation on real data and is covered in
@@ -501,7 +504,7 @@ Implemented 2026-10-26 as specified, with these deviations:
   pilot run (exp1, in [archive/judge-experiments.md](archive/judge-experiments.md))
   showed who the "user" is in this corpus. The adapter also
   records `calling_session_id` and `calling_tool_use_id` in session metadata.
-- A fifth backend, `llamacpp:<model>` (see Backends), was added 2026-11-06
+- A fifth judge, `llamacpp:<model>` (see Judges), was added 2026-11-06
   so a second reasoning judge could run from llama-server on a different
   model; it shares the `llm` prompt, parser, and retry. The same day the
   `llm` retry was changed to send `think: false` explicitly (see the exp2
@@ -519,8 +522,8 @@ is implemented as written, with these details and deviations:
   `labels_v2`. A run records its `questions_version`; `draft`, `decide`,
   and `label` refuse a run built under an older one, so exp1 and exp2 are
   read-only. `report` still renders them: `supported` is scored as
-  `grounded` under the frozen `supported` cut, the v1 write rule applies,
-  and the Stage B `faithful` and `enforced` columns read `n/a`. exp2's
+  `grounded` under the frozen `supported` threshold, the v1 write rule
+  applies, and the Stage B `faithful` and `enforced` columns read `n/a`. exp2's
   report re-rendered under the new code reproduces every frozen number
   (checked 2026-11-07; the `report.md` written at freeze time is kept as
   is, the re-render sits next to it).
@@ -568,8 +571,8 @@ is implemented as written, with these details and deviations:
   keeps the 4,096 budget it had. Latency is summed over attempts (earlier
   `llm_json_nothink` rows record only their last call). The rerun judged
   the item with reasoning kept (`llm_json`, `failed: yes` at 0.97).
-- Labeling: items already labeled but missing answers for a newly drafted
-  arm come first and are asked only those steps. `--item ID` relabels in
+- Labeling: items already labeled but missing answers for a newly added
+  drafter come first and are asked only those steps. `--item ID` relabels in
   full with the current labels shown; `--review` shows them and asks keep
   or redo. `history` records only values that moved; a key that was
   unanswered (`null`) and is now filled in is not a change. Each run of
@@ -604,7 +607,7 @@ is implemented as written, with these details and deviations:
   `report --raw > file` holds only the markdown, and warns when the
   terminal is narrower than the tables (about 150 columns) need.
 - Report: Stage A and Stage B are separate tables (per item and per draft);
-  the write table lists each backend's gates and thresholds; criterion 1
+  the write table lists each judge's gates and thresholds; criterion 1
   reports the majority-class rate; criterion 6 is evaluated per reference
   drafter on held-out for `questions_v2` runs only; the `incomplete` slice
   appears only when the label exists.
@@ -615,7 +618,7 @@ This replaces the Rich labeling screens (now in
 [archive/judge-earlier-versions.md](archive/judge-earlier-versions.md#labeling-mem-judge-label)),
 not the label
 definitions or the model's questions. `labels_v2`, `questions_v2`,
-citations, seeded item/draft order, review, backfill, edit history, and
+citations, seeded item/draft order, `--review`, backfill, edit history, and
 historical reports are unchanged.
 
 - Python's `LabelController` owns ordering, branching, validation, and
@@ -624,7 +627,7 @@ historical reports are unchanged.
   never cross into the frontend. Subject headings identify the turn,
   one blinded draft, or the comparison. Draft screens include lessons
   and their cited evidence.
-- One Go process serves a labeling session. Bubble Tea owns lifecycle,
+- One Go process serves one sitting. Bubble Tea owns lifecycle,
   keyboard routing and modes; Huh supplies a single embedded selection
   or note field bound to frontend-owned values; Bubbles supplies
   viewports and keyboard help; Lip Gloss supplies measured layouts and
@@ -637,7 +640,8 @@ historical reports are unchanged.
   choose draft B with arrows and Enter. Changing an answer removes
   dependent answers that no longer apply. Notes have Add/edit and
   Continue actions; letters are literal text, Enter accepts and Esc
-  cancels. Summary and review actions use the same selection controls.
+  cancels. The summary and the `--review` choices use the same selection
+  controls.
 - Version 1 NDJSON travels over subprocess pipes with increasing request
   IDs, an 8 MiB frame limit, and one action in flight. Go uses the
   controlling terminal separately. Both boundaries reject invalid
@@ -797,13 +801,13 @@ A Claims report section appears only for runs with structured draft
 rows. Per drafter it reports mean claims/draft (declines count as zero),
 uncited-claim share, absent-citation share against stored projections,
 labeled-claim grounded and faithful rates, and kind agreement with the
-item's `lesson_kind` label. Per backend it reports claim-level
-accuracy, precision, recall, and F1. Held-out backend metrics remain
+item's `lesson_kind` label. Per judge it reports claim-level
+accuracy, precision, recall, and F1. The judges' held-out metrics remain
 locked until freeze. Unavailable projections are reported as unchecked,
 not counted as absent evidence.
 
 `draft` refuses any run containing another drafter version, including
-adding a v3 arm beside v2 drafts. `draft`, `decide`, and `label` refuse
+adding v3 drafts beside v2 drafts. `draft`, `decide`, and `label` refuse
 older question sets. This makes exp3 (3 of 200 items labeled at the
 change) read-only along with exp1 and exp2. Finishing exp3 labeling
 requires the older code; this change neither redrafts nor relabels it.
@@ -828,12 +832,12 @@ Judge accounting and reporting corrections:
 - Stage A latency and cost belong only to the first successfully saved
   verdict for an item. Later drafts in the same decide call use the same
   zero-cost copies as resumed calls. Existing verdict files are not rewritten.
-- A missing or null frozen cascade gate means no cascade result is
-  available. Reporting no longer fits that gate on held-out labels or
-  includes its unsupported criterion 3 conclusion.
+- A missing or null frozen cascade threshold (stored as `gate`) means no
+  cascade result is available. Reporting no longer fits it on held-out
+  labels or includes its unsupported criterion 3 conclusion.
 - New threshold fitting includes all-positive and all-negative choices,
   including probability endpoints. Tie-breaking is unchanged; existing
-  frozen thresholds and gates are read as stored.
+  frozen thresholds, the cascade's included, are read as stored.
 - Drafter ratings and preferences require matching current draft hashes.
   Changing a draft invalidates its old draft-level ratings, not the item's
   still-valid turn labels or recorded production costs.
@@ -854,9 +858,10 @@ New runs use `questions_v4` and `labels_v4`. The structured lesson schema,
 projection format are unchanged. No database migration is needed for this
 judge release. Deploy it separately from ledger changes: **finish any
 ongoing v3 labeling on the old application before upgrading**. This version
-refuses draft, decide and label (including review/backfill) on v1–v3 runs;
-it does not upgrade their drafts, labels or frozen thresholds. Reports
-retain those versions' original write ground truth and output definitions.
+refuses draft, decide and label (including `--review` and backfill) on
+v1–v3 runs; it does not upgrade their drafts, labels or frozen thresholds.
+Reports retain those versions' original write ground truth and output
+definitions.
 Synthetic frozen v1–v3 report hashes match the pre-v4 implementation.
 
 Stage B now asks a whole-draft `rule_supported` question after the
@@ -869,14 +874,14 @@ per-claim checks:
 Grounded, faithful, reusable (`generalizable` levels 1 or 2), unenforced
 (`enforced = none`) and rule supported must all clear their thresholds.
 Stage A failure remains descriptive, not a write prerequisite. The new
-gate defaults to 0.5 with the existing 0.15 uncertainty band. Missing or
+gate defaults to 0.5 with the existing 0.15 review band. Missing or
 unparseable rule answers cannot authorize a write, even after threshold
 fitting: a parser's uniform fallback is not evidence. (Since 2026-11-10
 this holds for every gate, and such a verdict is a review rather than a
-discard; see "Unanswered gates" below.) An explicit 0.5
-rule-support distribution goes to review even if a fitted cut is lower.
-The rules baseline returns that uncertainty rather than treating token
-overlap as proof of a causal rule.
+discard; see "Unanswered gates" below.) An explicit 0.5 rule-support
+distribution goes to review even if a fitted threshold is lower. The rules
+baseline returns that uncertainty rather than treating token overlap as
+proof of a causal rule.
 
 Both labeling interfaces add `A.rule_supported` and `A.store_exact`
 (likewise for B–D), with Yes, No and Unclear. The latter asks **“Would you
@@ -884,7 +889,7 @@ store this exact draft?”**, without repairing it. Each screen is about
 the identified draft, shows its complete lesson and citation union, and
 has no claim focus or model verdict. The exact-rule question follows
 claim checks; the storage question follows reuse and enforcement.
-Back, review, redo, skip, resume and hash invalidation use the shared
+Back, `--review`, redo, skip, resume and hash invalidation use the shared
 controller. A draft changed while labeling is open is rejected at save.
 No Go wire-schema change is needed; questions/options are display data
 in protocol 2.
@@ -895,7 +900,7 @@ list, so it stays unscored but is not repeatedly asked on resume.
 Absent answers are backfilled. Corrections retain the existing history
 paths, including `drafts.<drafter>.rule_supported` and `.store_exact`.
 Changed draft hashes invalidate both new labels and claim ratings.
-Changing, adding or removing an arm also reasks the comparison rather
+Changing, adding or removing a drafter also reasks the comparison rather
 than silently carrying an old preference onto the new drafts.
 
 For v4 only, write precision and miss rate use the blinded `store_exact`
@@ -910,15 +915,16 @@ ratings use independent nonmissing denominators rather than treating a
 missing rating as false.
 
 Calibration alone fits the new gate, using the human rule-support label;
-held-out verdict metrics stay locked until freeze. Frozen cuts and cascade
-gates are reused as stored, never fitted on held-out labels. Cost accounting
-includes the new question, preserves zero-cost claim aggregates and reused
-Stage A answers, and does not drop costs for unscored admission rows.
+held-out verdict metrics stay locked until freeze. Frozen thresholds, the
+cascade's included, are reused as stored, never fitted on held-out labels.
+Cost accounting includes the new question, preserves zero-cost claim
+aggregates and reused Stage A answers, and does not drop costs for
+unscored admission rows.
 V4's per-item table sums paid USD across all draft verdicts; its Stage B
 table shows only the draft-question subset, not another total to add.
 Decision events include version, hashes, claim count, Stage A reuse, the
-new answer, action, thresholds and costs, never the rule, claims or state
-text.
+new answer, action, thresholds and costs, never the rule, claims or
+projection text.
 
 Regressions use synthetic runs, mocked HTTP, both plain and Go interfaces,
 rendered narrow/wide screens and real Python-to-Go PTY exchanges. They cover
@@ -930,13 +936,13 @@ change.
 
 ### Unanswered gates, as built (2026-11-10)
 
-A judge can be asked a question and give no usable answer: its reply omits
-the question, names none of the options, gives a score with no digit, or
-carries no probability that can be read. Until this change only
+A judge can be asked a question and give no usable answer: its model reply
+omits the question, names none of the options, gives a score with no
+digit, or carries no probability that can be read. Until this change only
 `rule_supported` was protected. For every other question the parser put a
 uniform or default distribution in the answer's place, and the write rule
-read it as evidence. A reply that omitted `generalizable` cleared that gate
-at 0.67 and could produce `write_lesson`.
+read it as evidence. A model reply that omitted `generalizable` cleared
+that gate at 0.67 and could produce `write_lesson`.
 
 A question the judge did not usably answer is now **unanswered**. Its
 stored distribution is a placeholder that nothing reads as a probability.
@@ -947,7 +953,7 @@ stored distribution is a placeholder that nothing reads as a probability.
   judges (`llm`, `llamacpp`) no longer read a score answer without a digit
   as level 0 or a missing probability as 0.5, and only a string or a
   number can name an option.
-- Any backend's distribution with no mass on a listed option is marked
+- Any judge's distribution with no mass on a listed option is marked
   the same way. That covers a Jev entry with no value or with empty
   probabilities (a value that is not a number is a `JudgeError`), readout
   samples that name no option (`sampling:8_missing`) and a question the
@@ -955,7 +961,7 @@ stored distribution is a placeholder that nothing reads as a probability.
 - With per-claim questions, one unanswered claim leaves the whole
   `grounded` or `faithful` gate unanswered (`min_over_claims_missing`).
 - An unanswered write gate makes the verdict a `review`, with the reason
-  `<gate>: unanswered`. Like the uncertainty band, it outranks another
+  `<gate>: unanswered`. Like the review band, it outranks another
   gate that plainly fails. A missing or unparseable `rule_supported`
   answer was a discard before; it is a review now.
 - A declined draft is still a discard. A gate the verdict was never asked
@@ -966,15 +972,15 @@ stored distribution is a placeholder that nothing reads as a probability.
 - The model is not asked again. The verdict is recorded once with the
   mark, and a resumed decide does not repeat it.
 - Reports leave an unanswered question out of every metric and out of
-  threshold fitting. When a backend has verdicts that are a review for
+  threshold fitting. When a judge has verdicts that are a review for
   this reason, one line under the write-decision table gives the count
-  per backend. With none, the report is byte for byte what it was.
+  per judge. With none, the report is byte for byte what it was.
 - Admission keeps the distinction. An example's unanswered gate is stored
-  as null, the draft goes to human review whatever its score, and it does
-  not help choose the write cut.
+  as null, the draft goes to review whatever its score, and it does not
+  help choose the write threshold.
 
 A read-only scan of the `method` fields in the existing runs' verdict
-files found none of these marks, and the reports of the two labelled runs
+files found none of these marks, and the reports of the two labeled runs
 (exp2, exp3) rebuild byte for byte from copies. A verdict already stored
 with a silent default cannot be told apart from a real answer and is left
 as it is. Regressions are in `tests/test_judge_unanswered.py`, with
@@ -1051,7 +1057,7 @@ it refuses to append to a file it cannot read. Regressions are in
 
 ### Label history counts a move off Unclear, as built (2026-11-11)
 
-A reviewer can answer Unclear to "Did the agent fail?", to rule support
+A labeler can answer Unclear to "Did the agent fail?", to rule support
 and to "Would you store this exact draft?". The answer is stored as null:
 for the turn with `incomplete` false, for a draft with the field named in
 its `unknown` list. `history` skipped every key whose old value was null.
@@ -1078,24 +1084,24 @@ top of that module and applied nowhere else:
 - A file that grows (`drafts.jsonl`, a verdict file, `imports.jsonl`) gets
   one row at a time, as "Appending after a cut-off row" describes.
 - One command at a time adds rows to a file. A second `draft` on a run, a
-  `decide` that names a backend another `decide` is judging, a second
+  `decide` that names a judge another `decide` is asking, a second
   `candidates` for a run, and a second `import` into a home are refused at
   once, with a message that names the file. Before, the two commands cut
   into each other's rows and paid for the same model calls twice. `decide`
-  takes every verdict file it will write before it calls a model, and runs
-  a backend that is named twice once. A `decide` on other backends and a
-  labeling session still run beside it.
+  takes every verdict file it will write before it calls a model, and asks
+  a judge that is named twice once. A `decide` for other judges and a
+  sitting still run beside it.
 - `run.json` and `labels.jsonl` are changed by commands that run side by
   side, so each change reads the file, merges, and writes it back under a
   lock. `draft` and `report --freeze` each keep the fields the other set.
 
-Two labeling sessions on one run used to erase each other's saves, because
-each wrote the labels it had read when it opened plus its own. A save now
+Two sittings on one run used to erase each other's saves, because each
+wrote the labels it had read when it opened plus its own. A save now
 adds its one label to the labels on disk at that moment. If another
-session has saved the same item since this one read it, the save is
-refused: the first label is kept, and the session ends with the reason.
-An item another session finished is left out of this session when its
-turn comes, with a notice.
+sitting has saved the same item since this one read it, the save is
+refused: the first label is kept, and the sitting ends with the reason.
+An item another sitting finished is left out of this one when its turn
+comes, with a notice.
 
 A run's directories are 0700 and its files 0600, `report.md` and the
 verdict files included. A file or directory made before this change gets
@@ -1130,17 +1136,17 @@ drafter kinds are one drafter. `judge/backends/http.py` and
 embedder do not ask for a JSON object, so they call `endpoints.py`
 themselves and turn its errors into their own.
 
-Backend and drafter names, request bodies, recorded methods, and stored
+Judge and drafter names, request bodies, recorded methods, and stored
 rows are unchanged. What changed:
 
 - The judge chose its next attempt from words in an error message. Any
   failure whose text held "http" made the last attempt leave the thinking
-  switch out instead of saying off. A reply that quoted a link did that,
-  and so did any error carrying the server's URL; Ollama then let a
+  switch out instead of saying off. A model reply that quoted a link did
+  that, and so did any error carrying the server's URL; Ollama then let a
   thinking model think again, the fault first fixed on 2026-11-06. A
   missing model whose name held "think", or a transport reply that was
   not JSON, bought a second request that could not succeed. What happened
-  now chooses the attempt, as "Backends" describes, and only Ollama's own
+  now chooses the attempt, as "Judges" describes, and only Ollama's own
   words in an HTTP 400 count as a refused switch.
 - A request refused over the thinking switch was not billed. Its latency
   is now part of the answer's.
@@ -1164,10 +1170,10 @@ worked" in [phase-1-spec.md](phase-1-spec.md). Regressions are in
 
 `draft`, `decide`, and `live` skip an item whose draft or verdict fails
 and write nothing for it, so the next command asks it again. Until now
-that held only once a drafter or backend had written something in the
+that held only once a drafter or judge had written something in the
 run. Before that, the first failure ended the command. When the failure
-was the item's own (a turn too long for the model, a reply cut off every
-time), every rerun ended at the same item and the run could not be
+was the item's own (a turn too long for the model, a model reply cut off
+every time), every rerun ended at the same item and the run could not be
 finished.
 
 A command now stops early only when the fault cannot be the items'. It
@@ -1176,32 +1182,32 @@ stops after three failures in a row when:
 - the model server could not be reached each time: nothing accepted the
   connection, or the request was not allowed to leave the machine (the
   egress opt-in is off, or a hosted key is missing); or
-- this drafter or backend has written nothing in the run yet, whatever
+- this drafter or judge has written nothing in the run yet, whatever
   the three failures were. A model that cannot produce one usable row in
   three tries is unfit or misconfigured.
 
 A reply of any kind starts the first count again, and a written row
-starts both. A timeout, an HTTP rejection, and a reply that cannot be
-used all count as the item's failure, because each can be the item's
+starts both. A timeout, an HTTP rejection, and a model reply that cannot
+be used all count as the item's failure, because each can be the item's
 doing: a long turn times out, and a prompt past the context window is
 rejected. Counted against the server, three such items at the head of a
 run's unfinished work would stop every rerun before it reached the items
 behind them. `endpoints.py` raises `Unreachable` for a server that was
 not asked, `model_call.py` passes it on as `ModelUnreachable`, and the
-judge's backends and drafter as `ServerUnreachable`.
+judges and the drafter as `ServerUnreachable`.
 
 A command that stops says why and repeats the last error, for example
 `llm:gemma4:26b: stopped, the model server could not be reached 3 times
 in a row: ...`. Before it stops it records what it wrote: the drafter's
 entry in `run.json`, and the decision events of the verdicts on disk.
-The drafters or backends named after the one that stopped are not run,
+The drafters or judges named after the one that stopped are not run,
 and `live` does not go on to judge after a drafter stopped.
 
 `draft`, `decide`, and `live` exit 1 when any item was skipped. They do
 so after doing all the rest, and nothing written is taken back; the exit
 code tells whatever runs next that the step is not finished. They exit 0
 only when nothing is left to retry. `decide_items` returns the verdicts
-written and the failures for each backend (`DecideSummary`) where it
+written and the failures for each judge (`DecideSummary`) where it
 returned the written counts alone.
 
 Not covered: a model server that accepts the connection and never
@@ -1218,7 +1224,7 @@ taken back, and nothing showed that it had been early.
 
 `report --freeze` now refuses while a calibration item is not fully
 labeled, names how many are short, and leaves `run.json` as it was. An
-item is fully labeled when a labeling session would ask nothing more
+item is fully labeled when a sitting would ask nothing more
 about it. It is short when:
 
 - it has no label; or
@@ -1226,7 +1232,7 @@ about it. It is short when:
   after the item was labeled, so nobody has answered for the new draft.
 
 This is the labeler's own test of what is left to ask
-(`labeling.questions_left`), so a labeling session opens every such
+(`labeling.questions_left`), so a sitting opens every such
 item and `mem judge label` is how to finish them. Held-out items do not
 count: they take no part in choosing thresholds. For a run built with an
 older question set only the first case applies. Its labels answer the
@@ -1243,5 +1249,5 @@ Tried on private copies of the stored runs: exp3, with 118 of its 120
 calibration items unlabeled, was refused where it would have frozen.
 
 Not covered: a calibration item that has a label but no verdict from
-some backend. That backend's thresholds are still chosen without it, and
+some judge. That judge's thresholds are still chosen without it, and
 nothing says so. Regressions are in `tests/test_judge.py`.

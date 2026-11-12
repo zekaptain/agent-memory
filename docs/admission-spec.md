@@ -26,8 +26,8 @@ uv run mem --home "$HOME/.agent-memory-judge" --port 9495 judge report --run exp
 
 The experiment server must already be running on 9495, with captured
 sessions imported. Finish drafting and calibration labeling before freezing.
-See [the judge how-to](judge-how-to.md) for setup. A Jev comparison arm is
-optional and requires explicit consent and
+See [the judge how-to](judge-how-to.md) for setup. A Jev judge for
+comparison is optional and requires explicit consent and
 `AGENT_MEMORY_JUDGE_ALLOW_REMOTE=1`. Jev answers typed questions; it does
 not learn from labels. Admission learns through its logistic model and
 neighbor vote.
@@ -62,18 +62,18 @@ Private files under `<home>/admission/`:
 
 ```text
 state.json             mode, watermark, approver version, minimum writes
-approver.json          fitted coefficients, cuts, model identities, metrics
-examples.jsonl         imported human labels and production review history
+approver.json          fitted coefficients, thresholds, model identities, metrics
+examples.jsonl         examples from imported labels and from admission review
 days/<day>/
   run.json             pinned configuration
   examples.jsonl       pinned neighbor set
-  items.jsonl          deterministic candidates and evidence sidecars
+  items.jsonl          deterministic items and evidence sidecars
   projections/*.txt    redacted evidence
   drafts.jsonl
   verdicts/*.jsonl
   scores.jsonl
   admitted.jsonl
-  reviews.jsonl        durable save intents and completed reviews
+  reviews.jsonl        durable save intents and saved answers
 ```
 
 Directories are 0700 and files 0600. Admission commands serialize local
@@ -104,25 +104,26 @@ indicators, a similarity-weighted vote of the eight nearest labels, and
 maximum similarity. Standardized, L2-regularized logistic regression uses
 deterministic fixed-step gradient descent, without another ML dependency.
 
-Calibration fits coefficients and cuts; held-out labels do neither.
+Calibration fits coefficients and thresholds; held-out labels do neither.
 Neighbor features exclude the training item's own drafts, and held-out
 evaluation uses calibration neighbors only. Importing an item in different
 experiment runs does not give it a second grouping identity; conflicting
-splits are refused. Production review of a previously imported item
-replaces its experiment training influence for that backend and embedder.
-The high cut is the lowest
-calibration cut reaching 0.85 precision. The low cut is the highest cut
-whose discard miss rate does not exceed the frozen judge's calibration
-miss rate. If the data cannot establish a safe write cut, nothing is
-automatically written.
+splits are refused. An admission review answer for a previously imported
+item replaces its experiment training influence for that judge and
+embedder. The write threshold is the lowest calibration score reaching
+0.85 precision. The discard threshold is the highest score whose discard
+miss rate does not exceed the frozen judge's calibration miss rate. If
+the data cannot establish a safe write threshold, nothing is
+automatically written. Stored reasons call the two the write cut and the
+review cut.
 
 Three guards cannot be learned away: a frozen judge `discard` never becomes
 an approver `write`; similarity below the floor (default 0.35) never
 becomes a `write`; and a draft with a write gate the judge left unanswered
-goes to review whatever its score, and does not help choose the write cut
-(see "Unanswered gates" in the judge spec). Scores between cuts go to
-review. Reports include precision, miss rate, coverage, Brier score and
-AUROC for both splits.
+goes to review whatever its score, and does not help choose the write
+threshold (see "Unanswered gates" in the judge spec). Scores between the
+two thresholds, the review band, go to review. Reports include precision,
+miss rate, coverage, Brier score and AUROC for both splits.
 
 Auto mode requires held-out precision of at least **0.8** over at least
 **20 scored held-out writes**:
@@ -131,17 +132,18 @@ Auto mode requires held-out precision of at least **0.8** over at least
 uv run mem admit enable --auto
 ```
 
-`--min-writes N` changes the count, not the precision bar. No scored
-writes is not perfect precision. Imports, human feedback and refits return
-the mode to shadow. Changed examples require a refit before another run or
-auto enablement; nothing automatically enables the new approver.
-Older pinned days cannot borrow a newer model's auto permission.
+`--min-writes N` changes the count, not the precision the held-out bar
+asks for. No scored writes is not perfect precision. Imports, human
+feedback and refits return the mode to shadow. Changed examples require a
+refit before another run or auto enablement; nothing automatically enables
+the new approver. Older pinned days cannot borrow a newer approver's auto
+permission.
 
 ## Daily processing and ledger mapping
 
 Admission reads captured production events directly; it never imports
-transcripts. It segments turns and uses all deterministic candidates
-(`n=None`), including clean controls. The watermark starts at the
+transcripts. It segments turns and takes all of them as items
+(`n=None`), clean controls included. The watermark starts at the
 beginning of captured history. Later runs include sessions started since
 the watermark and older sessions with newly recorded events, so ongoing
 or late-imported capture is not silently lost.
@@ -167,7 +169,7 @@ Each `write` or `review` creates a memory through `LifecyclePlan.remember`:
 | metadata.admission | Approver version, score, reasons, draft hash, item, backend, drafter |
 | memory_sources | `derived_from` opening event and every cited event in the sidecar |
 
-Content-hash deduplication confirms an existing rule and adds provenance
+Content-hash deduplication confirms an existing rule and adds its sources
 instead of creating a second memory. A `decision` event under agent
 `admission`, harness session `admission-<day>`, records probabilities and
 identities without rule, claim, or projection text. It holds two results
@@ -192,49 +194,49 @@ mode `record`. `mem admit run` passes over the sessions of both agents
 when it looks for new turns. The reasons are in
 [ADR 0009](adr/0009-admission-writes-as-its-own-agent.md).
 
-## Human review and feedback
+## Admission review and feedback
 
 `mem admit review` uses the existing Go frontend, or `--plain` for
 numbered prompts. It does not use the experiment's `LabelController`.
 It has a controller of its own, and the loop that shows labeling's
 screens shows this one's too (`drive` in `judge/label_frontend.py`).
-The rule, kind, claims and cited excerpts stay visible. The judge arm,
-approver verdict and probability are hidden.
+The rule, kind, claims and cited excerpts stay visible. The judge, and
+the approver's action and score, are hidden.
 
 One question asks "Store this exact lesson?" with Yes, No, Unclear,
 followed by an optional note and save confirmation:
 
 - Yes records `approve`, actor `human`.
 - No records `retire`, actor `human`.
-- Unclear records a review but leaves ledger status alone.
-- A sampled discard approved by the human is first admitted, then
-  approved. A rejected discard stays out of the ledger.
+- Unclear records the answer but leaves ledger status alone.
+- A sampled discard the human answers Yes to is first admitted, then
+  approved. One answered No stays out of the ledger.
 
 `mem review approve` and `mem review retire` change the same memories,
-also as `human`, but they are not this review. They hide nothing, ask
-nothing about the lesson, and record no example for the approver. They
-are for memories that admission did not write.
+also as `human`, but they are not admission review. They hide nothing,
+ask nothing about the lesson, and record no example for the approver.
+They are for memories that admission did not write.
 
 The default seeded discard sample is 30; `--discards N` adjusts it.
 `--limit N` bounds a sitting. Back, redo, skip, quit and resume work in
-both frontends. `--again` reopens completed reviews, retaining history.
-Interrupted saves finish from their private durable intent on resume.
-Notes are redacted before persistence.
+both frontends. `--again` shows answered lessons again, retaining
+history. Interrupted saves finish from their private durable intent on
+resume. Notes are redacted before persistence.
 
 Retirement is terminal in the ledger. Correcting a No to Yes therefore
 creates a fresh human-approved memory linked to the retired one, rather
 than pretending an approve action can reactivate a retired row. Its
-examples keep the original grouping identity and split. A rejected
-discard uses a stable draft identity until it has a ledger identity.
+examples keep the original grouping identity and split. A discard
+answered No uses a stable draft identity until it has a ledger identity.
 
-Every Yes or No appends a human example. Correcting an earlier label to
+Every Yes or No appends a human example. Correcting an earlier answer to
 Unclear withdraws its training influence without changing ledger status.
 Production examples use a stable 60/40 split grouped by memory identity;
 corrections replace a memory's previous training influence rather than
-multiplying its weight. Run
-`mem admit fit` after reviews to refresh the fitted model and held-out
-estimate. Review sampling estimates are conditional on the sampled
-traffic, not an unbiased full-stream miss-rate estimate.
+multiplying its weight. Run `mem admit fit` after admission review to
+refresh the approver and its held-out estimate. Estimates from the
+sample of discards are conditional on the sampled traffic, not an
+unbiased full-stream miss-rate estimate.
 
 ## Optional daily scheduling on macOS
 
@@ -270,7 +272,7 @@ Admission replaces the agent, the session, and the source key with its
 own before it writes the event, so experiment events and reports are
 untouched.
 
-Local drafters are required. Hosted judge arms remain optional behind
+Local drafters are required. Hosted judges remain optional behind
 `AGENT_MEMORY_JUDGE_ALLOW_REMOTE=1`; a remote embedder host uses the same
 opt-in rule. No projection text enters examples or approver metadata.
 Redaction runs on model drafts and again before ledger insertion.

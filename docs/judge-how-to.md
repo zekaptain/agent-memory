@@ -6,7 +6,7 @@ Run these commands from the repository root. The order is:
 init → serve → import → candidates → draft → decide → label → report → report --freeze
 ```
 
-After freezing, you can test the same backends on new sessions with `live`.
+After freezing, you can test the same judges on new sessions with `live`.
 Drafted lessons stay in experiment files. They are never written into the
 memory ledger.
 
@@ -78,8 +78,8 @@ uv run mem judge candidates --run "$RUN" \
   --n 200 --seed 1 --clean-share 0.25 --human-share 0.5
 ```
 
-This samples turns from the imported ledger and saves their evidence
-projections. It also assigns calibration and held-out splits automatically.
+This samples turns from the imported ledger and saves their projections.
+It also assigns calibration and held-out splits automatically.
 
 | Option | Default | Use |
 |---|---|---|
@@ -99,7 +99,7 @@ Run `candidates` once per run name. To change the sample, use a new name.
 ## 4. Draft lessons
 
 Have Ollama running with the chosen model installed, or configure another
-transport from [Model choices](#model-choices) before continuing.
+model server from [Model choices](#model-choices) before continuing.
 
 ```sh
 uv run mem judge draft --run "$RUN" --drafter ollama:gemma4:26b
@@ -146,13 +146,13 @@ uv run mem judge decide --run "$RUN" \
   --backend rules --backend llm:gemma4:26b
 ```
 
-The turn questions judge the turn once per backend. The draft questions
-judge each non-declined draft, including each claim's grounding and
-faithfulness. The report calls them Stage A and Stage B. With multiple
-drafters, expect multiple verdict rows per item.
+Each judge answers the turn questions once for a turn, and the draft
+questions for each draft that holds a lesson, including each claim's
+grounding and faithfulness. The report calls them Stage A and Stage B.
+With multiple drafters, expect multiple verdict rows per item.
 
 - `--backend SPEC` is required and repeatable. See [Model choices](#model-choices).
-- `--limit 5` processes at most five pending items per backend, including
+- `--limit 5` processes at most five pending items per judge, including
   their drafts. Rerun without the limit to finish.
 - `--no-events` keeps verdict files but skips recording decision events
   in the experiment ledger. Without it, keep the experiment server running.
@@ -161,13 +161,13 @@ Rerunning the same command skips current verdicts and retries missing or
 failed ones. A failed item is skipped with a warning, and a command that
 skipped any exits 1 after judging the rest; run it again to retry them.
 `decide` stops early in the same two cases as `draft`: three failures in
-a row because the model server cannot be reached, or from a backend that
-has not written a verdict in this run yet. The backends named after the
-one that stopped are not run.
+a row because the model server cannot be reached, or from a judge that
+has not written a verdict in this run yet. The judges named after the
+one that stopped are not asked.
 
 Two `decide` commands can run on one run at the same time when they name
-different backends. A `decide` that names a backend another `decide` is
-already judging is refused at once, before it calls a model.
+different judges. A `decide` that names a judge another `decide` is
+already asking is refused at once, before it calls a model.
 
 ## 6. Add human labels
 
@@ -175,12 +175,12 @@ already judging is refused at once, before it calls a model.
 uv run mem judge label --run "$RUN" --limit 10
 ```
 
-Review the turn, then each draft and its claims. The interface hides
-model verdicts and drafter identities. Labels must be your judgments,
-not another model's answers.
+Read the turn, then each draft and its claims. The interface hides
+verdicts and which drafter wrote a draft. Labels must be your judgments,
+not a model's answers.
 
 Use arrows and Enter to answer, Page Up/Down to scroll evidence, `b` to
-go back, `p` for the full projection, and `?` for the guide. Review the
+go back, `p` for the full projection, and `?` for the guide. Check the
 summary and save each item. Skipping or quitting does not save unfinished
 answers for the current item.
 
@@ -194,7 +194,7 @@ uv run mem judge label --run "$RUN" --plain --limit 10
 
 | Option | Use |
 |---|---|
-| `--limit N` | Stop after N items this session. Omit it to continue until done or you quit. |
+| `--limit N` | Stop after N items this sitting. Omit it to continue until done or you quit. |
 | `--seed N` | Item and blinded draft order; default `1`. Keep it fixed when resuming. |
 | `--review` | Step through saved labels to keep or redo them. |
 | `--item ITEM_ID` | Label or fully relabel this item, showing existing answers. Repeat for multiple items. Find IDs in the run's `items.jsonl`. |
@@ -204,13 +204,13 @@ Repeat `label` to resume. It skips completed items and asks only missing
 questions when backfilling. Finish the intended labels before freezing;
 the simplest approach is to label the whole sample.
 
-Two sessions can label one run at the same time, and each keeps the labels
+Two sittings can label one run at the same time, and each keeps the labels
 the other saves. Give them different items with `--item` or different
-orders with `--seed`: two sessions with the same seed start on the same
+orders with `--seed`: two sittings with the same seed start on the same
 item. If both save one item, the first label is kept and the second
-session ends with a message; start it again to go on with the items that
-are left. An item the other session finished is left out when its turn
-comes.
+sitting ends with a message; run the command again to go on with the
+items that are left. An item the other sitting finished is left out when
+its turn comes.
 
 ## 7. Check progress and preview the report
 
@@ -221,7 +221,7 @@ uv run mem judge report --run "$RUN"
 
 `status` shows item, draft, verdict, and label counts, plus whether the run
 is frozen. Before moving on, check that every intended drafter has covered
-the sample and every intended backend has its expected verdicts.
+the sample and every intended judge has its expected verdicts.
 
 `report` needs at least one labeled verdict. It writes:
 
@@ -229,15 +229,15 @@ the sample and every intended backend has its expected verdicts.
 ~/.agent-memory-judge/judge/trial-01/report.md
 ```
 
-It shows calibration results before freeze; held-out backend scores stay
-locked. For Markdown output instead of wide terminal tables:
+It shows calibration results before freeze; the judges' held-out scores
+stay locked. For Markdown output instead of wide terminal tables:
 
 ```sh
 uv run mem judge report --run "$RUN" --raw
 ```
 
 You can preview the report repeatedly. It includes turn-level scores,
-draft-level scores, claim metrics, and write/review/discard decisions.
+draft-level scores, claim metrics, and write/review/discard actions.
 
 ## 8. Freeze thresholds and score held-out items
 
@@ -248,8 +248,8 @@ labels:
 uv run mem judge report --run "$RUN" --freeze
 ```
 
-This chooses per-backend thresholds using calibration labels, locks them
-in `run.json`, and reports held-out scores with those thresholds.
+This chooses thresholds for each judge using calibration labels, locks
+them in `run.json`, and reports held-out scores with those thresholds.
 Freeze is one-time: a second `--freeze` is refused. Use a new run for a
 revised experiment rather than editing frozen metadata.
 
@@ -257,7 +257,7 @@ revised experiment rather than editing frozen metadata.
 item with no label, or one whose label has questions left because a
 drafter was added after it was labeled. The message says how many there
 are, and nothing is frozen. Run `mem judge label` to finish them; a
-session opens them along with any held-out items still to label. To
+sitting opens them along with any held-out items still to label. To
 freeze on the labels there are anyway:
 
 ```sh
@@ -267,7 +267,7 @@ uv run mem judge report --run "$RUN" --freeze --partial
 A partial freeze cannot be undone either. The run records how many
 calibration items it went without, and every report of the run says so.
 `--freeze` does not check verdicts: use `status` to see that every
-backend has judged the sample.
+judge has judged the sample.
 
 Later, refresh the report without freezing again:
 
@@ -291,14 +291,14 @@ them or download models.
 | Judge | `readout:MODEL_ID` | Ollama choice-probability readout, with a sampling fallback. |
 | Judge | `llm:MODEL_ID` | Ollama reasoning judge. |
 | Judge | `llamacpp:MODEL_ID` | llama-server reasoning judge. |
-| Judge | `jev` or `jev:MODEL_ID` | Hosted OpenRouter decision model; requires opt-in below. |
+| Judge | `jev` or `jev:MODEL_ID` | Hosted judge on OpenRouter's Decisions API; requires opt-in below. |
 
 Set `OLLAMA_HOST` if Ollama is not at `http://localhost:11434`.
 Set `LLAMACPP_HOST` if llama-server is not at `http://localhost:9931`.
 Set these in the client shell before running `draft` or `decide`.
 
-Include an `llm:` backend if you want the report's reference-judge
-comparison and cascade metrics. The report selects the `llm:` backend
+Include an `llm:` judge if you want the report's reference-judge
+comparison and cascade metrics. The report selects the `llm:` judge
 with the most labeled verdicts; `llamacpp:` does not fill that role.
 
 Hosted calls send redacted session evidence outside your machine and may
@@ -323,7 +323,7 @@ resume labeling to fill in the new draft questions before freezing.
 ## 9. Optional: test on new sessions
 
 After freeze, use `live` on sessions collected for the live test. Replace
-these example dates with your live period's start and batch date:
+these example dates with your live period's start and the live day:
 
 ```sh
 uv run mem judge live --run "$RUN" \
@@ -335,23 +335,23 @@ uv run mem judge live --run "$RUN" \
 
 This imports recently modified transcripts, selects previously unseen
 turns from sessions **started** on or after `--since`, drafts lessons,
-and judges them using the parent's frozen thresholds. Use the same model
+and judges them using the run's frozen thresholds. Use the same model
 specifications you calibrated.
 
 - `--since` is required; it accepts an ISO date or datetime.
-- `--day` names the batch. It defaults to today's UTC date.
+- `--day` names the live day. It defaults to today's UTC date.
 - `--sessions-dir` defaults to `~/.factory/sessions`.
 - `--backend` is repeatable; omitting it runs only `rules`.
-- `--drafter` is repeatable; omitting it skips drafting, even if the parent
-  run had drafters.
+- `--drafter` is repeatable; omitting it skips drafting, even if the run
+  had drafters.
 
 Rerunning an existing day resumes its fixed item list; it does not append
-new turns. Choose a new `--day` for another batch. Keep `--since` at the
+new turns. Choose a new `--day` for another live day. Keep `--since` at the
 live period's start if you want to include unseen turns from earlier
 sessions in that period. `live` exits 1 when a draft or verdict of the
 day failed and was skipped; rerun the same day to retry it.
 
-Inspect, label, and report the batch with `--live DAY`:
+Inspect, label, and report the live day with `--live DAY`:
 
 ```sh
 uv run mem judge status --run "$RUN" --live 2026-11-09
@@ -360,7 +360,7 @@ uv run mem judge report --run "$RUN" --live 2026-11-09
 ```
 
 `--live DAY` also works on `draft` and `decide` for resuming those stages.
-Do not freeze the child again: it already inherits the frozen thresholds.
+Do not freeze a live day: it already uses the run's frozen thresholds.
 
 ## 10. Import human labels into admission
 
@@ -373,8 +373,9 @@ uv run mem --home "$HOME/.agent-memory" --port 9494 admit import-labels \
 ```
 
 This reads experiment files without changing them. It does not make
-`mem judge` write lessons or enable automatic approval. Follow the
-[admission spec](admission-spec.md) for fitting, shadow runs and review.
+`mem judge` write lessons or turn auto mode on. Follow the
+[admission spec](admission-spec.md) for fitting, shadow mode, and
+admission review.
 
 ## Resume, stop, or clean up
 
@@ -388,13 +389,13 @@ This reads experiment files without changing them. It does not make
 - Stop the experiment server with Ctrl-C in terminal 1. This does not
   delete the experiment. Restart the same `serve` command to continue.
 
-When you no longer need the evidence projections:
+When you no longer need the projections:
 
 ```sh
 uv run mem judge purge --run "$RUN"
 ```
 
-`purge` deletes projection text for the run and all its live batches.
+`purge` deletes projection text for the run and all its live days.
 It keeps drafts, verdicts, labels, metadata, and imported ledger data.
 It is not a full privacy wipe or a reset, and drafting, judging, and
 labeling cannot continue without the projections.
