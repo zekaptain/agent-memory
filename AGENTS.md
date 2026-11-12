@@ -69,6 +69,11 @@ go vet ./...
 go test ./...
 ```
 
+CI (`.github/workflows/ci.yml`) runs both lists on every pull request and
+on every push to `main`: Ruff and Pyrefly once, the tests and `mem smoke`
+on Linux and on macOS with the Python that `.python-version` names, and
+the Go checks once. When a command here changes, change it there too.
+
 Use `uv run ruff format <changed-files>` to format only files you touched.
 Ruff targets Python 3.12 with a 100-character line limit. Follow the existing
 typed functions, dataclasses, and small subsystem modules.
