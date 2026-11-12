@@ -14,6 +14,9 @@ import pytest
 from rich.table import Table
 
 from agent_memory.adapters.droid import DroidAdapter
+from agent_memory.capture import ids
+from agent_memory.capture.pipeline import deliver
+from agent_memory.capture.record import Record
 from agent_memory.cli import main
 from agent_memory.judge import cli as judge_cli
 from agent_memory.judge import pipeline
@@ -25,6 +28,7 @@ from agent_memory.judge.pipeline import (
     import_sessions,
     purge_run,
 )
+from agent_memory.judge.provenance import HUMAN, session_callers
 from agent_memory.judge.store import JudgeError, RunStore, imports_log, sole_writer
 from tests.conftest import FIXTURES
 
@@ -348,3 +352,71 @@ def test_a_second_import_into_one_home_is_refused_at_once(live_cfg, sessions_dir
     ):
         import_sessions(live_cfg, sessions_dir)
     assert import_sessions(live_cfg, sessions_dir).errors == []
+
+
+def test_a_session_another_session_started_is_read_as_an_agents(live_cfg, live_client, tmp_path):
+    # A subagent's session as Droid's hooks capture it: its start hook is the first to
+    # write the session's row and names the session that called it.
+    def start(session_id: str, *, keeps_caller: bool = True, **fields) -> Record:
+        payload = {
+            "session_id": session_id,
+            "hook_event_name": "SessionStart",
+            "source": "startup",
+            "cwd": "/synthetic/callers",
+            "permission_mode": "auto-high",
+            **fields,
+        }
+        (record,) = DroidAdapter().from_hook(payload)
+        if keeps_caller:
+            return record
+        # A row written before the adapter kept the caller in session metadata. The start's
+        # event held it then too, in its payload.
+        assert record.session is not None
+        return replace(
+            record, session=replace(record.session, metadata={"permission_mode": "auto-high"})
+        )
+
+    called = {"calling_session_id": "callers-parent"}
+    records = [
+        start("callers-spawned", **called),
+        start("callers-earlier", keeps_caller=False, **called),
+        start("callers-imported", keeps_caller=False, **called),
+        start("callers-own"),
+    ]
+    written = deliver(live_cfg, records).written
+    assert written is not None
+    assert (written.sessions, written.events) == (4, 4)
+    # The judge imported the transcript of one of them. Its first entry names the caller
+    # as well, and its title gives the caller's role, which no hook says.
+    project = tmp_path / "-synthetic-callers"
+    project.mkdir()
+    entries = [
+        {
+            "type": "session_start",
+            "id": "callers-imported",
+            "title": "Worker: Build the parser",
+            "callingSessionId": "callers-parent",
+        },
+        {
+            "type": "message",
+            "id": "callers-imported-1",
+            "timestamp": "2026-11-12T10:00:01Z",
+            "message": {"role": "user", "content": [{"type": "text", "text": "Build it."}]},
+        },
+    ]
+    (project / "callers-imported.jsonl").write_text(
+        "".join(json.dumps(entry) + "\n" for entry in entries)
+    )
+    imported = import_sessions(live_cfg, tmp_path)
+    assert (imported.files, imported.errors) == (1, [])
+
+    callers = session_callers(live_cfg, live_client)
+    roles = {"callers-spawned": None, "callers-earlier": None, "callers-imported": "worker"}
+    for name, role in roles.items():
+        caller = callers[ids.session_id("factory-droid", name)]
+        assert (caller.kind, caller.role, caller.calling_session_id) == (
+            "agent",
+            role,
+            "callers-parent",
+        )
+    assert callers[ids.session_id("factory-droid", "callers-own")] == HUMAN

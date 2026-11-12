@@ -114,17 +114,30 @@ def caller_from_start(entry: Mapping[str, Any]) -> Caller:
 SESSIONS_SQL = (
     "SELECT session_id::VARCHAR, harness_session_id, CAST(metadata AS JSON)::VARCHAR FROM sessions"
 )
+# What a session's start hooks said of the session that called it.
+STARTS_SQL = (
+    "SELECT session_id::VARCHAR, max(caller) FROM ("
+    "SELECT session_id, json_extract_string(CAST(payload AS JSON), '$.calling_session_id') "
+    "AS caller FROM events WHERE kind = 'session_start') WHERE caller IS NOT NULL "
+    "GROUP BY session_id"
+)
 
 
 def session_callers(cfg: Config, client: MemoryClient) -> dict[str, Caller]:
-    """Caller per ledger session id. Sessions imported before the adapter recorded the calling
-    session fall back to the first line of the transcript the import log points at."""
+    """Caller per ledger session id, from the session's row. A row that names no caller is
+    completed from elsewhere. Where the import log points at the session's transcript, the
+    caller and the title come from its first line, as for a session imported before the
+    adapter read them there. Failing that, the caller is what the session's start hooks
+    said, which their events hold: a start hook wrote the row before the adapter kept the
+    caller there. A hook names no title, so that caller has no role."""
     transcripts = {
         Path(row["path"]).stem: Path(row["path"])
         for row in RunStore.read_jsonl(imports_log(cfg))
         if row.get("path")
     }
     _, rows = client.query(SESSIONS_SQL)
+    _, starts = client.query(STARTS_SQL)
+    said_at_start = {str(sid): str(caller) for sid, caller in starts}
     out: dict[str, Caller] = {}
     for sid, hsid, raw in rows:
         meta: dict[str, Any] = {}
@@ -136,6 +149,8 @@ def session_callers(cfg: Config, client: MemoryClient) -> dict[str, Caller]:
                 meta = {}
         if "calling_session_id" not in meta and hsid in transcripts:
             meta = {**meta, **_start_entry(transcripts[str(hsid)])}
+        if not meta.get("calling_session_id") and str(sid) in said_at_start:
+            meta = {**meta, "calling_session_id": said_at_start[str(sid)]}
         out[str(sid)] = caller_from_start(meta)
     return out
 
