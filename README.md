@@ -655,6 +655,10 @@ go vet ./...
 go build -mod=readonly -o /tmp/agent-memory-label-ui .
 ```
 
+CI runs all of these on every pull request and on every push to `main`,
+the tests and `mem smoke` on both Linux and macOS. The workflow is
+[.github/workflows/ci.yml](.github/workflows/ci.yml).
+
 ### Labeling helper cache
 
 The Python wheel and source distribution include the Go sources.

@@ -309,6 +309,11 @@ Verified against the code in the audit of 2026-11 and still open.
   nothing of its turn. Before, it held a null turn marked not complete
   (`capture/writer.py`, `adapters/droid.py`). See "What an event keeps
   of its message and turn" in [phase-1-spec.md](phase-1-spec.md).
+- A source distribution built from a working tree holds every file there
+  that `.gitignore` does not name, tracked or not: `uv build` packed an
+  untracked `.ori/state.sqlite`. The wheel holds the package alone, and
+  nothing in the repository publishes a source distribution
+  (`pyproject.toml`).
 
 Reported in the same audit and not yet checked against the code: the
 hand-maintained `ALL_TABLES` list; lockdown happening after the listener
@@ -317,7 +322,7 @@ approver not pinning question, projection, and drafter versions;
 `--similarity-floor 0` and `--min-writes 1` weakening the auto-approval
 guards; turns still in flight being admitted and then frozen; the Go
 helper's stderr being discarded; the drafter's name leaking through
-blinding; an egress error body in exception text; no CI configuration.
+blinding; an egress error body in exception text.
 
 ## Proposed directions
 
@@ -341,7 +346,6 @@ Proposed in the audit of 2026-11. None of these is approved.
 - A restore that is verified, blobs included.
 - A labeler's identity on each label, and a machine-readable report.
 - Harden admission before auto mode is used.
-- Add CI.
 
 Modules that would gain from deepening, in the order the audit ranked
 them: a ledger connection with two adapters; auto-approval in one place.

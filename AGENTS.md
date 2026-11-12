@@ -17,37 +17,37 @@ integrations with shipped adapters: `adapters/` implements Droid only, the
 one harness checked against real payloads; the wider harness roster
 includes MCP-only use and future hook work.
 
-Read the relevant spec before changing a subsystem:
+## Guides for each part
 
-- `docs/phase-1-spec.md`: capture, spool, adapters, and MCP tools.
-- `docs/judge-experiment-spec.md`: the judge design for new runs and its
-  dated "As built" notes. The logs of exp1 to exp4 are in
-  `docs/archive/judge-experiments.md`, and the definitions only stored
-  runs still use are in `docs/archive/judge-earlier-versions.md`. Check
-  the later amendments and current code before implementing.
-- `docs/admission-spec.md`: production admission, fitted approver,
-  admission review, and calibration/held-out safeguards.
-- `docs/logic-hardening-spec.md`: lifecycle, coverage, attribution,
-  `mem audit check` preflight, and rollout policy.
-- `docs/judge-how-to.md`: step-by-step experiment commands.
-- `docs/memory-utility-evaluation-spec.md`: design only for the memory
-  usefulness study; nothing is implemented from it.
-- `docs/parametric-consolidation-spec.md`: a draft research proposal, not
-  implemented functionality or authorization to add its proposed migration.
-- `docs/agent-memory-literature-review.md` and `docs/paper/`: research
-  grounding, separate from the runtime's feature contract.
-- `docs/adr/`: decisions that are hard to reverse and would surprise a
-  reader. Read the relevant one before undoing what it records.
-- `docs/archive/`: superseded design text and experiment logs, kept for
-  the record. Nothing there is a contract.
+This file holds what binds every session, including one that only runs
+commands or edits documents. What binds a change to one part of the
+repository is in an `AGENTS.md` in that part's directory. A harness may
+load such a guide by itself when it opens a file there; do not count on
+that. Read the guide yourself in these cases:
+
+| Before you | Read |
+| --- | --- |
+| change code under `src/agent_memory/` | `src/agent_memory/AGENTS.md`: schema, export, Quack, redaction, the rows every writer shares, approval, recall, relations, model calls |
+| change `adapters/` or `hooks.py`, or what a Droid hook records | `src/agent_memory/adapters/AGENTS.md` |
+| change `capture/`, `mem event`, `mem ingest`, or the spool | `src/agent_memory/capture/AGENTS.md` |
+| add an MCP tool or change a tool's inputs | `src/agent_memory/mcp_server/AGENTS.md` |
+| change `judge/` or its Go labeling helper, or run a `mem judge` command | `src/agent_memory/judge/AGENTS.md` |
+| change `admission/`, or run a `mem admit` command | `src/agent_memory/admission/AGENTS.md` and the judge guide |
+| add or change a test | `tests/AGENTS.md` and the guide of the code under test |
+| edit a document under `docs/`, or act on what one proposes | `docs/AGENTS.md`: what each document is, and which are drafts or records |
+
+A command in `cli.py` follows the guide of its subsystem. Read the relevant
+spec before changing a subsystem; each guide names it.
+
+A rule is written in one guide: here if it binds every session, otherwise
+in the directory whose code it binds. Change it there, and do not repeat it
+in a second guide.
 
 ## Development commands
 
 Use `uv`, Python 3.12+, Typer for CLI work, Rich for judge terminal output,
 Ruff for lint/format, and Pyrefly for typing. Do not substitute another
-package manager, CLI framework, or type checker. The default labeling
-interface is a Go helper under `judge/label_ui/`; its `go.mod` pins the Go
-version, and `mem judge label --plain` avoids it.
+package manager, CLI framework, or type checker.
 
 Run from the repository root:
 
@@ -60,14 +60,12 @@ uv run pyrefly check
 uv run mem smoke
 ```
 
-When you touch the Go labeling helper, also run:
-
-```sh
-cd src/agent_memory/judge/label_ui
-gofmt -l .
-go vet ./...
-go test ./...
-```
+The Go labeling helper has checks of its own, listed in
+`src/agent_memory/judge/AGENTS.md`. CI (`.github/workflows/ci.yml`) runs
+both lists on every pull request and on every push to `main`: Ruff and
+Pyrefly once, the tests and `mem smoke` on Linux and on macOS with the
+Python that `.python-version` names, and the Go checks once. When a command
+in either list changes, change it there too.
 
 Use `uv run ruff format <changed-files>` to format only files you touched.
 Ruff targets Python 3.12 with a 100-character line limit. Follow the existing
@@ -78,13 +76,8 @@ Pyrefly reports no errors and ten warnings. Each of the ten is about a
 or a tool call, where the annotation says more than the data can promise.
 Leave those conversions, and treat an eleventh warning as new.
 
-Tests use real DuckDB databases and Quack servers, not just mocks.
 Initialization installs the `fts` and `quack` extensions, so a fresh
-environment needs network access. `tests/conftest.py` supplies temporary
-homes, direct connections, live servers on free ports, and an unreachable
-server configuration; reuse these and `tests/support.py`.
-`mem smoke` uses a throwaway home; `mem smoke --live` checks an existing
-server read-only. Never use the user's live ledger as a test fixture.
+environment needs network access.
 
 For code changes, run focused regression tests first, then the checks above
 as appropriate. Report failures and skipped checks honestly. For docs-only
@@ -115,209 +108,36 @@ tests sit beside its sources in `judge/label_ui/`.
 Entry points are `mem` (`agent_memory.cli:main`) and `mem-mcp`
 (`agent_memory.mcp_server:main`).
 
-## Ledger and capture invariants
+## Rules for every session
 
 - Ledger tables are append-only. Corrections use superseding memories or
   review actions, never an in-place update or delete. Current status is
   derived through views such as `memory_status` and `active_memories`.
-- Add schema changes as new `NNNN_name.sql` files in `migrations/`.
-  Applied migrations are checksummed and immutable. The root
-  `example-memory-db-schema.sql` is inspiration, not the runtime schema.
 - `mem serve` owns the database file during normal operation. Clients use
   `MemoryClient` over Quack. Direct admin access and migrations require
   stopping that server; do not bypass the file lock.
-- A Parquet export holds the ledger as it was at one moment. Copy tables
-  only through `export_snapshot` (one transaction on the database file) or
-  `MemoryClient.export` (a client's statements each see the server as it
-  is then, so it compares its copies with one count of every table and
-  copies again). Both rely on every table being append-only.
-- Quack in DuckDB 2.0.0 does not forward bound parameters. Preserve the
-  client's parameterized local staging tables and streamed inserts.
-  `VARIANT` values are encoded through JSON. Insert parents before children
-  in separate statements where same-table foreign keys require it.
-- Keep client writable-table lists and the `mem_authorize` migration policy
-  consistent. Do not weaken the policy to make a query pass. Text that must
-  enter SQL uses the existing `sql_literal` helper, never raw interpolation.
-- Redact before any persistent write, including spool, blobs, metadata,
-  and projections; redact spooled data again at replay. Keep tokens out of
-  errors and traceback locals. Preserve loopback-only serving, private file
-  permissions, and the server's external-access/configuration lockdown.
-- Capture IDs are deterministic so transcript reimports, overlapping hooks,
-  retries, and spool replay do not duplicate events. A server outage should
-  queue redacted records rather than break the agent's hook. Delivery never
-  drops a record: one the ledger rejects is kept under `spool/failed/` with
-  a `capture_error` event while the rest of its batch is written. `mem
-  event` runs as a hook, so it prints nothing on stdout and never exits 2.
-  Add regression coverage for replay, partial failures, and parent/result
-  linkage.
-- For Droid the transcript is the record of replies, tool calls,
-  compactions, and what a subagent reports when its task is finished. A
-  Droid hook payload carries no id for a tool call or for a finished
-  task (checked against real payloads), so `PostToolUse` and
-  `SubagentStop` record nothing and `PreCompact` records a note. Do not
-  make a hook write an event the transcript also holds unless both carry
-  the same harness id, as a prompt's `message_id` and a new session's id
-  are. A hook-only event is keyed on `message_id` only when that id
-  places it in the session (a resume, a request to compact). One that a
-  message can raise several times, each saying something else, such as a
-  notification, is keyed on the time the hook ran.
-- One hook command does all of Droid's capture. `mem event` records the
-  hook's own event and, at the hook events the adapter names
-  (`transcript_due`: `Stop` and `SessionEnd`), imports what the
-  transcript has gained since its last import. Do not give a hook a
-  second command to run: `mem ingest` prints on stdout and can exit 2.
-  The hook events to install at come from the adapter
-  (`DroidAdapter.hook_events`); do not list them a second time.
-- Droid's hooks file is its user's. `mem hooks` changes only a hook
-  whose whole command is `mem ... event ...`. Every other hook stays as
-  it is and where it is, also one that runs `mem event` inside a longer
-  command. The file is written in one step, and one that is not in
-  Droid's format is refused. Test `mem hooks` with `--file` in a
-  temporary directory, never against `~/.factory/hooks.json`.
-- Write an adapter from payloads and transcripts recorded from the
-  harness itself, never from its documentation alone. Droid's real
-  payloads contradicted the hook mapping written from its documentation,
-  and the Vibe adapter, written the same way and never checked, was
-  removed.
-- Session and event rows come from `capture/session.py`, whoever writes
-  them: the capture writer, the MCP tools, `mem graph`, `mem review`, and
-  admission. A new writer opens a `LedgerSession` and builds its events
-  with `event_row`; it does not assemble either row itself.
-- Only the `human` agent approves a memory. An agent that could approve
-  what it wrote from tool output would hold the key to its own
-  quarantine. The check (`lifecycle.check_asker`) is made where an
-  approval is asked for: the `review` tool and spool replay. Do not move
-  it into `LifecyclePlan.review`, which also writes the approval an
-  entity merge carries over and admission's approvals. `mem-mcp` refuses
-  to run as `human`, and `mem review approve` takes its answer from a
-  terminal only. Do not add a route by which an agent's session approves.
-- Tool-derived memories start quarantined. Every recall reads active
-  memories and records a retrieval, a miss included, whatever its
-  strategy: a query, a walk of relations from an entity, or the listing
-  of every relation that `mem graph entities` and `resolve` read.
-  Add a new way of choosing memories as a strategy for `run_recall`, never
-  as a read beside it. Preserve `retrieval_items`, citations, and
-  `why_answer` coverage.
-- Relations are ordinary `fact` memories with normalized triple keys and
-  `metadata.graph`. Entity merges supersede or retire relations and preserve
-  sources and aliases. Do not introduce separate graph tables casually.
-
-## Judge workflow and lessons from previous runs
-
-The experiment must stay separate from production. Never remove
-`ensure_experiment_home`. Experiment commands never write lessons into the
-memory ledger; lessons stay in run files. Admission lives in `admission/`:
-it reads human v4 experiment labels and admits lessons as memories through
-the lifecycle, quarantined unless a human approves them or auto mode is
-on, which the held-out bar has to allow. Nothing under `judge/` imports
-admission. Verdicts use agent `judge` and may be recorded as `decision`
-events without copying projection or lesson text into them. Admission
-writes as agent `admission`, never as `judge`.
-
-`--home` and `--port` are root options, before the subcommand. Every
-command resolves them through `config.command_config`; the judge and
-admission commands add their own checks to what it returns. A separate
-home does not automatically select a different port. Use the same explicit
-home and port for the experiment server and its clients, for example:
-
-```sh
-# Foreground server, in one terminal after initializing this home.
-uv run mem --home "$HOME/.agent-memory-judge" --port 9495 serve
-# Client, in another terminal.
-uv run mem --home "$HOME/.agent-memory-judge" --port 9495 judge status --run exp3
-```
-
-`serve` intentionally stays running. `init` is idempotent, not a reset;
-do not delete existing homes or runs to resolve a workflow mistake.
-
-- Distinguish a human request, parent-agent instructions, and harness
-  notifications. A transcript's `user` role does not prove a human wrote
-  it. Read full blob-backed messages when needed to tell who wrote one.
-- Keep interrupted/incomplete turns distinct from failures. Preserve
-  `closed_by` and clean controls. The drafter's view excludes the next
-  message so unrelated steering is not fused into a lesson about the turn.
-- The turn questions are asked once per turn; the draft questions once
-  per draft. Reports and stored rows still call them Stage A and Stage B.
-  Current write gates are grounded, faithful, exact rule supported,
-  generalizable, and not already enforced. A gate the judge leaves
-  unanswered is never read as a probability; it sends the verdict to
-  review. A failed tool call can be intentional; a useful lesson need
-  not describe a failure. Harness rules, project docs, and tooling may
-  already enforce a lesson.
-- Preserve seeded sampling, calibration/held-out separation, versioned
-  projections/questions/drafters, hashes, and resumable per-item/per-drafter
-  outputs. Older question-set runs remain read-only for draft/decide/label,
-  but their reports must still reproduce the historical results. A report
-  refuses a run whose verdicts were judged with another question set.
-- Finish drafting before a long decide run. Do not change its drafts
-  underneath it. Labeling and deciding can run independently, but freeze
-  thresholds only after the intended calibration labels are complete.
-  `report --freeze` refuses while a calibration item has no label or a
-  label with questions left; `--partial` overrides that and the run
-  records how many items were short. Keep "fully labeled" meaning what a
-  sitting would still ask (`labeling.questions_left`), not a second
-  definition.
-- Read and write a run's files through `RunStore` only. The rules that
-  keep them whole are at the top of `judge/store.py`: one command at a
-  time adds rows to a file, so a second `draft`, or a `decide` for a
-  judge another `decide` is asking, is refused at once; a label save adds
-  one label to what is on disk and is refused if another sitting saved
-  that item first. Admission keeps its files through the same code, with
-  its stricter rules in `admission/store.py`.
-- Labeling is human ground truth, not an LLM's substitute judgment. Keep
-  labels blinded, correctable, and resumable with edit history. Each group
-  of questions must clearly identify its subject (turn, draft A/B, or
-  comparison), with the relevant lesson visible. Test the rendered output
-  and navigation, not only label serialization.
-- Labeling and admission review each have their own controller, and one
-  loop shows either's screens (`drive` in `judge/label_frontend.py`). It
-  chooses the plain interface or the Go helper, stops the controller on
-  an interrupt, and closes the helper. Do not write that loop a second
-  time; a test that replaces a frontend replaces it in `label_frontend`.
-- Model calls must handle timeouts, empty output, and token exhaustion
-  without losing finished items. A call that must return a JSON object
-  goes through `model_call.py`, which owns its attempts: the judge, the
-  drafter, and `mem graph resolve` hand it a model server and say what to
-  ask. Do not build a request or a further attempt beside it, and never
-  choose an attempt from the words of an error. Preserve the bound on
-  attempts, the ability to run a failed item again, and latency/cost
-  accounting across attempts. Repeating a seeded request with the same
-  insufficient budget is not a fix.
-- A draft or verdict that fails is skipped, and the next command asks it
-  again; `draft`, `decide`, and `live` then exit 1. A command stops early
-  only when the fault cannot be the items': after three failures in a row
-  with the model server unreachable, or from a drafter or judge that has
-  written nothing in the run yet. Do not let one item's failure end a run,
-  and do not count a timeout or an HTTP rejection against the server:
-  either can be the item's doing.
+- Never use the user's live ledger as a test fixture. `mem smoke` uses a
+  throwaway home; `mem smoke --live` checks an existing server read-only.
+- `init` is idempotent, not a reset; do not delete existing homes or runs
+  to resolve a workflow mistake.
 - Prefer local model servers. Hosted judge/drafter calls require explicit
   user permission and `AGENT_MEMORY_JUDGE_ALLOW_REMOTE=1`; redaction does
-  not make session text public. Mock model HTTP in regression tests rather
-  than making paid or private-data-bearing calls.
+  not make session text public.
+- Do not commit private transcripts, experiment homes, tokens, or model
+  outputs as fixtures; use small synthetic/redacted examples.
 
-## Change discipline and research
+## Change discipline
 
 Inspect the working tree before editing and leave unrelated user changes
 alone. Reproduce reported bugs and add regression tests through the affected
-CLI, MCP, capture, or judge path. When adding an MCP tool or changing a
-tool's inputs, update the registration assertions, the inputs listed in
-`tests/test_mcp.py` (`TOOL_INPUTS`), and the usage docs too; graph work
-previously exposed this gap. `build_server` hands each input to
-`MemoryTools` by name.
+CLI, MCP, capture, or judge path.
 
 Update the relevant spec's implemented/as-built notes when behavior changes.
 Use the terms in `GLOSSARY.md`, and update it when a term changes. Add a
 record under `docs/adr/` only for a decision that is hard to reverse,
-surprising without context, and the result of a real trade-off. A defect
-you find and do not fix goes into `docs/roadmap.md`.
+surprising without context, and the result of a real trade-off, and read
+the relevant record before undoing what it records. A defect you find and
+do not fix goes into `docs/roadmap.md`.
 Existing commit messages use Conventional Commits, for example
 `fix(judge): ...` and `test(graph): ...`; explain the failure and why the
 change fixes it in the body when useful.
-
-For research edits, verify claims and bibliography metadata against primary
-sources. Separate peer-reviewed results, preprints, and vendor claims;
-state what remains unverified rather than inheriting an earlier session's
-confidence. If editing the paper, rebuild `docs/paper/paper.pdf` from the
-LaTeX/BibTeX sources and check citations and layout warnings. Do not commit
-private transcripts, experiment homes, tokens, or model outputs as fixtures;
-use small synthetic/redacted examples.

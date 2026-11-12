@@ -13,6 +13,13 @@ from agent_memory.smoke import free_port, synthetic_chain
 from tests.support import Chain, insert_rows, new_id
 
 
+@pytest.fixture(autouse=True)
+def plain_cli_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Typer styles its help and usage errors when GITHUB_ACTIONS, FORCE_COLOR, or PY_COLORS is
+    set. The escape codes split an option's name, and tests look for that name in the text."""
+    monkeypatch.setattr("typer.rich_utils.FORCE_TERMINAL", False)
+
+
 @pytest.fixture
 def cfg(tmp_path: Path) -> Config:
     cfg = Config(home=tmp_path / "home", port=free_port())
