@@ -112,7 +112,9 @@ Two tags, both deterministic:
   …). Read from `callingSessionId` on the transcript's `session_start`
   entry; the adapter now records it in session metadata, and sessions
   imported before that are resolved from the transcript the import log
-  points at.
+  points at. A session captured through Droid's hooks gets it from its
+  `SessionStart` hook, which names the calling session and no title, so
+  such a caller has no role.
 - **Author** of each user message: `harness` when, after removing
   `<system-reminder>` and `<system-notification>` blocks, nothing is left or
   what is left is a harness notice ("Request interrupted by user", "Script
