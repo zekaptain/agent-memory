@@ -68,17 +68,33 @@ To run a full end-to-end check without using your database, run
 
 ### Optional: install commands for use outside this repository
 
-MCP clients and the login service need `mem` and `mem-mcp` on their
-`PATH`:
+Hooks, MCP clients, and the login service run `mem` and `mem-mcp` from
+outside this checkout. Install a copy of both, built from the checkout
+and held to the dependency versions in `uv.lock`:
 
 ```sh
-uv tool install --editable .
+uv export --no-dev --no-emit-project --no-hashes --frozen --quiet \
+    --output-file /tmp/agent-memory-constraints.txt
+uv tool install --reinstall --python "$(cat .python-version)" \
+    --constraints /tmp/agent-memory-constraints.txt --from . agent-memory
 ```
 
-After installation, you can use `mem` instead of `uv run mem`. Hooks do
-not need the `PATH`: `mem hooks install` writes the full path of the
-`mem` it runs from. Run it from the installed `mem` if the hooks should
-not depend on this checkout's `.venv`.
+Without the constraints, `uv tool install` resolves the dependencies
+anew, to versions the tests may not have run on.
+
+After installation, you can use `mem` instead of `uv run mem`. The copy
+does not change when the checkout does, so a hook and the server keep
+running the version you installed. Run the two commands again to bring
+the copy up to date. If the update adds a migration, stop the server
+first and run `mem migrate` before you start it again: `mem serve`
+refuses to start while a migration is pending.
+
+`uv tool install --editable .` installs commands that run the checkout's
+code as it is at that moment. That suits development. A hook or a server
+installed that way runs whatever the checkout has checked out.
+
+Hooks do not need the `PATH`: `mem hooks install` writes the full path
+of the `mem` it runs from, so run it from the installed `mem`.
 
 ## Choose a home and port
 
@@ -134,13 +150,16 @@ blocks; `--include-thinking` on its transcript adds them.
 ### Wire capture into hooks
 
 `mem hooks install` writes capture into Droid's hooks file,
-`~/.factory/hooks.json`. Initialize the home and start the server first
-(see the [quick start](#quick-start)). Without a server, a hook keeps
-what it records in the spool.
+`~/.factory/hooks.json`. Install the commands first (see
+[install commands](#optional-install-commands-for-use-outside-this-repository)),
+so that a hook runs the installed copy and not this checkout's `.venv`.
+Initialize the home and start the server too (see the
+[quick start](#quick-start)). Without a server, a hook keeps what it
+records in the spool.
 
 ```sh
-uv run mem hooks install
-uv run mem hooks status
+mem hooks install
+mem hooks status
 ```
 
 `install` adds one hook at each of six hook events: `SessionStart`,
@@ -151,7 +170,7 @@ runs with Droid's environment and not your shell's. To change the home,
 the port, or a flag, run `install` again:
 
 ```sh
-uv run mem --home "$HOME/.agent-memory" --port 9494 hooks install --keep-raw
+mem --home "$HOME/.agent-memory" --port 9494 hooks install --keep-raw
 ```
 
 - Every other hook in the file stays as it is. `install` replaces only a
@@ -230,9 +249,9 @@ Content over 16 KiB goes to `blobs/`; the event keeps a 4 KiB prefix and hash.
 
 ## Connect your agent through MCP
 
-Install `mem-mcp` on the harness's `PATH` using
-`uv tool install --editable .`, then add a stdio server to its MCP
-configuration. For example:
+Install `mem-mcp` on the harness's `PATH` (see
+[install commands](#optional-install-commands-for-use-outside-this-repository)),
+then add a stdio server to its MCP configuration. For example:
 
 ```json
 {
@@ -499,10 +518,11 @@ Do not delete a home or run reverse migrations to resolve a failed upgrade.
 
 Stop any manually started server first. Run these steps from the repository root.
 
-1. Install the commands and initialize the home:
+1. Install the commands (see
+   [install commands](#optional-install-commands-for-use-outside-this-repository))
+   and initialize the home:
 
    ```sh
-   uv tool install --editable .
    mem init
    ```
 
@@ -529,7 +549,8 @@ Logs go to `~/.agent-memory/serve.log`. To stop the service:
 launchctl bootout "gui/$(id -u)/com.agent-memory.serve"
 ```
 
-For a migration, stop the service, run `mem migrate`, then repeat step 3.
+For a migration, stop the service, install the commands again, run
+`mem migrate`, then repeat step 3.
 
 ## Security
 
