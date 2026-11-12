@@ -111,8 +111,8 @@ class DroidAdapter:
         source_key = identity.note_key(event, key_tail)
         if event == "SessionStart":
             # A new session's start is the transcript's first entry too, and Droid gives that
-            # entry the session's id. Any other start (resume, clear, compact) is the hook's
-            # alone.
+            # entry the session's id. `/clear` starts a new session, so its start says
+            # `startup` as well. A start with any other source is the hook's alone.
             source_key = (
                 identity.session_start_key(str(hsid))
                 if payload.get("source") == "startup"

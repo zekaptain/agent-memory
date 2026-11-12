@@ -28,8 +28,8 @@ As of 2026-11-11.
 
 The next approved work should finish verifying Droid capture end to end,
 then build and run the local usefulness experiment. Droid's hooks were
-checked against real payloads on 2026-11-11, all but a `SessionStart`
-after `/clear`. `mem hooks install` and the hooks it writes were run
+checked against real payloads on 2026-11-11, all of them recorded in the
+Factory app. `mem hooks install` and the hooks it writes were run
 against a copy of a real hooks file and a real transcript. No session in
 a running Droid has yet been captured through installed hooks. Retrieval
 tuning and wider graph use follow measured failures.
@@ -133,8 +133,8 @@ read-only view.
 ## Verified harness behavior
 
 Checked against the vendor documentation on 2026-10-25. Droid's hooks
-were checked against real payloads on 2026-11-11, all but a
-`SessionStart` after `/clear`. `PreToolUse`, `PostToolUse`, and
+were checked against real payloads on 2026-11-11, all of them recorded
+in the Factory app. `PreToolUse`, `PostToolUse`, and
 `Notification` carry no `message_id` and no id for a tool call.
 `SubagentStop` carries the name and the result of a subagent's finished
 task and no id, and the session that started the task gains a transcript
@@ -143,17 +143,19 @@ compaction's anchor message. `PostToolUse` does not
 run for a call made inside a Script. `Stop` runs after the reply is
 written and before the turn's outcome is. The `SessionStart` of a new
 session carries no `message_id`; a resume carries that of the session's
-last reply. `SessionEnd` carries that of the session's last message and
-runs 30 minutes after a session was last used, so a session can end
-more than once. Droid writes an entry to the transcript for every hook
+last reply. `/clear` starts a new session, with a new id and its own
+transcript, and its `SessionStart` says `startup`. `SessionEnd` carries
+the `message_id` of the session's last message and runs 30 minutes
+after a session was last used, so a session can end more than once.
+Droid writes an entry to the transcript for every hook
 command it runs. A session that was running when `hooks.json` changed
 ran the new hooks ten seconds later, where Droid's documentation says a
 session reads its hooks when it starts (seen once, in the Factory app).
 See "What a Droid hook carries", "What Droid's turn and session hooks
 carry", "When a Droid session ends, and what its transcript says of
-hooks", "`mem hooks` writes capture into Droid's hooks file", and "What
-Droid's `SubagentStop` hook carries" in
-[phase-1-spec.md](phase-1-spec.md).
+hooks", "`mem hooks` writes capture into Droid's hooks file", "What
+Droid's `SubagentStop` hook carries", and "What `/clear` starts in
+Droid" in [phase-1-spec.md](phase-1-spec.md).
 
 | Harness | Events | Payload | Gaps for capture |
 |---------|--------|---------|------------------|
@@ -223,10 +225,13 @@ Verified against the code in the audit of 2026-11 and still open.
 - A memory that admission wrote and a human approves or retires with
   `mem review` gives the fitted approver no example. Only
   `mem admit review` records one (`review.py`).
-- A `SessionStart` after `/clear` has not been checked against a real
-  payload. It is not known whether `/clear` starts a session with a new
-  id, whose start the hook and the transcript's first entry would then
-  each record (`adapters/droid.py`).
+- Every Droid payload the adapter was checked against was recorded in
+  the Factory app. Droid in a terminal has not been recorded. In the
+  app `/clear` starts a new session whose `SessionStart` says `startup`,
+  which the hook and the transcript's first entry record as one event.
+  A `SessionStart` that named a new session and gave `clear` as its
+  source, which Droid's documentation lists, would be recorded twice
+  (`adapters/droid.py`).
 - No session in a running Droid has been captured through installed
   hooks. `mem hooks install` and the hooks it writes were run against a
   copy of a real hooks file, with payloads written by hand (`hooks.py`).
@@ -319,9 +324,9 @@ blinding; an egress error body in exception text; no CI configuration.
 Proposed in the audit of 2026-11. None of these is approved.
 
 - Finish capture: a session captured end to end through hooks installed
-  in a running Droid, with a `SessionStart` after `/clear` checked
-  against a real payload. The installer and the import at `Stop` and
-  `SessionEnd` were built on 2026-11-11.
+  in a running Droid, and Droid in a terminal checked against real
+  payloads as the Factory app was. The installer and the import at
+  `Stop` and `SessionEnd` were built on 2026-11-11.
 - Keep `mem event` from loading what capture does not use, which would
   about halve a hook's start-up.
 - An adapter for Ori's runtime, as the second harness (see "One harness

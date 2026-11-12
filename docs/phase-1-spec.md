@@ -238,12 +238,12 @@ a prompt's message ID, and the session ID for the start of a new session
 event name plus the message ID when Droid sends one that places the event
 in the session (`SessionStart` with any other source, `SessionEnd`,
 `PreCompact`), and otherwise the time the hook ran. Such a `SessionStart`
-key also includes its source (resume/clear/compact).
+key also includes its source. `resume` is the only such source recorded.
 Mapping:
 
 | hook event | kind | notes |
 |---|---|---|
-| SessionStart | `session_start` | payload `source` (startup/resume/clear/compact); a `startup` is the event the transcript's `session_start` entry records; the `sessions` row is created once |
+| SessionStart | `session_start` | payload `source`: a `startup`, which `/clear` raises too, is the event the transcript's `session_start` entry records, and a `resume` is the hook's alone; the `sessions` row is created once |
 | SessionEnd | `session_end` | payload `reason` and the `message_id` of the session's last message. Droid ends a session left idle, so a session can end more than once. The transcript is imported at this hook event too |
 | UserPromptSubmit | `user_msg` | content = prompt |
 | PreToolUse | skipped by default | `--record-pre-tool` records a note, for debugging |
@@ -934,8 +934,8 @@ start was two `session_start` events.
 
 `SessionEnd` ran later the same day and has the next section.
 `SubagentStop` did not run while the probe was recording, and neither
-did a `SessionStart` after `/clear`. `SubagentStop` ran later; see
-"What Droid's `SubagentStop` hook carries" below.
+did a `SessionStart` after `/clear`. Both ran later; see "What Droid's
+`SubagentStop` hook carries" and "What `/clear` starts in Droid" below.
 
 Regressions are in `tests/test_adapters.py` and
 `tests/test_capture_identity.py`.
@@ -1277,6 +1277,45 @@ nothing to tie the note to the message.
 - None of the 3,691 payloads carries `turn_id`, `channel`, or
   `final_message_id`, the three from `SubagentStop` included.
 
-A `SessionStart` after `/clear` has still not been recorded.
+A `SessionStart` after `/clear` was recorded later and has the next
+section.
 
 Regressions are in `tests/test_adapters.py` and `tests/test_hooks.py`.
+
+### What `/clear` starts in Droid (2026-11-11)
+
+`/clear` was typed twice in the Factory app, each time followed by one
+message. The probe recorded the second. It had reached its size limit
+and stopped writing before the first, which is known from its transcript
+alone. The second brought the probe to 3,719 payloads when these counts
+were taken.
+
+| hook | payloads | ids in the payload | the transcript when the hook runs |
+|---|---|---|---|
+| `SessionStart` after `/clear`, `source` `startup` | 1 | none | The `session_start` entry is there and nothing else, and its id is the session's id. |
+
+- Each `/clear` started a session with a new id and its own transcript.
+  The `session_start` entry names no other session: it has no `parent`
+  and no `forkedAtMessageId`.
+- The payload names the new session. It has the fields every recorded
+  `startup` payload has (`session_id`, `transcript_path`, `cwd`,
+  `hook_event_name`, `permission_mode`, `source`, `CLAUDE_ENV_FILE`) and
+  no others: no `message_id` and no `previous_session_id`.
+- No `SessionEnd` ran in the four minutes after it, for any session.
+- No payload says `clear`. The 15 `SessionStart` payloads are 9
+  `startup` and 6 `resume`, and the 10 `SessionEnd` payloads all give
+  `other` as their `reason`.
+
+The adapter needed no change. A start after `/clear` is a new session's
+start, so the hook and the import write one event, keyed on the
+session's id. The ledger holds nothing that ties the new session to the
+one `/clear` left, because neither the payload nor the transcript does.
+
+Every one of the 3,719 payloads came from the Factory app: the
+environment of each hook held the app's `FACTORY_DESKTOP_*` variables.
+Droid in a terminal has not been recorded, and its `/clear` may say
+something else; see [roadmap.md](roadmap.md#known-defects).
+
+The regression is
+`test_a_session_start_is_one_event_when_a_hook_and_the_transcript_report_it`
+in `tests/test_capture_identity.py`.
