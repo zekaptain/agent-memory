@@ -39,16 +39,36 @@ Recording what happened in a harness session into the ledger.
 _Avoid_: Ingestion, logging, tracking
 
 **Session**:
-One stretch of activity by one agent, recorded in the ledger as a unit. A conversation in a harness is the usual kind; a judge run, a day of admission, and a graph or review command run at the CLI are sessions too.
+One stretch of activity by one agent, recorded in the ledger as a unit. A conversation in a harness is the usual kind; a judge run, an admission day, and a graph or review command run at the CLI are sessions too.
 _Avoid_: Thread, chat, conversation (which is only one kind of session)
 
 **Event**:
-One thing that happened in a session: a message, a tool call or its result, a recall, a memory write, a compaction, a decision, or an outcome.
+One thing that happened in a session: a message, a tool call or its result, a recall, a memory write, a compaction, a judge's verdict, or an outcome.
 _Avoid_: Log entry, record, message (for anything that is not a message)
 
 **Turn**:
 A user message and everything the agent did in response, up to the point where work on it closed.
 _Avoid_: Exchange, round, step
+
+**Outcome**:
+The harness's record of how a turn ended. A turn closes at its outcome, or without one at the next user message or at the end of the session.
+_Avoid_: Result, action (which is what is done with a lesson), verdict
+
+**Reply**:
+An agent's message to its user.
+_Avoid_: Answer (kept only in stored names; an answer is what a judge or a labeler gives to a question), response, output, assistant message
+
+**Caller**:
+Who started a session: a human, or an agent working in another session.
+_Avoid_: Parent (for a human), owner, user
+
+**Spawned session**:
+A session whose caller is an agent: it was started from another session to do one task and report back.
+_Avoid_: Subagent session, child session, task (Droid's name for the tool that starts one)
+
+**Author**:
+Who wrote a message that a transcript gives the role of user: a human, a parent agent, or the harness. The role alone does not say which.
+_Avoid_: Provenance (which is the chain behind a reply), speaker, user (for the author)
 
 **Capture record**:
 The normalised form of one event on its way into the ledger, the same for every harness.
@@ -65,6 +85,10 @@ _Avoid_: Event (bare, for this), hook (for the occasion), trigger, lifecycle eve
 **Transcript**:
 The harness's own file of a session. Where a harness writes one, it is the record of replies, tool calls, and compactions, and importing it is how they reach the ledger.
 _Avoid_: Log, history, session file
+
+**Import**:
+Capturing from a transcript: reading what it holds, or what it has gained since the last import, into the ledger.
+_Avoid_: Ingest (kept only as the name of the command), sync, load
 
 **Source key**:
 The harness's own identifier for an event, or, for an event the harness does not identify, the moment its hook ran. Capturing the same source key twice yields one event, not two.
@@ -168,6 +192,10 @@ _Avoid_: Update, edit
 The durable record that a correction has replaced its predecessor. Only acceptance makes the predecessor superseded.
 _Avoid_: Approval (approval concerns one memory; acceptance concerns a replacement)
 
+**Review action**:
+A recorded act on one memory after it was written: quarantining it, approving it, retiring it, confirming that it still holds, or flagging that it contradicts another. Review actions are how a memory's status changes while the memory itself stays as written.
+_Avoid_: Review (bare, which is an action on a lesson), memory action, moderation
+
 **Approval**:
 The decision that lets a quarantined memory be recalled. A human gives it, never an agent; the only approvals that are not a human's are a carried approval and the approver's in auto mode.
 _Avoid_: Acceptance (which concerns a replacement), confirmation (which says a memory still holds and releases nothing)
@@ -175,6 +203,10 @@ _Avoid_: Acceptance (which concerns a replacement), confirmation (which says a m
 **Carried approval**:
 The approval a relation keeps when an entity merge rewrites it: the new relation is approved because the one it replaces was.
 _Avoid_: Inherited approval, re-approval
+
+**Awaiting approval**:
+Said of a memory whose standing an approval would change: a quarantined memory, or a correction from a tool's output that has not been accepted.
+_Avoid_: Waiting (bare, which is said of records in the spool), review queue, unreviewed, pending (which also covers a memory that starts in the future)
 
 ### Recall and audit
 
@@ -199,8 +231,24 @@ A retrieval that returned nothing. It is recorded like any other retrieval.
 _Avoid_: Empty result
 
 **Citation**:
-An agent's declaration of which retrieval, memories, or other context it used.
+An agent's declaration of which retrieval, memories, or other context a reply used.
 _Avoid_: Reference, link
+
+**Placeholder**:
+An event that stands for a reply the ledger does not hold yet. A citation made before its reply is captured points at one.
+_Avoid_: Stub, dummy event, pending reply
+
+**Attribution**:
+Working out which captured reply a citation was made for. It rests on what capture recorded about the turn, and it stays unresolved when that is not enough. It shows what the agent declared it used, never what caused the reply.
+_Avoid_: Causal attribution, matching, inference
+
+**Binding**:
+The record that a placeholder turned out to be a particular captured reply. A later binding can replace an earlier one.
+_Avoid_: Answer binding (kept only in stored names), link, match
+
+**Provenance**:
+The chain from a reply back to what the agent was shown and where that came from: its citations, the retrievals behind them, the memories returned, and the events those memories were written from.
+_Avoid_: Lineage, audit trail, authorship (who wrote a message is its author)
 
 ### Relation graph
 
@@ -230,13 +278,17 @@ _Avoid_: Rename, resolution
 An offline study of whether a model can pick out the turns worth learning from, measured against human labels. It never writes memories.
 _Avoid_: Eval, benchmark
 
+**Judge**:
+A model, or a fixed set of rules, that answers the turn questions and the draft questions.
+_Avoid_: Backend (kept only as the name of the option and in stored names), decision model, classifier, approver
+
 **Run**:
 One pass of the judge experiment over one sample of turns, together with everything produced about them: drafts, verdicts, labels, and a report.
 _Avoid_: Experiment (the study as a whole), batch, job
 
 **Item**:
 One turn sampled into a run.
-_Avoid_: Candidate (kept only as the name of the command that samples them), example, case
+_Avoid_: Candidate (kept only as the name of the command that samples them), example (which is what the approver is fitted on), case
 
 **Projection**:
 The bounded, deterministic text of a turn that a judge or drafter is shown.
@@ -258,6 +310,10 @@ _Avoid_: Evidence, reason, justification
 A model that writes a lesson from one turn, citing the evidence it relied on, or declines.
 _Avoid_: Writer, summarizer, extractor
 
+**Draft**:
+What one drafter produced for one item: a lesson, or a decline when it found nothing worth keeping.
+_Avoid_: Lesson (a draft that declines holds none), proposal, candidate
+
 **Trigger**:
 A deterministic signal, read only from what the ledger records, that a turn may hold something worth learning from.
 _Avoid_: Heuristic, detector
@@ -272,11 +328,15 @@ _Avoid_: Negative, baseline
 
 **Verdict**:
 A judge's recorded answers about one draft of one turn, including its answers about the turn itself.
-_Avoid_: Judgment, result, score
+_Avoid_: Judgment, result, score, decision (kept only as the kind of event that holds a verdict in the ledger)
 
 **Action**:
-What follows from reading a verdict at a set of thresholds: write the lesson, send it to review, or discard it. The same verdict can give a different action at different thresholds.
-_Avoid_: Outcome, result
+What is done with a lesson: write it, send it to review, or discard it. A verdict gives an action when it is read at a set of thresholds, so the same verdict can give a different action at different thresholds. The approver's score gives one too.
+_Avoid_: Outcome, result, decision (kept only in stored report headings)
+
+**Review**:
+The action between write and discard: the lesson is kept for a human to decide. In admission the lesson becomes a quarantined memory.
+_Avoid_: Hold, escalate, human review
 
 **Turn questions**:
 The questions a judge answers about a turn itself. They are asked once for a turn, and every verdict of that turn carries the answers.
@@ -286,6 +346,26 @@ _Avoid_: Stage A (kept only in report headings and stored verdicts, which alread
 The questions a judge answers about one draft of a turn.
 _Avoid_: Stage B (kept only in report headings, which already say it)
 
+**Question set**:
+One version of the turn questions and draft questions. A run is judged, labeled, and reported with the one it was built with.
+_Avoid_: Rubric, schema, questions version
+
+**Answer**:
+What a judge or a labeler gives to one question.
+_Avoid_: Reply (which is an agent's message to its user), response, score
+
+**Write gate**:
+A draft question whose answer must pass its threshold before the lesson is written.
+_Avoid_: Gate (for the approver, for the held-out bar, or for a threshold on a judge's confidence), check, filter, criterion
+
+**Threshold**:
+The value a judge's answer, or the approver's score, is compared with to choose an action.
+_Avoid_: Cut, cutoff, gate
+
+**Review band**:
+The range of values that give the action review: a judge's answer too close to its threshold, or an approver's score between its two thresholds.
+_Avoid_: Uncertainty band, grey zone, margin
+
 **Unanswered question**:
 A question a judge was asked but gave no usable answer to. It is evidence of nothing, so no lesson is written on the strength of one.
 _Avoid_: Missing answer, fallback, default answer, no answer (which means the question was never asked)
@@ -294,12 +374,20 @@ _Avoid_: Missing answer, fallback, default answer, no answer (which means the qu
 A human's answers to the same questions, treated as ground truth.
 _Avoid_: Annotation, rating
 
+**Labeler**:
+The person whose answers become labels.
+_Avoid_: Reviewer, rater, annotator
+
+**Sitting**:
+One stretch of a person's work at labeling or at admission review, from opening it to quitting.
+_Avoid_: Session (which is a unit recorded in the ledger), labeling session, pass
+
 **Calibration split**:
-The labelled turns used to choose thresholds.
+The labeled turns used to choose thresholds.
 _Avoid_: Training set, dev set
 
 **Held-out split**:
-The labelled turns set aside to score the chosen thresholds, never used to choose them.
+The labeled turns set aside to score the chosen thresholds, never used to choose them.
 _Avoid_: Test set, validation set
 
 **Freeze**:
@@ -320,17 +408,33 @@ _Avoid_: Sub-run, child run
 Turning lessons drafted from captured production turns into memories, quarantined unless a human or the approver lets them through.
 _Avoid_: Promotion, ingestion, consolidation
 
+**Admission day**:
+One day's captured turns as admission works through them, together with the approver, drafter, and mode that were in force when the day began.
+_Avoid_: Run (admission works in days), batch, live day (which belongs to the judge experiment)
+
 **Approver**:
-A model fitted on human labels that scores whether a drafted lesson should be admitted.
+A model fitted on examples that scores whether a drafted lesson should be admitted.
 _Avoid_: Classifier, gate, judge
 
+**Example**:
+A lesson together with a human's judgment of it, which the approver is fitted on. Examples come from a run's labels and from admission review.
+_Avoid_: Label (which belongs to a run), training row, sample
+
+**Admission review**:
+A human's blind rating of the lessons of an admission day, a sample of the discarded ones among them. Each answer approves or retires the memory the lesson became, and is kept for the approver to be fitted on.
+_Avoid_: Review (bare), review queue, labeling (which belongs to the judge experiment)
+
 **Shadow mode**:
-Admission in which the approver scores every lesson but every memory stays quarantined for a human to review.
+Admission in which the approver scores every lesson but every memory stays quarantined until a human approves it.
 _Avoid_: Dry run
 
 **Auto mode**:
 Admission in which the approver's approval makes a memory active without a human.
 _Avoid_: Autopilot, unattended mode
+
+**Held-out bar**:
+What the approver's results on the held-out split must reach before auto mode may be turned on.
+_Avoid_: Auto gate, held-out gate, precision bar
 
 ### Model calls
 
@@ -343,8 +447,8 @@ One request to a model within a model call, and what came back. A later attempt 
 _Avoid_: Retry (which returns rejected records to the spool), try
 
 **Model server**:
-The program a model call is sent to, which runs the model: Ollama, llama-server, or OpenRouter.
-_Avoid_: Server (bare, which is the process that serves the ledger), provider, endpoint, host
+The program a model call is sent to, which runs the model: Ollama, llama-server, or OpenRouter. A local one runs on this machine; a hosted one does not, and sending it session text is egress.
+_Avoid_: Server (bare, which is the process that serves the ledger), provider, endpoint, host, remote (for hosted)
 
 **Model reply**:
 What a model sends back in one attempt: its text, any thinking that came before it, and whether it was cut off.
