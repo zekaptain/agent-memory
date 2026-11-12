@@ -379,7 +379,7 @@ The same audit proposed removing the following. Each was looked at on
   stays.
 - The reading and the migrating of a ledger that has applied migration
   0001 only (`legacy_preflight` in `audit.py`, `_migrate_lifecycle` in
-  `db.py`). Both live homes are still at 0001, and their next
+  `db.py`). The experiment home is still at 0001, and its next
   `mem migrate` runs it.
 - Migrations 0002 to 0006 as five files. One file in their place would
   change nothing at run time. `mem migrate` refuses a home whose applied
