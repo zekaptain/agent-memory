@@ -1137,7 +1137,9 @@ hooks file was a copy of a real one that held nine other hooks, the
 transcript a real one of 0.94 MB, and the home a throwaway. The payloads
 were written by hand in the shapes the probe recorded, and the
 `SubagentStop` one from Droid's documentation. No session in a running
-Droid has been captured through installed hooks yet.
+Droid had been captured through installed hooks then; the first were the
+next day, and "What the first sessions captured through the hooks
+showed" below has them.
 
 - With the server up, every hook exited 0, printed nothing, and took
   0.38 to 0.61 s. The ledger held 219 events and one `transcript_import`
@@ -1313,9 +1315,128 @@ one `/clear` left, because neither the payload nor the transcript does.
 
 Every one of the 3,719 payloads came from the Factory app: the
 environment of each hook held the app's `FACTORY_DESKTOP_*` variables.
-Droid in a terminal has not been recorded, and its `/clear` may say
-something else; see [roadmap.md](roadmap.md#known-defects).
+Droid in a terminal had not been recorded then. A terminal session was
+captured the next day (see the next section), without a `/clear`, which
+may say something else there; see
+[roadmap.md](roadmap.md#known-defects).
 
 The regression is
 `test_a_session_start_is_one_event_when_a_hook_and_the_transcript_report_it`
 in `tests/test_capture_identity.py`.
+
+### What the first sessions captured through the hooks showed (2026-11-12)
+
+`mem hooks install` wrote the hooks into `~/.factory/hooks.json` at
+04:25 UTC on 2026-11-12, with `mem serve` running. An hour later the
+ledger held 120 sessions, 5,159 events, and 762 observations: one
+session in a terminal, two in the Factory app, 13 that a Task call
+started, 101 that ran one prompt each with no user interface (permission
+mode `auto-low`, ended 0.3 s after their last event, taken to be
+`droid exec`), and three that held a start and nothing else.
+
+Each session was compared with its transcript. The transcript was read
+by a parser written for the comparison, not by the adapter, and what
+each line should give was counted per message id and kind.
+
+- Nothing differed. Every line an import had read gave the events it
+  should: 367 prompts and other user text, 204 replies, 2,105 tool calls
+  and as many results, 116 starts, 116 outcomes, 11 compactions. No
+  event was there twice, the imports of a session followed one another
+  line by line, and every tool result had its call.
+- What the ledger held beyond that came from hooks alone: 27 resumed
+  starts, 101 session ends, 6 notes, and one prompt whose line no import
+  had reached yet.
+- Droid's entries for the hook runs (see "When a Droid session ends, and
+  what its transcript says of hooks" above) show 1,090 runs of
+  `mem event`. All completed with exit code 0 and printed nothing. The
+  median run took 0.44 s at `UserPromptSubmit`, 0.48 s at `Stop`, 0.54 s
+  at `SessionEnd`, and 0.61 s at `SessionStart`; the longest took 1.09 s.
+- `mem audit check` found no error. It gave the warnings
+  [roadmap.md](roadmap.md#known-defects) says every captured session
+  gets, `capture_partial` for a session no import had reached, and
+  `capture_missing_assistant` for one whose reply none had brought.
+
+What Droid did that the probe had not shown:
+
+- **A session a Task call starts.** Its `SessionStart` payload names the
+  calling session as `calling_session_id`, in all 35 such payloads (13
+  `startup`, 22 `resume`). No other hook of such a session names it,
+  and no payload names the calling tool call. In 12 of the 13 sessions
+  a second `SessionStart` followed the first by 0.55 to 0.95 s, with
+  `source` `resume` and no `message_id`. It is the hook's alone and is
+  recorded as a `session_start` keyed on the time it ran. A later
+  resume carried a `message_id`, as in the app.
+- **A terminal.** The one terminal session (`userMessageSource`
+  `cli_tui`) started once, with `source` `startup`, and was resumed
+  once, with a `message_id`. Nothing was recorded twice. No `/clear`
+  was typed there, and the session had not ended.
+- **A hook raised again for the same message.** In that session Droid
+  ran `UserPromptSubmit` 302 times for 9 message ids, and `Stop` as
+  often for 10. Two of the prompt ids had 166 and 129 runs, 2.5 s apart
+  at the median, over 33 and 23 minutes in which the turn went on with
+  tool calls. What made Droid do so is not known. A prompt is keyed on
+  its `message_id`, so the ledger holds each once, and each `Stop`
+  imported what the transcript had gained.
+- **`UserPromptSubmit` for text Droid wrote.** Eight of those nine ids
+  are texts Droid gave the model itself (`llm_only`), among them notices
+  of finished background work. The hook's text had the size of the
+  transcript's for all 75 prompts compared.
+- **A session with no interface.** Each of the 101 raised `SessionEnd`
+  as it finished, with `reason` `other`.
+- **Who saw a message.** A message's `visibility` is `llm_only` for
+  text Droid gave the model and did not show the user (system
+  reminders, notices of finished background work), `user_only` for a
+  notice it showed the user and did not give the model ("The model
+  provider declined this request again."), and absent on what a person
+  or a calling agent wrote. In 69 transcripts, 295 texts were
+  `llm_only`, 29 `user_only`, and 84 had none.
+- **A call a Script made.** Its `tool_use` part holds
+  `script_execution`, with the id of the Script's own call as
+  `outer_tool_use_id`. All 9,168 such calls in the 69 transcripts name
+  a `Script` call in the same transcript, and all are `user_only`.
+- **Two texts for a tool result.** A result can hold `model_content`
+  beside `content`: what the model was given, where that is not what
+  the user was shown. 87 of 2,119 top-level results had one, and it
+  differed in all 87.
+
+What changed:
+
+- The `SessionStart` hook keeps `calling_session_id` in the session's
+  metadata, where the import keeps the transcript's. The hook is the
+  first to write the row of a session it sees start, and a row is never
+  rewritten, so none of the 13 rows named a caller.
+- The judge and admission ask `session_callers` who started a session.
+  For these sessions it read the row and nothing else, and took all 13
+  for a person's. It now also reads what a session's start hooks said,
+  which their events hold. Checked on the live ledger without writing
+  to it: of 120 sessions, the 13 whose transcript names a caller are
+  read as an agent's, with that caller's id, and the other 107 as a
+  person's. Such a session's row has no title, so its caller has no
+  role (`worker`, `explorer`).
+- An import keeps a text's `visibility` in the event's payload, and
+  `outer_tool_use_id` in the payload of a call a Script made. Nothing
+  reads either yet. A prompt the `UserPromptSubmit` hook wrote first
+  has no `visibility`: the hook's payload carries none, and an event is
+  not rewritten.
+- The import's observation names the adapter `droid_transcript_v3`.
+  Events from an import named `droid_transcript_v2` hold neither field,
+  whatever the transcript said. A hook reads on from where the last
+  import ended, whatever that import was named. A whole-file import
+  (`mem ingest`) of a transcript that a `droid_transcript_v2` import
+  read adds one observation under the new name and no event.
+
+The first import of a long session was run as the hook command, against
+a throwaway home with a server of its own. The transcript was a real
+one of 61.0 MB and 23,379 lines.
+
+| hook | time | what the ledger held |
+|---|---|---|
+| the session's first `Stop` | 13.2 s | 18,674 events, one observation of lines 1 to 23,379 |
+| the next `Stop`, 16 lines later | 1.04 s | 16 more events, a second observation of lines 23,380 to 23,395 |
+
+Both exited 0 and printed nothing, and the same comparison found no
+difference. Not seen: what Droid shows while a hook runs for 13 s.
+
+Regressions are in `tests/test_adapters.py` and
+`tests/test_judge_pipeline.py`. What stays wrong is in
+[roadmap.md](roadmap.md#known-defects).

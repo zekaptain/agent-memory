@@ -7,7 +7,7 @@ still undecided. The design of what is built is in
 
 ## Status
 
-As of 2026-11-11.
+As of 2026-11-12.
 
 | Work | State | Where it is specified |
 |------|-------|-----------------------|
@@ -15,7 +15,7 @@ As of 2026-11-11.
 | Phase 0.5: trial of ai-memory | Not started | below |
 | Phase 1a: capture path | Done | [phase-1-spec.md](phase-1-spec.md) |
 | Phase 1b: in-session tools | Done | [phase-1-spec.md](phase-1-spec.md) |
-| Phase 2: harness adapters | Droid hooks and transcript import are built and checked against real payloads. Vibe, omp, and Amp have no adapter; one for Vibe, written from its documentation, was removed on 2026-11-11. `mem hooks install` writes Droid's hooks; no session in a running Droid has been captured through them yet. | below |
+| Phase 2: harness adapters | Droid hooks and transcript import are built and checked against real payloads. Vibe, omp, and Amp have no adapter; one for Vibe, written from its documentation, was removed on 2026-11-11. `mem hooks install` writes Droid's hooks, and sessions in a running Droid have been captured through them since 2026-11-12. | below |
 | Phase 3: audit tooling | Not started. `mem audit check` exists, but as a preflight for migrations, not as the commands below. | below |
 | Phase 4: memory quality | Partly built: the relation graph's first step and lesson admission (migration 0007). | below, [admission-spec.md](admission-spec.md) |
 | Phase 5: Markdown projection | Not started | below |
@@ -29,10 +29,11 @@ As of 2026-11-11.
 The next approved work should finish verifying Droid capture end to end,
 then build and run the local usefulness experiment. Droid's hooks were
 checked against real payloads on 2026-11-11, all of them recorded in the
-Factory app. `mem hooks install` and the hooks it writes were run
-against a copy of a real hooks file and a real transcript. No session in
-a running Droid has yet been captured through installed hooks. Retrieval
-tuning and wider graph use follow measured failures.
+Factory app. On 2026-11-12 the first 120 sessions were captured through
+installed hooks, in the app, in a terminal, and with no interface, and
+each agreed with its transcript. Still to see: `/clear` and the end of a
+session in a terminal, and what Droid shows during a long first import.
+Retrieval tuning and wider graph use follow measured failures.
 Parametric consolidation remains research until usefulness and
 withdrawal/backflow can be measured.
 
@@ -151,11 +152,21 @@ Droid writes an entry to the transcript for every hook
 command it runs. A session that was running when `hooks.json` changed
 ran the new hooks ten seconds later, where Droid's documentation says a
 session reads its hooks when it starts (seen once, in the Factory app).
+Sessions captured through the installed hooks on 2026-11-12 added a
+terminal and sessions with no interface. The `SessionStart` of a session
+a Task call started names the calling session, and most such sessions
+raise a second `SessionStart` within a second, a `resume` with no
+`message_id`. A session with no interface raises `SessionEnd` as it
+finishes. Droid can raise `UserPromptSubmit` and `Stop` many times for
+one message, and raises `UserPromptSubmit` for text it wrote itself. A
+transcript message says who saw it (`visibility`), and a call a Script
+made names the Script's call.
 See "What a Droid hook carries", "What Droid's turn and session hooks
 carry", "When a Droid session ends, and what its transcript says of
 hooks", "`mem hooks` writes capture into Droid's hooks file", "What
-Droid's `SubagentStop` hook carries", and "What `/clear` starts in
-Droid" in [phase-1-spec.md](phase-1-spec.md).
+Droid's `SubagentStop` hook carries", "What `/clear` starts in Droid",
+and "What the first sessions captured through the hooks showed" in
+[phase-1-spec.md](phase-1-spec.md).
 
 | Harness | Events | Payload | Gaps for capture |
 |---------|--------|---------|------------------|
@@ -225,16 +236,13 @@ Verified against the code in the audit of 2026-11 and still open.
 - A memory that admission wrote and a human approves or retires with
   `mem review` gives the fitted approver no example. Only
   `mem admit review` records one (`review.py`).
-- Every Droid payload the adapter was checked against was recorded in
-  the Factory app. Droid in a terminal has not been recorded. In the
-  app `/clear` starts a new session whose `SessionStart` says `startup`,
-  which the hook and the transcript's first entry record as one event.
-  A `SessionStart` that named a new session and gave `clear` as its
-  source, which Droid's documentation lists, would be recorded twice
-  (`adapters/droid.py`).
-- No session in a running Droid has been captured through installed
-  hooks. `mem hooks install` and the hooks it writes were run against a
-  copy of a real hooks file, with payloads written by hand (`hooks.py`).
+- `/clear` has been recorded in the Factory app only. There it starts a
+  new session whose `SessionStart` says `startup`, which the hook and
+  the transcript's first entry record as one event. The one terminal
+  session captured so far started and resumed as a session in the app
+  does, and nobody typed `/clear` in it. A `SessionStart` that named a
+  new session and gave `clear` as its source, which Droid's
+  documentation lists, would be recorded twice (`adapters/droid.py`).
 - A Droid turn that never reaches `Stop` (a crash, a killed session) is
   in the ledger only after the session's next `Stop` or `SessionEnd`, or
   after someone imports its transcript. Droid writes a turn's outcome
@@ -242,13 +250,22 @@ Verified against the code in the audit of 2026-11 and still open.
   arrives at `SessionEnd`, 30 minutes after the session was last used.
   Until then, and for good if `SessionEnd` never runs, the judge reads
   that turn as cut off when the session ended (`closed_by` is
-  `session_end`), not as completed. Not checked: whether quitting Droid
-  raises `SessionEnd`.
+  `session_end`), not as completed. A session with no interface raises
+  `SessionEnd` as it finishes. Not checked: whether quitting Droid in a
+  terminal or closing the app does. Two of the 13 sessions a Task call
+  started had written 214 and 295 transcript lines and reached neither
+  hook within the hour.
 - The first import of a long session runs inside its `Stop` hook and
-  takes seconds: 8.75 s for a transcript of 41.9 MB, and at that rate
-  about 17 s for the largest local one, 79 MB. Droid's hook timeout is
-  60 s. Not checked: what Droid shows while a hook runs that long, and
-  what a hook killed at the timeout leaves behind.
+  takes seconds: 8.75 s for a transcript of 41.9 MB and 13.2 s for one
+  of 61.0 MB, and at that rate about 17 s for the largest local one,
+  79 MB. Each later `Stop` reads the whole file again to find its place,
+  1.0 s at 61 MB. Droid's hook timeout is 60 s. Not checked: what Droid
+  shows while a hook runs that long, and what a hook killed at the
+  timeout leaves behind.
+- Droid can raise `UserPromptSubmit` and `Stop` for one message every
+  few seconds: 302 runs of each in half an hour of one terminal session.
+  The ledger gains nothing twice, and each run is a process that takes
+  0.4 to 0.5 s (see the start-up cost below).
 - A whole-file import of a transcript the ledger already holds redacts
   every record before the writer finds it present: 4 s for 11,217
   records. A hook avoids that by reading on from the last import.
@@ -269,6 +286,40 @@ Verified against the code in the audit of 2026-11 and still open.
   event later than the last transcript entry, such as the `session_end`,
   lies past what that import covers. No Droid session can read as fully
   covered (`audit.py`, `adapters/droid.py`, the `session_summary` view).
+  The live ledger showed it on 2026-11-12: no error, and 259 warnings
+  for 93 sessions.
+- A session's row holds what the first record of the session knew, and
+  for a session captured through the hooks that is the `SessionStart`
+  hook: no title, no model, no Droid version. `session_summary` gives
+  the model from the imports and has no column for the version. Its
+  `effective_metadata` is the metadata of the latest observation, a
+  hook's included, so a later prompt or notification replaces the title
+  and the caller an import gave with the hook's two fields: it named the
+  caller for 1 of 13 sessions a Task call started and a title for 77 of
+  93. Nothing in the code reads `effective_metadata`. The judge takes a
+  caller's role (`worker`, `explorer`) from the row's title, so a
+  session the hooks captured has a caller without a role
+  (`capture/session.py`, `judge/provenance.py`, the `session_summary`
+  view).
+- The judge reads some harness text as a person's. It tells the author
+  of a user message by how the text opens, and it does not know "The
+  model provider declined this request again.", "Request blocked by
+  model provider safety checks.", "Background Execute command
+  finished.", or "Background task error.". In 69 captured transcripts
+  it took 15 of 295 texts that only the model saw, and 21 of 29 notices
+  that only the user saw, for a person's or a calling agent's. Droid
+  marks both kinds (`visibility`), and an import keeps the mark since
+  2026-11-12, but nothing reads it, and a prompt the `UserPromptSubmit`
+  hook wrote first has none (`judge/provenance.py`,
+  `adapters/droid.py`).
+- A notice Droid shows the user and does not give the model is imported
+  as a `user_msg`, like a message in the conversation, and the judge
+  starts a turn at it (`adapters/droid.py`, `judge/triggers.py`).
+- The import keeps a tool result's `content`, which is what Droid showed
+  the user, and drops `model_content`, what it gave the model, where
+  Droid stores both: 87 of 2,119 top-level results in the captured
+  transcripts, and 2,037 of 9,141 results of calls a Script made, which
+  the model never saw as they are (`adapters/droid.py`).
 - A session's row still carries the time of the first record the ledger
   received of it. `session_summary.started_at` is the earlier of that
   and the session's first event (migration 0008), and `mem audit check`
@@ -297,9 +348,12 @@ Verified against the code in the audit of 2026-11 and still open.
 - The hooks import a transcript without its thinking blocks, and
   `mem hooks install` has no flag to ask for them. `mem ingest
   --include-thinking` adds them by hand.
-- The transcript import drops which Script call a nested tool call ran
-  inside (`script_execution.outer_tool_use_id`), so the ledger cannot
-  tell a nested call from a top-level one (`adapters/droid.py`).
+- A tool call imported before 2026-11-12 does not say which Script call
+  it ran inside, so the ledger cannot tell such a nested call from a
+  top-level one. A later import keeps it as `outer_tool_use_id` in the
+  call's payload, and nothing reads it yet (`adapters/droid.py`).
+- `tests/fixtures/droid_session.jsonl` gives two messages a `visibility`
+  of `visible` and `hidden`, values Droid does not write.
 - An event captured through Droid's hooks names no turn in the
   attribution stored with it (`capture_attribution`). The import at
   `Stop` writes a turn's messages before Droid has written the outcome
@@ -328,10 +382,13 @@ blinding; an egress error body in exception text.
 
 Proposed in the audit of 2026-11. None of these is approved.
 
-- Finish capture: a session captured end to end through hooks installed
-  in a running Droid, and Droid in a terminal checked against real
-  payloads as the Factory app was. The installer and the import at
-  `Stop` and `SessionEnd` were built on 2026-11-11.
+- Finish capture. Sessions were captured end to end through installed
+  hooks on 2026-11-12, one of them in a terminal. Left to see: `/clear`
+  and the end of a session in a terminal, and a long first import in a
+  running Droid.
+- Give the judge a new provenance version that reads who saw a message
+  from the event, and decide whether a notice only the user saw is a
+  `user_msg` at all.
 - Keep `mem event` from loading what capture does not use, which would
   about halve a hook's start-up.
 - An adapter for Ori's runtime, as the second harness (see "One harness
@@ -404,6 +461,13 @@ The same audit proposed removing the following. Each was looked at on
   imported before 2026-11-11 the row's start is the time of the import.
 - Should a Droid session captured from start to end be able to read as
   fully covered, and what would have to be true of it?
+- Should the judge and admission read a session's title, caller, and
+  model from `session_summary` too, once its `effective_metadata` holds
+  what the imports said?
+- Is a tool result's text what Droid showed the user or what it gave
+  the model, where the two differ?
+- Should a notice Droid shows only the user be a `note`, not a
+  `user_msg`?
 - Should timeouts in a row stop a judge command? A timeout can be the
   item's doing, so today only an unreachable model server stops one.
 - Are the `readout` and `jev` judges and the `actionable` question still
