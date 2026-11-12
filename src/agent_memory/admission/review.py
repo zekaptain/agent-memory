@@ -3,16 +3,14 @@
 from __future__ import annotations
 
 import random
-import sys
 import textwrap
 from datetime import UTC, datetime
 from typing import Any
 
 from ..capture.pipeline import make_redactor
 from ..config import Config
-from ..judge.label_build import frontend_binary
 from ..judge.label_controller import Action, DisplayDraft, Screen
-from ..judge.label_frontend import GoFrontend, PlainFrontend, automatic_plain
+from ..judge.label_frontend import drive
 from ..judge.label_questions import Option, display_safe
 from ..judge.labeling import cited_entries
 from ..judge.store import JudgeError, RunStore
@@ -329,21 +327,5 @@ def review_day(
     again: bool = False,
 ) -> dict[str, int]:
     controller = ReviewController(cfg, day, discards=discards, seed=seed, limit=limit, again=again)
-    frontend: GoFrontend | PlainFrontend | None = None
-    try:
-        if not controller.done:
-            frontend = (
-                PlainFrontend(sys.stdin, sys.stdout)
-                if plain or automatic_plain()
-                else GoFrontend(frontend_binary())
-            )
-            while not controller.done:
-                controller.apply(frontend.exchange(controller.screen()))
-            if isinstance(frontend, GoFrontend):
-                frontend.finish(controller.result_text())
-    except (KeyboardInterrupt, EOFError):
-        controller.stopped = True
-    finally:
-        if isinstance(frontend, GoFrontend):
-            frontend.close()
+    drive(controller, plain=plain)
     return {"reviewed": controller.saved, "skipped": controller.skipped}

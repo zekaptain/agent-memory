@@ -22,7 +22,7 @@ from pathlib import Path
 import pytest
 
 from agent_memory.judge import label_build, label_controller, label_frontend
-from agent_memory.judge.label_controller import Action, LabelController
+from agent_memory.judge.label_controller import Action, LabelController, Screen
 from agent_memory.judge.label_frontend import PlainFrontend, encode_frame, read_action
 from agent_memory.judge.label_questions import GUIDE, display_safe
 from agent_memory.judge.labeling import SLOTS, missing_steps, order_drafts
@@ -1008,3 +1008,102 @@ def test_session_cleanup_around_save_acknowledgement(tmp_path, monkeypatch, caps
         assert "Saved" not in capsys.readouterr().out
     assert closed == [True]
     assert len(store.read_jsonl(store.labels_path)) == (1 if when == "after_save" else 0)
+
+
+class Steps:
+    """A controller that is neither labeling's nor admission review's: some screens, then done."""
+
+    def __init__(self, steps: int) -> None:
+        self.left = steps
+        self.applied: list[Action] = []
+        self.stopped = False
+
+    @property
+    def done(self) -> bool:
+        return self.stopped or not self.left
+
+    def screen(self) -> Screen:
+        return Screen(1, 1, "Turn", f"step:{self.left}", "", "", "", "Go on?", [])
+
+    def apply(self, action: Action) -> None:
+        self.applied.append(action)
+        self.left -= 1
+
+    def result_text(self) -> str:
+        return f"Applied {len(self.applied)}."
+
+
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_drive_shows_any_controllers_screens_until_it_is_done(monkeypatch, interrupted):
+    calls: list[tuple[object, ...]] = []
+
+    class Frontend:
+        def __init__(self, binary):
+            calls.append(("open", binary))
+
+        def exchange(self, screen):
+            if interrupted and screen.key == "step:1":
+                raise KeyboardInterrupt
+            calls.append(("screen", screen.key))
+            return Action("answer", "y")
+
+        def finish(self, message):
+            calls.append(("finish", message))
+
+        def close(self):
+            calls.append(("close",))
+
+    def binary(**kwargs):
+        calls.append(("build", kwargs))
+        return Path("/helper")
+
+    def say(text: str) -> None:
+        pytest.fail("the helper is not built here, so there is no progress to report")
+
+    monkeypatch.setattr(label_frontend, "GoFrontend", Frontend)
+    monkeypatch.setattr(label_frontend, "automatic_plain", lambda: False)
+    monkeypatch.setattr(label_frontend, "frontend_binary", binary)
+    controller = Steps(2)
+    label_frontend.drive(controller, progress=say)
+    # The helper's build reports its progress to whoever asked for the session.
+    assert calls.pop(0) == ("build", {"progress": say})
+    if interrupted:
+        # What was applied stays applied, and the helper is closed without a last message.
+        assert calls == [("open", Path("/helper")), ("screen", "step:2"), ("close",)]
+        assert (controller.applied, controller.stopped) == ([Action("answer", "y")], True)
+    else:
+        assert calls == [
+            ("open", Path("/helper")),
+            ("screen", "step:2"),
+            ("screen", "step:1"),
+            ("finish", "Applied 2."),
+            ("close",),
+        ]
+        assert (controller.applied, controller.stopped) == ([Action("answer", "y")] * 2, False)
+
+
+@pytest.mark.parametrize("plain", [False, True])
+def test_drive_opens_nothing_for_a_controller_that_starts_done(monkeypatch, plain):
+    def unexpected(*args, **kwargs):
+        pytest.fail("a controller with nothing to ask needs neither a terminal nor the helper")
+
+    monkeypatch.setattr(label_frontend, "automatic_plain", unexpected)
+    monkeypatch.setattr(label_frontend, "frontend_binary", unexpected)
+    monkeypatch.setattr(label_frontend, "PlainFrontend", unexpected)
+    controller = Steps(0)
+    label_frontend.drive(controller, plain=plain)
+    assert not controller.stopped
+
+
+@pytest.mark.parametrize("plain", [True, False])
+def test_drive_asks_in_plain_text_when_told_to_or_without_a_terminal(monkeypatch, plain):
+    monkeypatch.setattr(label_frontend, "automatic_plain", lambda: not plain)
+    monkeypatch.setattr(label_frontend, "frontend_binary", lambda **kwargs: pytest.fail("no Go"))
+    monkeypatch.setattr(sys, "stdin", io.StringIO("skip\n"))
+    output = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", output)
+    controller = Steps(2)
+    label_frontend.drive(controller, plain=plain)
+    # One answer, then the input ends: that reads as quit, which the controller is handed.
+    assert controller.applied == [Action("skip"), Action("quit")]
+    assert "Go on?" in output.getvalue()

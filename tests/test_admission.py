@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 from agent_memory import endpoints
-from agent_memory.admission import ledger, review, run
+from agent_memory.admission import ledger, run
 from agent_memory.admission.review import ReviewController, review_day
 from agent_memory.admission.store import AdmissionStore, write_jsonl
 from agent_memory.capture.pipeline import make_redactor
@@ -24,6 +24,7 @@ from agent_memory.capture.record import Record, SessionInfo
 from agent_memory.capture.writer import Writer
 from agent_memory.cli import main
 from agent_memory.db import MemoryClient, MemoryServer
+from agent_memory.judge import label_frontend
 from agent_memory.judge.backends.base import answer_from_probabilities
 from agent_memory.judge.drafter import Draft
 from agent_memory.judge.label_build import frontend_binary
@@ -758,9 +759,9 @@ def test_go_review_session_drives_same_screens(admission_live, models, monkeypat
         def close(self):
             closed.append(True)
 
-    monkeypatch.setattr(review, "GoFrontend", Frontend)
-    monkeypatch.setattr(review, "automatic_plain", lambda: False)
-    monkeypatch.setattr(review, "frontend_binary", lambda: Path("/synthetic/helper"))
+    monkeypatch.setattr(label_frontend, "GoFrontend", Frontend)
+    monkeypatch.setattr(label_frontend, "automatic_plain", lambda: False)
+    monkeypatch.setattr(label_frontend, "frontend_binary", lambda **kwargs: Path("/helper"))
     assert review_day(cfg, "2026-11-10")["reviewed"] == 1
     assert closed == [True]
     assert [s["subject"] for s in screens] == ["Draft A", "Notes", "Summary"]

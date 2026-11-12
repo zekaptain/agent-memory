@@ -1,4 +1,4 @@
-"""Bounded NDJSON transport and a linear, cursor-free interface for the same controller."""
+"""Bounded NDJSON transport, a linear, cursor-free interface, and the loop that drives either."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import sys
 from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
-from typing import IO, Any, TextIO
+from typing import IO, Any, Protocol, TextIO
 
 from .label_build import MAX_FRAME, PROTOCOL_VERSION, frontend_binary
 from .label_controller import Action, LabelController, Screen
@@ -194,20 +194,36 @@ def automatic_plain() -> bool:
     return not sys.stdin.isatty() or not sys.stdout.isatty() or os.environ.get("TERM") == "dumb"
 
 
-def label_session(
-    store: RunStore,
+class Controller(Protocol):
+    """What `drive` asks of a controller: its next screen, and what to do with the answer."""
+
+    stopped: bool
+
+    @property
+    def done(self) -> bool: ...
+
+    def screen(self) -> Screen: ...
+
+    def apply(self, action: Action) -> None: ...
+
+    def result_text(self) -> str: ...
+
+
+def drive(
+    controller: Controller,
     *,
     plain: bool = False,
-    limit: int | None = None,
-    seed: int = 1,
-    item_ids: tuple[str, ...] = (),
-    review: bool = False,
     progress: Callable[[str], None] | None = None,
-) -> LabelSummary:
-    controller = LabelController(store, limit=limit, seed=seed, item_ids=item_ids, review=review)
+) -> None:
+    """Show a controller's screens and hand it each answer, until it is done or interrupted.
+
+    Labeling and admission review each bring their own controller. What they share is here:
+    which frontend to open, that an interrupt stops the controller without losing what it
+    saved, and that the Go helper is closed whatever happens.
+    """
     frontend: GoFrontend | PlainFrontend | None = None
     try:
-        # An empty/resumed run never requires Go or a terminal.
+        # A controller with nothing to ask never requires Go or a terminal.
         if not controller.done:
             frontend = (
                 PlainFrontend(sys.stdin, sys.stdout)
@@ -223,5 +239,19 @@ def label_session(
     finally:
         if isinstance(frontend, GoFrontend):
             frontend.close()
+
+
+def label_session(
+    store: RunStore,
+    *,
+    plain: bool = False,
+    limit: int | None = None,
+    seed: int = 1,
+    item_ids: tuple[str, ...] = (),
+    review: bool = False,
+    progress: Callable[[str], None] | None = None,
+) -> LabelSummary:
+    controller = LabelController(store, limit=limit, seed=seed, item_ids=item_ids, review=review)
+    drive(controller, plain=plain, progress=progress)
     print(controller.result_text())
     return controller.summary()
