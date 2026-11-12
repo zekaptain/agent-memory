@@ -125,7 +125,7 @@ Add `--help` to any command to see its options, for example
 | Harness | Capture available now |
 |---|---|
 | Factory Droid | Hooks, written by `mem hooks install`, and transcript import. |
-| Mistral Vibe, oh-my-pi, and Amp | MCP tools only; no capture adapter yet. |
+| oh-my-pi and Amp | MCP tools only; no capture adapter yet. |
 | JetBrains Junie | MCP tools only, recorded as partial capture. |
 
 ### Import a Droid session
@@ -271,7 +271,7 @@ Set the environment for your harness:
 
 | Variable | Use |
 |---|---|
-| `AGENT_MEMORY_AGENT` | Required. One of `factory-droid`, `mistral-vibe`, `oh-my-pi`, `amp`, or `jetbrains-junie`. `mem-mcp` does not start as `human`, the agent that `mem review` writes as. |
+| `AGENT_MEMORY_AGENT` | Required. One of `factory-droid`, `oh-my-pi`, `amp`, or `jetbrains-junie`. `mem-mcp` does not start as `human`, the agent that `mem review` writes as. |
 | `AGENT_MEMORY_PROJECT` | Default recall scope. Defaults to the working directory's name. |
 | `AGENT_MEMORY_SESSION` | Harness session ID, when available. Joins MCP activity to the captured session. MCP-only coverage remains partial even when this ID is present. |
 | `AGENT_MEMORY_MCP_SERVER_NAME` | Optional capture setting when the MCP server is named something other than `agent-memory`. Attribution requires that exact server identity; a bare `cite` without recorded server identity stays unresolved. |
