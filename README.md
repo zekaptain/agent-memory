@@ -143,12 +143,12 @@ uv run mem hooks install
 uv run mem hooks status
 ```
 
-`install` adds one hook at each of seven hook events: `SessionStart`,
-`SessionEnd`, `UserPromptSubmit`, `PreCompact`, `SubagentStop`,
-`Notification`, and `Stop`. Each runs the same command, `mem event
---harness droid`, written with the full path of `mem` and the home and
-port in use, because a hook runs with Droid's environment and not your
-shell's. To change the home, the port, or a flag, run `install` again:
+`install` adds one hook at each of six hook events: `SessionStart`,
+`SessionEnd`, `UserPromptSubmit`, `PreCompact`, `Notification`, and
+`Stop`. Each runs the same command, `mem event --harness droid`, written
+with the full path of `mem` and the home and port in use, because a hook
+runs with Droid's environment and not your shell's. To change the home,
+the port, or a flag, run `install` again:
 
 ```sh
 uv run mem --home "$HOME/.agent-memory" --port 9494 hooks install --keep-raw
@@ -173,14 +173,15 @@ uv run mem --home "$HOME/.agent-memory" --port 9494 hooks install --keep-raw
   keep the hooks it started with. `/hooks` in Droid shows the hooks a
   session runs.
 
-For Droid the transcript is the record of replies, tool calls, and
-compactions. A Droid hook does not carry the reply and does not name the
-tool call it reports. The hooks therefore record a prompt, a
-notification, the start and end of a session, a subagent's stop, and the
-request to compact (as a note; the compaction comes from the
-transcript). At `Stop` and `SessionEnd`, `mem event` also imports what
-the transcript has gained since its last import. No hook is installed at
-`PostToolUse`, where there is nothing to record.
+For Droid the transcript is the record of replies, tool calls,
+compactions, and what a subagent reports when its task is finished. A
+Droid hook does not carry the reply and does not name the tool call or
+the task it reports. The hooks therefore record a prompt, a
+notification, the start and end of a session, and the request to compact
+(as a note; the compaction comes from the transcript). At `Stop` and
+`SessionEnd`, `mem event` also imports what the transcript has gained
+since its last import. No hook is installed at `PostToolUse` or
+`SubagentStop`, where there is nothing to record.
 
 Droid writes a turn's outcome just after `Stop` has run. That outcome
 arrives with the next turn's `Stop`, or with `SessionEnd`, which the

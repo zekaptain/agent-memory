@@ -150,16 +150,17 @@ Entry points are `mem` (`agent_memory.cli:main`) and `mem-mcp`
   event` runs as a hook, so it prints nothing on stdout and never exits 2.
   Add regression coverage for replay, partial failures, and parent/result
   linkage.
-- For Droid the transcript is the record of replies, tool calls, and
-  compactions. A Droid hook payload carries no id for a tool call
-  (checked against real payloads), so `PostToolUse` records nothing and
-  `PreCompact` records a note. Do not make a hook write an event the
-  transcript also holds unless both carry the same harness id, as a
-  prompt's `message_id` and a new session's id are. A hook-only event is
-  keyed on `message_id` only when that id places it in the session (a
-  resume, a request to compact). One that a message can raise several
-  times, each saying something else, such as a notification, is keyed on
-  the time the hook ran.
+- For Droid the transcript is the record of replies, tool calls,
+  compactions, and what a subagent reports when its task is finished. A
+  Droid hook payload carries no id for a tool call or for a finished
+  task (checked against real payloads), so `PostToolUse` and
+  `SubagentStop` record nothing and `PreCompact` records a note. Do not
+  make a hook write an event the transcript also holds unless both carry
+  the same harness id, as a prompt's `message_id` and a new session's id
+  are. A hook-only event is keyed on `message_id` only when that id
+  places it in the session (a resume, a request to compact). One that a
+  message can raise several times, each saying something else, such as a
+  notification, is keyed on the time the hook ran.
 - One hook command does all of Droid's capture. `mem event` records the
   hook's own event and, at the hook events the adapter names
   (`transcript_due`: `Stop` and `SessionEnd`), imports what the

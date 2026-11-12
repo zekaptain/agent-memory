@@ -250,7 +250,8 @@ Mapping:
 | PostToolUse | none | the payload names no call; the transcript records the call and its result |
 | PreCompact | `note` | content = `custom_instructions`; payload `trigger` and the anchor `message_id`. The `compaction` event comes from the transcript |
 | Stop | none | the transcript is imported at this hook event; see "A Droid transcript is imported by `mem event`" under "As built" |
-| SubagentStop, Notification | `note` | payload = stdin minus transcript text |
+| SubagentStop | none | the payload carries a subagent's finished task, its name and result, and no id; the transcript of the session that started the task records both |
+| Notification | `note` | content = `message`; payload = stdin minus transcript text |
 
 Any hook event not in the table becomes a `note` with the raw payload, so new
 harness events are never silently lost.
@@ -870,14 +871,17 @@ compactions for one.
   on the time the hook ran, whether or not the payload has a
   `message_id`. One message can raise several of them, and keyed on its
   id the second would have been dropped as a duplicate. The `message_id`
-  stays in the event's attribution.
+  stays in the event's attribution. (`SubagentStop` has since stopped
+  recording anything; see "What Droid's `SubagentStop` hook carries"
+  below.)
 - Vibe was left unchanged: its `post_tool` payload is documented to
   carry `tool_call_id`. Its adapter has since been removed; see "The
   Vibe adapter is removed" below.
 
 No `UserPromptSubmit`, `Stop`, `SessionStart`, `SessionEnd`, or
 `SubagentStop` ran in that session while the probe was recording. The
-next two sections cover all of them but `SubagentStop`.
+next two sections cover all of them but `SubagentStop`, which has a
+section of its own further down.
 
 Regressions are in `tests/test_adapters.py`,
 `tests/test_capture_identity.py`, and `tests/test_cli_capture.py`.
@@ -927,7 +931,8 @@ start was two `session_start` events.
 
 `SessionEnd` ran later the same day and has the next section.
 `SubagentStop` did not run while the probe was recording, and neither
-did a `SessionStart` after `/clear`.
+did a `SessionStart` after `/clear`. `SubagentStop` ran later; see
+"What Droid's `SubagentStop` hook carries" below.
 
 Regressions are in `tests/test_adapters.py` and
 `tests/test_capture_identity.py`.
@@ -1087,9 +1092,10 @@ person set up.
 - `mem hooks install` writes one command at each hook event where the
   Droid adapter records something or reads the transcript:
   `SessionStart`, `SessionEnd`, `UserPromptSubmit`, `PreCompact`,
-  `SubagentStop`, `Notification`, and `Stop`. The adapter names them
+  `Notification`, and `Stop`. The adapter names them
   (`DroidAdapter.hook_events`), so the installer cannot disagree with
-  it. `--record-pre-tool` adds `PreToolUse`.
+  it. `--record-pre-tool` adds `PreToolUse`. `SubagentStop` was among
+  them until the adapter stopped recording anything there.
 - The command is `mem event --harness droid`, written with the absolute
   path of `mem`, `--home`, and `--port`, and with `--keep-raw` or
   `--record-pre-tool` when asked for. The `mem` is the one installed
@@ -1226,3 +1232,48 @@ names, and a second import of a transcript adds no observation.
 
 Regressions are in `tests/test_cli_capture.py` and
 `tests/test_adapters.py`.
+
+### What Droid's `SubagentStop` hook carries (2026-11-11)
+
+The probe recorded three `SubagentStop` payloads from two sessions in
+the Factory app, which brought it to 3,691 payloads when these counts
+were taken. Each ran in the session that had started a subagent's task
+in the background, when that task finished.
+
+| hook | payloads | ids in the payload | what the transcript holds |
+|---|---|---|---|
+| `SubagentStop` | 3 | none | A `message` with the id `task-completion:<id>` and role `user`, written 0.05 to 13 s after the hook ran. It holds the task's id, kind, and name, and its result. |
+
+- The payload has `task_name` and `task_result`, with `session_id`,
+  `transcript_path`, `cwd`, `permission_mode`, and `stop_hook_active`.
+  The session and the transcript are those of the session that started
+  the task. Nothing names the task or a message.
+- `task_name` is as long as the `description` the task was started
+  with, in all three. `task_result` was 3,540 to 12,379 characters.
+- The probe keeps the length of a text and not the text, so that the
+  transcript message holds the result whole is read from the lengths.
+  The message is longer than `task_result` by 483 characters for a
+  `worker` with a name of 30, by 485 for one with a name of 31, and by
+  489 for an `explorer` with a name of 32: a header that holds the name
+  twice and the kind once.
+- The message is written when the session next takes input. One hook
+  ran in the middle of a turn, and the message followed 13 s later,
+  after the turn's next tool call had returned.
+
+The adapter, written from Droid's documentation, recorded a `note`
+keyed on the time the hook ran, with `task_name` and the whole
+`task_result` in its payload. The import records the transcript message
+as a `user_msg`. The result would have been in the ledger twice, with
+nothing to tie the note to the message.
+
+- A Droid `SubagentStop` hook records nothing. The transcript is the
+  record of a subagent's finished task, as it is of a tool call.
+- `mem hooks install` writes no hook at `SubagentStop` and takes out one
+  an earlier install wrote there. `mem hooks status` reports one there
+  as not needed.
+- None of the 3,691 payloads carries `turn_id`, `channel`, or
+  `final_message_id`, the three from `SubagentStop` included.
+
+A `SessionStart` after `/clear` has still not been recorded.
+
+Regressions are in `tests/test_adapters.py` and `tests/test_hooks.py`.

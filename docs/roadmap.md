@@ -28,11 +28,11 @@ As of 2026-11-11.
 
 The next approved work should finish verifying Droid capture end to end,
 then build and run the local usefulness experiment. Droid's hooks were
-checked against real payloads on 2026-11-11, all but `SubagentStop`.
-`mem hooks install` and the hooks it writes were run against a copy of a
-real hooks file and a real transcript. No session in a running Droid has
-yet been captured through installed hooks. Retrieval tuning and wider
-graph use follow measured failures.
+checked against real payloads on 2026-11-11, all but a `SessionStart`
+after `/clear`. `mem hooks install` and the hooks it writes were run
+against a copy of a real hooks file and a real transcript. No session in
+a running Droid has yet been captured through installed hooks. Retrieval
+tuning and wider graph use follow measured failures.
 Parametric consolidation remains research until usefulness and
 withdrawal/backflow can be measured.
 
@@ -132,10 +132,13 @@ read-only view.
 ## Verified harness behavior
 
 Checked against the vendor documentation on 2026-10-25. Droid's hooks
-were checked against real payloads on 2026-11-11, all but
-`SubagentStop`. `PreToolUse`, `PostToolUse`, and `Notification` carry no
-`message_id` and no id for a tool call. `PreCompact` carries the
-`message_id` of the compaction's anchor message. `PostToolUse` does not
+were checked against real payloads on 2026-11-11, all but a
+`SessionStart` after `/clear`. `PreToolUse`, `PostToolUse`, and
+`Notification` carry no `message_id` and no id for a tool call.
+`SubagentStop` carries the name and the result of a subagent's finished
+task and no id, and the session that started the task gains a transcript
+message with both. `PreCompact` carries the `message_id` of the
+compaction's anchor message. `PostToolUse` does not
 run for a call made inside a Script. `Stop` runs after the reply is
 written and before the turn's outcome is. The `SessionStart` of a new
 session carries no `message_id`; a resume carries that of the session's
@@ -147,12 +150,13 @@ ran the new hooks ten seconds later, where Droid's documentation says a
 session reads its hooks when it starts (seen once, in the Factory app).
 See "What a Droid hook carries", "What Droid's turn and session hooks
 carry", "When a Droid session ends, and what its transcript says of
-hooks", and "`mem hooks` writes capture into Droid's hooks file" in
+hooks", "`mem hooks` writes capture into Droid's hooks file", and "What
+Droid's `SubagentStop` hook carries" in
 [phase-1-spec.md](phase-1-spec.md).
 
 | Harness | Events | Payload | Gaps for capture |
 |---------|--------|---------|------------------|
-| Droid (`~/.factory/hooks.json`) | `SessionStart` (`source`: startup, resume, clear, compact), `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PreCompact`, `Stop`, `SubagentStop`, `Notification`, `SessionEnd` | JSON on stdin: `session_id`, `transcript_path`, `cwd`, `permission_mode`, `hook_event_name`, `message_id`; tool hooks add `tool_name`, `tool_input`, `tool_response`. Default timeout 60 s. | No hook carries the assistant reply; read the transcript. `SessionStart` repeats per resume and compaction. |
+| Droid (`~/.factory/hooks.json`) | `SessionStart` (`source`: startup, resume, clear, compact), `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PreCompact`, `Stop`, `SubagentStop`, `Notification`, `SessionEnd` | JSON on stdin: `session_id`, `transcript_path`, `cwd`, `permission_mode`, `hook_event_name`, `message_id`; tool hooks add `tool_name`, `tool_input`, `tool_response`; `SubagentStop` adds `task_name`, `task_result`. Default timeout 60 s. | No hook carries the assistant reply; read the transcript. `SessionStart` repeats per resume and compaction. |
 | Vibe (`~/.vibe/hooks.toml`) | `pre_tool`, `post_tool`, `post_agent` | JSON on stdin: `session_id`, `parent_session_id`, `transcript_path`, `cwd`, `hook_event_name`; tool hooks add `tool_name`, `tool_call_id`, `tool_input`, `tool_status`, `tool_output`, `tool_output_text`, `tool_error`. Default timeout 60 s. | No prompt, session, or compaction hooks; `post_agent` carries no text. Project-level hooks load only in trusted folders. Plugin-declared hooks do not run yet. |
 | omp (`~/.omp/agent/hooks/{pre,post}/*.ts`) | `session_start`, `session_switch`, `session_compact`, `session_shutdown`, `agent_start`, `agent_end`, `turn_start`, `turn_end`, `message_start`, `message_end`, `tool_call`, `tool_result`, `tool_execution_*`, `tool_approval_*`, `auto_compaction_*`, `session_stop` | Typed in-process payloads with full message text, tool inputs and results, compaction entries, `session_file`. | None material. Skip the high-volume `message_update` and `tool_execution_update`. |
 | Amp (`.amp/plugins/*.ts`) | `session.start`, `agent.start`, `tool.call`, `tool.result`, `agent.end` | In-process: thread id, prompt and message id on `agent.start`; `toolUseID`, `tool`, `input`, `status`, `output` on tool events; every `ThreadMessage` of the turn on `agent.end`. | No compaction or session-end event; `onDispose` runs on unload for about 3 s. |
@@ -218,8 +222,10 @@ Verified against the code in the audit of 2026-11 and still open.
 - A memory that admission wrote and a human approves or retires with
   `mem review` gives the fitted approver no example. Only
   `mem admit review` records one (`review.py`).
-- Droid's `SubagentStop` payload, and a `SessionStart` after `/clear`,
-  have not been checked against real ones (`adapters/droid.py`).
+- A `SessionStart` after `/clear` has not been checked against a real
+  payload. It is not known whether `/clear` starts a session with a new
+  id, whose start the hook and the transcript's first entry would then
+  each record (`adapters/droid.py`).
 - No session in a running Droid has been captured through installed
   hooks. `mem hooks install` and the hooks it writes were run against a
   copy of a real hooks file, with payloads written by hand (`hooks.py`).
@@ -312,9 +318,9 @@ blinding; an egress error body in exception text; no CI configuration.
 Proposed in the audit of 2026-11. None of these is approved.
 
 - Finish capture: a session captured end to end through hooks installed
-  in a running Droid, with `SubagentStop` and a `SessionStart` after
-  `/clear` checked against real payloads. The installer and the import
-  at `Stop` and `SessionEnd` were built on 2026-11-11.
+  in a running Droid, with a `SessionStart` after `/clear` checked
+  against a real payload. The installer and the import at `Stop` and
+  `SessionEnd` were built on 2026-11-11.
 - Keep `mem event` from loading what capture does not use, which would
   about halve a hook's start-up.
 - An adapter for Ori's runtime, as the second harness (see "One harness
