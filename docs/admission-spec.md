@@ -196,6 +196,8 @@ when it looks for new turns. The reasons are in
 
 `mem admit review` uses the existing Go frontend, or `--plain` for
 numbered prompts. It does not use the experiment's `LabelController`.
+It has a controller of its own, and the loop that shows labeling's
+screens shows this one's too (`drive` in `judge/label_frontend.py`).
 The rule, kind, claims and cited excerpts stay visible. The judge arm,
 approver verdict and probability are hidden.
 

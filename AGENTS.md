@@ -268,6 +268,11 @@ do not delete existing homes or runs to resolve a workflow mistake.
   of questions must clearly identify its subject (turn, draft A/B, or
   comparison), with the relevant lesson visible. Test the rendered output
   and navigation, not only label serialization.
+- Labeling and admission review each have their own controller, and one
+  loop shows either's screens (`drive` in `judge/label_frontend.py`). It
+  chooses the plain interface or the Go helper, stops the controller on
+  an interrupt, and closes the helper. Do not write that loop a second
+  time; a test that replaces a frontend replaces it in `label_frontend`.
 - Model calls must handle timeouts, empty output, and token exhaustion
   without losing finished items. A call that must return a JSON object
   goes through `model_call.py`, which owns its attempts: the judge, the

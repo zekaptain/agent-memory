@@ -431,8 +431,9 @@ keep them whole, home guard),
 verdicts), `pipeline.py` (import, candidates, draft, decide, live, purge),
 `labeling.py` (label definitions), `label_controller.py` (the labeling
 workflow), `label_questions.py` (display wording and the guide),
-`label_frontend.py` (the transport to the Go helper, and the plain
-interface), `label_build.py` (building and caching the Go helper),
+`label_frontend.py` (the transport to the Go helper, the plain
+interface, and the loop that shows a controller's screens in either),
+`label_build.py` (building and caching the Go helper),
 `label_ui/` (the Go helper),
 `metrics.py`, `report.py`, `cli.py` (`judge_app`, registered
 on `mem` next to `spool`). The drafter and the reasoning judge make
