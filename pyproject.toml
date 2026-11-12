@@ -34,6 +34,8 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agent_memory"]
+# The guides for agents sit beside the code they bind and are not part of mem.
+exclude = ["AGENTS.md"]
 
 [tool.hatch.build]
 exclude = ["/.agents", "/.factory"]
