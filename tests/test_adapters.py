@@ -286,6 +286,65 @@ def test_droid_transcript_entry_for_a_hook_run_is_not_an_event(tmp_path):
     assert "said by the hook" not in "".join(r.to_json() for r in records)
 
 
+def test_droid_transcript_keeps_who_saw_a_text_and_which_script_made_a_call(tmp_path):
+    # As Droid writes them. Text it gives the model and does not show the user is
+    # `llm_only`, a notice it shows the user and does not give the model is `user_only`, and
+    # what a person or a calling agent wrote has neither. A call a Script made is
+    # `user_only` too and names the Script's own call.
+    def seen_by(entry: dict, visibility: str) -> dict:
+        return {**entry, "message": {**entry["message"], "visibility": visibility}}
+
+    def calls(entry_id: str, tool_id: str, name: str, at: str, **part) -> dict:
+        use = {"type": "tool_use", "id": tool_id, "name": name, "input": {}, **part}
+        return {
+            "type": "message",
+            "id": entry_id,
+            "timestamp": at,
+            "message": {"role": "assistant", "content": [use]},
+        }
+
+    def returns(entry_id: str, tool_id: str, at: str) -> dict:
+        result = {"type": "tool_result", "tool_use_id": tool_id, "content": "ok"}
+        return {
+            "type": "message",
+            "id": entry_id,
+            "timestamp": at,
+            "message": {"role": "user", "content": [result]},
+        }
+
+    inside = {"run_id": "run-1", "outer_tool_use_id": "outer", "seen": True}
+    entries = [
+        {"type": "session_start", "id": "seen", "timestamp": "2026-11-12T10:00:00Z"},
+        said("p1", "user", "Run it.", "2026-11-12T10:00:01Z"),
+        calls("c1", "outer", "Script", "2026-11-12T10:00:02Z"),
+        seen_by(
+            calls("c2", "inner", "Read", "2026-11-12T10:00:03Z", script_execution=inside),
+            "user_only",
+        ),
+        seen_by(returns("t2", "inner", "2026-11-12T10:00:04Z"), "user_only"),
+        returns("t1", "outer", "2026-11-12T10:00:05Z"),
+        seen_by(
+            said("n1", "user", "Background task completed.", "2026-11-12T10:00:06Z"), "llm_only"
+        ),
+        seen_by(
+            said("n2", "user", "The model provider declined.", "2026-11-12T10:00:07Z"), "user_only"
+        ),
+    ]
+    records = DroidAdapter().from_transcript(write(tmp_path / "seen.jsonl", entries))
+    r = by_key(records)
+    assert r[("user_msg", "p1")].payload is None
+    assert r[("user_msg", "n1")].payload == {"visibility": "llm_only"}
+    assert r[("user_msg", "n2")].payload == {"visibility": "user_only"}
+    assert r[("tool_call", "outer")].payload == {"tool_name": "Script", "tool_input": {}}
+    assert r[("tool_call", "inner")].payload == {
+        "tool_name": "Read",
+        "tool_input": {},
+        "outer_tool_use_id": "outer",
+    }
+    # What an import writes changed with these two, and so did the name it goes by.
+    assert covered(records)["adapter_version"] == "droid_transcript_v3"
+
+
 def test_droid_attribution_holds_only_what_droid_sends(tmp_path):
     # Nothing recorded from Droid names a turn or a channel on a message, or a turn, a
     # channel, or a final message in a hook payload. Where one is named it is not read.

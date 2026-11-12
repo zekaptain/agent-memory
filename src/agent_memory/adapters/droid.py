@@ -356,7 +356,7 @@ class DroidAdapter:
         metadata["model"] = model
         observation = {
             "source_mode": "transcript_import",
-            "adapter_version": "droid_transcript_v2",
+            "adapter_version": "droid_transcript_v3",
             "source_fingerprint": source_fingerprint,
             "covered_from": min(observed) if observed else None,
             "covered_through": max(observed) if observed else None,
@@ -416,6 +416,7 @@ def _message_records(
                         "tool_name": part.get("name"),
                         "tool_input": part.get("input"),
                         **({"mcp_server": part["server_name"]} if part.get("server_name") else {}),
+                        **_outer_call(part),
                     },
                 )
             )
@@ -451,6 +452,11 @@ def _message_records(
             payload["documents"] = documents
         if msg.get("userMessageSource"):
             payload["userMessageSource"] = msg["userMessageSource"]
+        if msg.get("visibility"):
+            # `llm_only` is text Droid gave the model and did not show the user, `user_only`
+            # a notice it showed the user and did not give the model. A message a person or
+            # a calling agent wrote has neither.
+            payload["visibility"] = msg["visibility"]
         text = "\n".join(texts)
         if documents and not text:
             text = "[document]"
@@ -469,6 +475,13 @@ def _message_records(
             ),
         )
     return [replace(rec, attribution=attribution) for rec in out]
+
+
+def _outer_call(part: dict[str, Any]) -> dict[str, Any]:
+    """For a call a Script made, the id of that Script's own call, as Droid names it."""
+    script = part.get("script_execution")
+    outer = script.get("outer_tool_use_id") if isinstance(script, dict) else None
+    return {"outer_tool_use_id": str(outer)} if outer else {}
 
 
 def _session_metadata(entry: dict[str, Any]) -> dict[str, Any] | None:
