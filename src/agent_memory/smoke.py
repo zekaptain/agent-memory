@@ -53,7 +53,7 @@ def free_port() -> int:
 def synthetic_chain(
     ids: Sequence[str], now: datetime, content: str = HOSTILE_CONTENT
 ) -> dict[str, list[dict[str, Any]]]:
-    """A complete provenance chain: user statement -> memory -> recall -> answer.
+    """A complete provenance chain: user statement -> memory -> recall -> reply.
 
     Needs 7 ids: session, 4 events (user_msg, memory_recall, assistant_msg,
     session_end), memory, retrieval.

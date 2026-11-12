@@ -2663,7 +2663,7 @@ def test_draft_refuses_mixed_versions_before_request_or_write(tmp_path, monkeypa
     with pytest.raises(
         JudgeError,
         match=(
-            r"run syn holds drafter_v2 drafts; drafter_v3 arms cannot be mixed in\. "
+            r"run syn holds drafter_v2 drafts; drafter_v3 drafts cannot be mixed in\. "
             r"Start a new run\."
         ),
     ):

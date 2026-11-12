@@ -28,7 +28,7 @@ from .store import JudgeError, RunStore, ensure_experiment_home
 from .triggers import CALLER_KINDS, STRATUM_PRIORITY, closed_by_of
 
 judge_app = typer.Typer(
-    help="Judge experiment: decision models as failure and lesson triage. Separate home only.",
+    help="Judge experiment: can a model pick the turns worth learning from? Separate home only.",
     no_args_is_help=True,
 )
 
@@ -222,7 +222,7 @@ def decide(
     ] = False,
     live: LIVE_DAY = None,
 ) -> None:
-    """Run one or more backends over the items. Resumable per backend."""
+    """Ask one or more judges about the items. Resumable per judge."""
     cfg = _config(ctx)
     store = _store(cfg, run, live)
     summary = decide_items(
@@ -264,7 +264,7 @@ def label(
     ] = False,
     live: LIVE_DAY = None,
 ) -> None:
-    """Review items in the terminal. Verdicts are never shown. Resumable."""
+    """Label items in the terminal. Verdicts are never shown. Resumable."""
     cfg = _config(ctx)
     store = _store(cfg, run, live)
     store.read_run()
@@ -333,7 +333,7 @@ def live(
         "~/.factory/sessions"
     ),
     backend: Annotated[
-        list[str] | None, typer.Option(help="Backends to run with frozen thresholds. Repeatable.")
+        list[str] | None, typer.Option(help="Judges to run with frozen thresholds. Repeatable.")
     ] = None,
     drafter: Annotated[
         list[str] | None, typer.Option(help=DRAFTER_HELP + " Omit to skip drafting.")

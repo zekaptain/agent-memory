@@ -103,12 +103,12 @@ def test_list_shows_each_waiting_memory_and_why(mem, agent, scope):
     assert f"approving it replaces {old}" in listed[correction]
     assert "The API listens on port 8000" in listed[correction]
     assert "uv is the package manager" not in out
-    assert out.strip().endswith("3 memories wait for review")
+    assert out.strip().endswith("3 memories await approval")
 
 
 def test_list_says_when_nothing_waits(mem, agent, scope):
     agent.remember("uv is the package manager", "fact")
-    assert mem("review", "list", "--scope", scope) == (0, "nothing waits for review\n", "")
+    assert mem("review", "list", "--scope", scope) == (0, "nothing awaits approval\n", "")
 
 
 def test_a_human_at_a_terminal_approves(mem, agent, scope, live_client, monkeypatch):
@@ -124,7 +124,7 @@ def test_a_human_at_a_terminal_approves(mem, agent, scope, live_client, monkeypa
     ]
     recalled = agent.recall("pytest testpaths", scopes=[scope])["items"]
     assert [item["memory_id"] for item in recalled] == [waiting]
-    assert mem("review", "list", "--scope", scope)[1] == "nothing waits for review\n"
+    assert mem("review", "list", "--scope", scope)[1] == "nothing awaits approval\n"
     assert mem("audit", "check")[0] == 0
 
 
@@ -142,7 +142,7 @@ def test_approving_an_active_memory_accepts_the_correction_a_tool_asked_for(
     typed(monkeypatch, "yes\n")
     assert mem("review", "approve", canonical, "--reason", "the correction is right")[0] == 0
     assert [status(live_client, m) for m in (old, canonical)] == ["superseded", "active"]
-    assert mem("review", "list", "--scope", scope)[1] == "nothing waits for review\n"
+    assert mem("review", "list", "--scope", scope)[1] == "nothing awaits approval\n"
 
 
 def test_approve_refuses_an_answer_that_was_not_typed_at_a_terminal(
@@ -196,7 +196,7 @@ def test_retire_withdraws_a_memory_without_a_terminal(mem, agent, scope, live_cl
     assert reviews(live_client, waiting, "retire") == [
         ("human", "human", "mem review", "the test paths moved")
     ]
-    assert mem("review", "list", "--scope", scope)[1] == "nothing waits for review\n"
+    assert mem("review", "list", "--scope", scope)[1] == "nothing awaits approval\n"
 
 
 def test_a_reason_is_required(mem, agent, live_client, monkeypatch):

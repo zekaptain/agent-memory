@@ -341,11 +341,11 @@ class RunStore:
     def add_draft(self, row: Mapping[str, Any]) -> None:
         self.write_jsonl(self.drafts_path, [row], append=True)
 
-    # Verdicts, one file per backend
+    # Verdicts, one file per judge
 
     def verdicts_by_file(self) -> dict[str, list[dict[str, Any]]]:
         """The rows of every verdict file in the run, by the file's name without its ending
-        and in name order. Each row names its own backend."""
+        and in name order. Each row names its own judge."""
         if not self.verdicts_dir.exists():
             return {}
         return {
@@ -353,7 +353,7 @@ class RunStore:
         }
 
     def verdicts(self, backend: str) -> list[dict[str, Any]]:
-        """The verdicts of one backend, in the order they were written."""
+        """The verdicts of one judge, in the order they were written."""
         return self.read_jsonl(self.verdicts_path(backend))
 
     def add_verdict(self, backend: str, row: Mapping[str, Any]) -> None:
@@ -378,15 +378,15 @@ class RunStore:
         self, row: Mapping[str, Any], *, seen: Mapping[str, Any] | None
     ) -> dict[str, dict[str, Any]]:
         """Save `row` as its item's label and return every label of the run, those saved
-        by other sessions included. `seen` is the label the caller last read for the item,
-        or None if it had none. If the item's label is no longer that one, another session
+        by other sittings included. `seen` is the label the caller last read for the item,
+        or None if it had none. If the item's label is no longer that one, another sitting
         has saved it since: nothing is written and the save is refused."""
         with lock(_lock_path(self.labels_path)):
             labels = self.labels()
             if labels.get(row["item_id"]) != seen:
                 raise JudgeError(
-                    "Another labeling session has saved this item since this one read it. "
-                    "Its label was kept and yours was not saved. Start the session again "
+                    "Another sitting has saved this item since this one read it. "
+                    "Its label was kept and yours was not saved. Run the command again "
                     "to continue."
                 )
             labels[row["item_id"]] = dict(row)
@@ -399,7 +399,7 @@ class RunStore:
     def write_report(self, text: str) -> None:
         atomic_write(self.report_path, text)
 
-    # Projections: the one place state text lives on disk. Purgeable.
+    # Projections: the one place a turn's text lives on disk. Purgeable.
 
     def write_projection(self, item_id: str, text: str) -> Path:
         path = self._projection_path(item_id)

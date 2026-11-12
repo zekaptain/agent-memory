@@ -122,7 +122,7 @@ def latest_examples(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
                 if type(revision) is not int:
                     raise ValueError
             except (ValueError, TypeError):
-                raise AdmissionError("invalid human review timestamp or revision") from None
+                raise AdmissionError("invalid admission review timestamp or revision") from None
             current_order = (when, revision, order)
             if key in orders and current_order < orders[key]:
                 continue

@@ -43,7 +43,7 @@ Action = Literal["write_lesson", "review", "discard"]
 _TURN_IDS = frozenset(q.id for q in TURN_QUESTIONS)
 # A questions_v1 run asked `grounded` under the name `supported`.
 _ALIAS = {"grounded": "supported", "supported": "grounded"}
-# What the ledger copy of a verdict may hold: nothing that quotes the state or the lesson.
+# What the ledger copy of a verdict may hold: nothing that quotes the projection or the lesson.
 _LEDGER_KEYS = (
     "run_id",
     "item_id",
@@ -90,7 +90,7 @@ def derive_action(
     declined: bool = False,
 ) -> Derived:
     """write_lesson when every gate clears its threshold; review when any gate sits inside the
-    uncertainty band or was left unanswered (None); discard otherwise, and always for a draft
+    review band or was left unanswered (None); discard otherwise, and always for a draft
     the drafter declined. A gate missing from `p_true` was never asked: it cannot clear."""
     if declined:
         return Derived("discard", ["drafter declined: nothing worth keeping"])
@@ -274,8 +274,8 @@ class Verdict:
         )
 
     def decision_record(self, item: Mapping[str, Any], run_created: str) -> Record:
-        """The ledger copy of the verdict: distributions and provenance, never the state or
-        the lesson text."""
+        """The ledger copy of the verdict: distributions and provenance, never the projection
+        or the lesson text."""
         row = self.row
         answers = {
             qid: {key: answer[key] for key in _LEDGER_ANSWER_KEYS}
@@ -327,7 +327,7 @@ def _judge_input(item: Mapping[str, Any], state: str) -> JudgeInput:
 
 
 def ask_turn(backend: DecisionBackend, item: Mapping[str, Any], state: str) -> TurnAnswers:
-    """Ask the turn questions, from the projection alone. Raises what the backend raises."""
+    """Ask the turn questions, from the projection alone. Raises what the judge raises."""
     return TurnAnswers(backend.decide(_judge_input(item, state), TURN_QUESTIONS))
 
 
@@ -363,7 +363,7 @@ def judge(
     """Judge one draft of a turn in the current question set. `turn` holds answers the turn
     already has; without it the turn questions are asked first. A declined draft gets no draft
     questions and is always discarded; a turn with no draft yet gets its turn answers alone.
-    Raises what the backend raises, and then no verdict exists."""
+    Raises what the judge raises, and then no verdict exists."""
     if turn is None:
         turn = ask_turn(backend, item, state)
     answers: dict[str, Answer] = dict(turn.answers)

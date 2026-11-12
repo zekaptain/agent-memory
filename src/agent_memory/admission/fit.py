@@ -1,4 +1,4 @@
-"""Standard-library L2 logistic fitting and calibration-only admission cut selection."""
+"""Standard-library L2 logistic fitting and calibration-only choice of admission thresholds."""
 
 from __future__ import annotations
 

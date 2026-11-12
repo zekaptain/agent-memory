@@ -2,7 +2,7 @@
 distribution is read from its token log-probabilities (Li and Wagle, 2026). Local only.
 
 Ollama's native /api/chat returns per-token logprobs when asked. If a server does not, the
-backend falls back to sampling and records which method produced each answer.
+judge falls back to sampling and records which method produced each answer.
 """
 
 from __future__ import annotations

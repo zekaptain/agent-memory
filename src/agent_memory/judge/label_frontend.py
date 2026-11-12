@@ -132,7 +132,7 @@ class PlainFrontend:
         return line.rstrip("\r\n") if line else None
 
     def exchange(self, screen: Screen) -> Action:
-        self.write(f"\nLabel review | Item {screen.item} of {screen.total} | {screen.subject}")
+        self.write(f"\nLabel | Item {screen.item} of {screen.total} | {screen.subject}")
         self.write(screen.metadata.replace(" · ", "\n"))
         if screen.notice:
             self.write(screen.notice)

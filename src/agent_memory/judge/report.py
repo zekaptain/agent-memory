@@ -1,7 +1,7 @@
 """Scores verdicts against labels, freezes thresholds on the calibration split, and writes
 report.md. The held-out split is scored only after thresholds are frozen.
 
-Turn questions are scored once per item; draft questions and the write decision once per
+Turn questions are scored once per item; draft questions and the action once per
 (item, draft), per drafter. Runs built under `questions_v1` (one draft per item, `supported`
 instead of `grounded`, the v1 write rule) are read through the same code: the aliases live in
 `Verdict` and `draft_label`.
@@ -139,7 +139,7 @@ Key = tuple[str, str | None]
 
 
 def load_scored(store: RunStore) -> tuple[list[dict[str, Any]], dict[str, dict[Key, Scored]]]:
-    """Items, and per backend every labeled verdict row keyed by (item, drafter). Every
+    """Items, and per judge every labeled verdict row keyed by (item, drafter). Every
     verdict must have been judged with the run's question set."""
     items = store.items()
     labels = store.labels()
@@ -345,7 +345,7 @@ def evaluate_drafts(
         name=name,
         drafter=drafter,
         n=len(rows),
-        # A questions_v1 run froze this cut under its old name.
+        # A questions_v1 run froze this threshold under its old name.
         grounded=_binary(
             rows, "grounded", thresholds["supported" if "supported" in gates else "grounded"]
         ),
@@ -416,8 +416,9 @@ def freeze_thresholds(
     calibration_ids: set[str],
     questions_version: str | None,
 ) -> dict[str, Any]:
-    """Per backend: the accuracy-maximising cut on every labeled gate, plus the cascade gate
-    against the reference judge, all from calibration items only."""
+    """Per judge: the accuracy-maximising threshold on every labeled gate, plus the cascade's
+    threshold on confidence (stored as `gate`) against the reference judge, all from
+    calibration items only."""
     reference = reference_backend(scored)
     backends: dict[str, Any] = {}
     for name, rows_by_key in scored.items():
@@ -555,7 +556,7 @@ def _write_rows(evals: Sequence[DraftEval]) -> list[list[str]]:
 
 
 def _unanswered_note(evals: Sequence[DraftEval]) -> list[str]:
-    """Per backend, how many verdicts are a review because the judge left a write gate
+    """Per judge, how many verdicts are a review because the judge left a write gate
     unanswered. Nothing when there are none, so a run without any reads as it did before."""
     counts: dict[str, list[int]] = {}
     for e in evals:
@@ -585,7 +586,7 @@ def label_notes(
     questions_version: str | None = None,
 ) -> list[str]:
     """What the human-only labels say on their own: how turns closed, what moved, what the
-    drafters produced and how the reviewer rated them, and how often a tool error was the point."""
+    drafters produced and how the labeler rated them, and how often a tool error was the point."""
     lines: list[str] = []
     v2 = any(isinstance(label.get("drafts"), dict) for label in labels.values())
     labeled = [i for i in items if i["item_id"] in labels]
@@ -703,8 +704,8 @@ def drafter_notes(
     *,
     questions_version: str | None = None,
 ) -> list[str]:
-    """Per drafter: how often it declined and whether it was right to, how the reviewer rated its
-    lessons, which arm was preferred, and what it cost. Criterion 5 is read from this table."""
+    """Per drafter: how often it declined and whether it was right to, how the labeler rated its
+    lessons, which drafter was preferred, and what it cost. Criterion 5 is read from this table."""
     names = sorted({str(d.get("drafter") or "") for rows in drafts.values() for d in rows})
     if not names:
         return []
@@ -764,7 +765,7 @@ def drafter_notes(
                 s["declined_right"] += not label.get("worth_remembering")
                 continue
             if not isinstance(labeled_drafts, dict):
-                continue  # Historical item-level labels did not rate separate drafter arms.
+                continue  # Historical item-level labels did not rate each drafter apart.
             entry = draft_label(label, drafter, current_hashes[drafter])
             if current:
                 if (labeled_drafts.get(drafter) or {}).get("draft_hash") != current_hashes[drafter]:
@@ -1194,7 +1195,7 @@ def unlabeled_calibration(
 ) -> tuple[int, int]:
     """The calibration items a freeze would go short of: how many have no label, and how many
     have a label with questions left. The second is only known for the current question set,
-    the one a labeling session still asks."""
+    the one a sitting still asks."""
     labels = store.labels()
     drafts = store.drafts_by_item() if current else {}
     without = left = 0

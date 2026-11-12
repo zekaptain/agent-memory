@@ -53,13 +53,13 @@ def ece(probs: Sequence[float], labels: Sequence[bool], bins: int = 10) -> float
 
 
 def best_threshold(probs: Sequence[float], labels: Sequence[bool]) -> tuple[float, float]:
-    """The cut on p(yes) that maximises accuracy; ties resolve toward 0.5."""
+    """The threshold on p(yes) that maximises accuracy; ties resolve toward 0.5."""
     if not probs:
         return 0.5, 0.0
     points = sorted(set(probs))
     cuts = [0.5, *[(a + b) / 2 for a, b in itertools.pairwise(points)]]
-    # Include constant predictions. Like the cascade's escalate-all gate, 1.01 also
-    # excludes p=1 and survives the four-decimal rounding used when freezing cuts.
+    # Include constant predictions. Like the cascade's escalate-all threshold, 1.01 also
+    # excludes p=1 and survives the four-decimal rounding used when freezing thresholds.
     cuts.extend((0.0, 1.0, 1.01))
     best = (0.5, -1.0)
     for cut in cuts:
@@ -96,7 +96,7 @@ def binary_metrics(
     labels: Sequence[bool],
     threshold: float = 0.5,
 ) -> BinaryMetrics:
-    """Accuracy at `threshold`, ranking and calibration of p(yes), and how well the backend's
+    """Accuracy at `threshold`, ranking and calibration of p(yes), and how well the judge's
     confidence separates its own right answers from its wrong ones."""
     predicted = [p >= threshold for p in probs]
     correct = [p == y for p, y in zip(predicted, labels, strict=True)]
@@ -153,8 +153,9 @@ def choose_gate(
     expensive_cost: Sequence[float],
     target_accuracy: float,
 ) -> CascadeResult:
-    """The cheapest gate whose cascade accuracy meets the target; gate 1.01 (escalate all)
-    is always a candidate, so the result never falls below the expensive judge alone."""
+    """The cheapest threshold on confidence whose cascade accuracy meets the target; 1.01
+    (escalate all) is always a candidate, so the result never falls below the expensive judge
+    alone."""
     candidates = sorted({*confidences, 1.01})
     best: CascadeResult | None = None
     for gate in candidates:

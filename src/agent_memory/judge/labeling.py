@@ -1,11 +1,12 @@
 """Label definitions and conversions shared by both interactive frontends.
 
-Labels are saved per item in labels.jsonl so a session can stop and resume. Order is a seeded
-shuffle of the unlabeled items, so stratum and backend output cannot bias the reviewer. The
-drafts of an item are shown together as A, B, ... in a seeded order with the drafter hidden;
-the row records which drafter sat in each slot. A changed label keeps its previous value in
-the row's `history`, so the file stays append-only in spirit and the report can count how
-many labels moved. Unclear is an answer like Yes or No, so a move off it counts.
+Labels are saved per item in labels.jsonl so a sitting can stop and a later one resume. Order
+is a seeded shuffle of the unlabeled items, so stratum and a judge's output cannot bias the
+labeler. The drafts of an item are shown together as A, B, ... in a seeded order with the
+drafter hidden; the row records which drafter sat in each slot. A changed label keeps its
+previous value in the row's `history`, so the file stays append-only in spirit and the
+report can count how many labels moved. Unclear is an answer like Yes or No, so a move off
+it counts.
 """
 
 from __future__ import annotations
@@ -51,7 +52,7 @@ class LabelSummary:
 
 @dataclass(frozen=True)
 class DraftView:
-    """One draft as the reviewer sees it: a slot letter instead of the drafter's name."""
+    """One draft as the labeler sees it: a slot letter instead of the drafter's name."""
 
     slot: str
     drafter: str
@@ -265,7 +266,7 @@ def has_tool_errors(item: Mapping[str, Any]) -> bool:
 def questions_left(
     item: Mapping[str, Any], row: Mapping[str, Any], draft_rows: Sequence[Mapping[str, Any]]
 ) -> list[str]:
-    """What a labeling session would still ask about an item that has a label. The slot a
+    """What a sitting would still ask about an item that has a label. The slot a
     draft is shown in changes the names of its questions, not whether any is left."""
     drafts = order_drafts(str(item["item_id"]), draft_rows, seed=1)
     return missing_steps(row, drafts, has_tool_errors(item))
@@ -292,7 +293,7 @@ def _flatten(row: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _unclear(row: Mapping[str, Any]) -> set[str]:
-    """The flattened keys the reviewer answered Unclear. Such an answer is stored as null, as
+    """The flattened keys the labeler answered Unclear. Such an answer is stored as null, as
     an unanswered question is, and told apart by `incomplete` or the draft's `unknown` list."""
     keys: set[str] = set()
     if "failed" in row and row["failed"] is None and not row.get("incomplete"):

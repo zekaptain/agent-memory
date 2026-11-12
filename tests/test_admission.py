@@ -392,6 +392,8 @@ def test_plain_review_blinded_actions_and_examples(
         assert examples[0]["label"] is (answer == "1")
         assert examples[0]["source"] == actions_source(cfg)
     assert ReviewController(cfg, "2026-11-10").done
+    with pytest.raises(JudgeError, match="this sitting has ended"):
+        ReviewController(cfg, "2026-11-10").apply(Action("answer", "1"))
 
 
 def actions_source(cfg):

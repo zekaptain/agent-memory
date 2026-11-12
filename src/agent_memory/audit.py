@@ -1,6 +1,6 @@
 """Read-only ledger diagnostics and conservative reconstruction of legacy replacements.
 
-No content, payloads, review reasons, tokens, or user-supplied metadata are returned.
+No content, payloads, review action reasons, tokens, or user-supplied metadata are returned.
 The legacy helper proves historical acceptance, not current eligibility: a later
 quarantine or retirement must never resurrect an accepted predecessor.
 """
@@ -198,7 +198,7 @@ def legacy_preflight(source: AuditSource) -> LegacyPreflight:
     This also works inside a migration's existing transaction. It neither starts nor
     commits one. No dependency on status views or later lifecycle tables is required.
     Multiple claimants, cycles, cross-scope edges, inactive predecessors, and ordering
-    that cannot be proved from legacy review history block automatic reconstruction.
+    that cannot be proved from legacy review actions block automatic reconstruction.
     A future validity boundary alone is not an acceptance event.
     """
     missing = _missing(_schema(source), _LEGACY_COLUMNS)
@@ -265,8 +265,8 @@ def _legacy(source: AuditSource, *, as_of: datetime) -> LegacyPreflight:
                 reasons.append("legacy_acceptance_ambiguous")
             else:
                 at, method, evidence = candidate
-                # rowid orders actions within one table, not a memory creation against
-                # its predecessor's review. Do not invent a cross-table tie breaker.
+                # rowid orders actions within one table, not a memory creation against its
+                # predecessor's review action. Do not invent a cross-table tie breaker.
                 predecessor_reviews = reviews[predecessor_id]
                 if evidence is not None:
                     approval = next(a for a in reviews[mid] if a["action_id"] == evidence)

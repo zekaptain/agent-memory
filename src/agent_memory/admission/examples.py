@@ -147,7 +147,8 @@ def _item_id(row: Mapping[str, Any]) -> str:
 
 
 def _import_identity(source: str, backend: str, embedder: str) -> str:
-    # Different model arms share the human label, not their embedding or gate features.
+    # Imports for another judge or embedder share the human label, not the embedding or the
+    # gate features.
     value = {"source": source, "backend": backend, "embedder": embedder}
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 

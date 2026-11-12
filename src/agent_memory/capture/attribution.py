@@ -1,4 +1,4 @@
-"""Conservative answer attribution from captured tool results and the turns outcomes name."""
+"""Conservative attribution of citations, from captured tool results and the turns outcomes name."""
 
 from __future__ import annotations
 
@@ -111,7 +111,7 @@ def evidence_from_records(records: Sequence[Record]) -> list[dict[str, Any]]:
         turn = str(attr.get("turn_id") or "")
         if not placeholder or not turn or turn not in complete_turns:
             continue
-        # An explicit supplied answer is already linked by cite. Do not reinterpret it.
+        # A reply the agent named itself is already linked by cite. Do not reinterpret it.
         supplied = (call.payload or {}).get("tool_input") or {}
         if isinstance(supplied, dict) and supplied.get("answer_event_id"):
             continue

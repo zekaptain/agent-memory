@@ -33,8 +33,8 @@ def check_asker(agent_id: str, action: str) -> None:
     Approving a memory is a human's decision: an agent that could approve what it wrote
     from tool output would hold the key to its own quarantine. The approvals that a write
     brings with it are not asked for and do not come through here: an entity merge keeps
-    the approval of the relation it rewrites, and admission in auto mode approves a lesson
-    on the approver's score.
+    the approval of the relation it rewrites, and admission in auto mode approves the memory
+    a lesson becomes on the approver's score.
     """
     if action == "approve" and agent_id != HUMAN_AGENT:
         raise LifecycleError("only a human approves a memory; ask the user to run `mem review`")

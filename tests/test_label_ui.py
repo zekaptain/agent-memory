@@ -212,9 +212,9 @@ def test_save_failure_retry_and_redo_preserve_earlier_items(tmp_path, monkeypatc
     assert len(resumed.todo) == 1
 
 
-def test_two_sessions_on_one_run_keep_each_others_saves(tmp_path):
-    """Each session used to write the labels it had read when it opened plus its own, so the
-    session that saved second erased what the first had saved meanwhile."""
+def test_two_sittings_on_one_run_keep_each_others_saves(tmp_path):
+    """Each sitting used to write the labels it had read when it opened plus its own, so the
+    sitting that saved second erased what the first had saved meanwhile."""
     store = fresh(tmp_path, 3, two=False)
     first_id, second_id, _ = (item["item_id"] for item in store.read_jsonl(store.items_path))
     first = LabelController(store, item_ids=[first_id])
@@ -228,14 +228,14 @@ def test_two_sessions_on_one_run_keep_each_others_saves(tmp_path):
     assert len(LabelController(store).todo) == 1
 
 
-def test_a_label_another_session_saved_is_not_overwritten(tmp_path):
+def test_a_label_another_sitting_saved_is_not_overwritten(tmp_path):
     store = fresh(tmp_path, 1, two=False)
     first, second = LabelController(store), LabelController(store)
     to_summary(first)
     answer(first, "save")
     saved = store.labels_path.read_bytes()
     to_summary(second)
-    with pytest.raises(JudgeError, match="Another labeling session"):
+    with pytest.raises(JudgeError, match="Another sitting has saved"):
         answer(second, "save")
     assert store.labels_path.read_bytes() == saved
     assert second.labeled == 0
@@ -256,14 +256,14 @@ def test_a_relabel_does_not_overwrite_a_newer_relabel(tmp_path):
     # The edit history keeps the answer the relabel replaced.
     assert store.read_jsonl(store.labels_path)[0]["history"][0]["changed"]["failed"] is False
     to_summary(second)
-    with pytest.raises(JudgeError, match="Another labeling session"):
+    with pytest.raises(JudgeError, match="Another sitting has saved"):
         answer(second, "save")
     assert store.labels_path.read_bytes() == saved
 
 
-def test_a_session_leaves_out_an_item_another_session_labeled_meanwhile(tmp_path):
-    """The session read the other one's label back with its own save, and then opened that
-    item on a summary of answers its reviewer never gave."""
+def test_a_sitting_leaves_out_an_item_another_sitting_labeled_meanwhile(tmp_path):
+    """The sitting read the other one's label back with its own save, and then opened that
+    item on a summary of answers its labeler never gave."""
     store = fresh(tmp_path, 3, two=False)
     mine = LabelController(store)
     first_id, theirs_id, last_id = (item["item_id"] for item in mine.todo)
@@ -276,7 +276,7 @@ def test_a_session_leaves_out_an_item_another_session_labeled_meanwhile(tmp_path
     assert mine.item["item_id"] == last_id
     assert mine.step != "summary"
     assert "Saved." in mine.screen().notice
-    assert "another session" in mine.screen().notice
+    assert "another sitting labeled" in mine.screen().notice
     to_summary(mine)
     answer(mine, "save")
     assert mine.done
@@ -285,7 +285,7 @@ def test_a_session_leaves_out_an_item_another_session_labeled_meanwhile(tmp_path
     assert list(store.labels()) == [theirs_id, first_id, last_id]
 
 
-def test_a_session_refused_over_a_same_item_clash_closes_its_frontend(
+def test_a_sitting_refused_over_a_same_item_clash_closes_its_frontend(
     tmp_path, monkeypatch, capsys
 ):
     store = fresh(tmp_path, 1, two=False)
@@ -298,7 +298,7 @@ def test_a_session_refused_over_a_same_item_clash_closes_its_frontend(
         def exchange(self, screen):
             key = screen.key.partition(":")[2]
             if key == "summary":
-                # A second session labels the item while this one is on its last screen.
+                # A second sitting labels the item while this one is on its last screen.
                 other = LabelController(store)
                 to_summary(other)
                 answer(other, "save")
@@ -319,7 +319,7 @@ def test_a_session_refused_over_a_same_item_clash_closes_its_frontend(
     monkeypatch.setattr(label_frontend, "GoFrontend", Frontend)
     monkeypatch.setattr(label_frontend, "automatic_plain", lambda: False)
     monkeypatch.setattr(label_frontend, "frontend_binary", lambda **kwargs: tmp_path / "unused")
-    with pytest.raises(JudgeError, match="Another labeling session"):
+    with pytest.raises(JudgeError, match="Another sitting has saved"):
         label_frontend.label_session(store)
     assert closed == [True]
     assert "Saved" not in capsys.readouterr().out
@@ -482,6 +482,12 @@ def test_plain_commands_notes_brackets_and_control_safety(tmp_path):
     assert plain.exchange(controller.screen()) == Action("answer", "n")
     assert "Labeling guide" in out.getvalue()
     assert "\x1b" not in out.getvalue()
+    # The words a labeler reads are the glossary's: a sitting, no "author" for what wrote a
+    # draft, and no bare "review". The guide cannot say "drafter": that word must not reach
+    # the helper at all.
+    assert "\nLabel | Item 1 of 1 | " in out.getvalue()
+    assert "Which model wrote a draft is hidden" in out.getvalue()
+    assert "Skip leaves it for another sitting." in out.getvalue()
     to_summary(controller)
     controller.apply(Action("back"))
     plain = PlainFrontend(io.StringIO("1\nq\n"), out)
@@ -493,6 +499,14 @@ def test_plain_commands_notes_brackets_and_control_safety(tmp_path):
     assert display_safe("\x1b]52;c;attack\x07\r\u009b2J\u202eevil") == (
         "\\u001b]52;c;attack\\u0007\\u000d\\u009b2J\\u202eevil"
     )
+
+
+def test_a_controller_that_is_done_says_its_sitting_has_ended(tmp_path):
+    controller = LabelController(fresh(tmp_path, 1, two=False))
+    controller.apply(Action("quit"))
+    assert controller.done
+    with pytest.raises(JudgeError, match="this sitting has ended"):
+        controller.screen()
 
 
 def test_protocol_two_and_plain_claim_focus(tmp_path):
@@ -1065,7 +1079,7 @@ def test_drive_shows_any_controllers_screens_until_it_is_done(monkeypatch, inter
     monkeypatch.setattr(label_frontend, "frontend_binary", binary)
     controller = Steps(2)
     label_frontend.drive(controller, progress=say)
-    # The helper's build reports its progress to whoever asked for the session.
+    # The helper's build reports its progress to whoever asked for the sitting.
     assert calls.pop(0) == ("build", {"progress": say})
     if interrupted:
         # What was applied stays applied, and the helper is closed without a last message.

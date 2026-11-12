@@ -185,8 +185,8 @@ class LabelController:
                 else None
             )
             if self.only == []:
-                # Nothing is left to ask: another session has finished this item since this
-                # one opened, and its label came back with this session's last save.
+                # Nothing is left to ask: another sitting has finished this item since this
+                # one opened, and its label came back with this sitting's last save.
                 self.index += 1
                 left_out += 1
                 continue
@@ -197,7 +197,7 @@ class LabelController:
             break
         if left_out:
             items = "1 item" if left_out == 1 else f"{left_out} items"
-            self.notice = f"{self.notice} Left out {items} another session labeled.".strip()
+            self.notice = f"{self.notice} Left out {items} another sitting labeled.".strip()
 
     def _advance(self) -> None:
         self.index += 1
@@ -266,7 +266,7 @@ class LabelController:
 
     def screen(self) -> Screen:
         if self.done:
-            raise JudgeError("labeling session has ended")
+            raise JudgeError("this sitting has ended")
         step = self.step
         title, options = question(step, [draft.slot for draft in self.drafts])
         subject, evidence, drafts = "Turn", self.projection, []

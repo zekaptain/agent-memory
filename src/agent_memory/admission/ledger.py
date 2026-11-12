@@ -1,4 +1,4 @@
-"""Admission writes and reviews, with append-only lifecycle deduplication."""
+"""Admission's memories and review actions, with append-only lifecycle deduplication."""
 
 from __future__ import annotations
 

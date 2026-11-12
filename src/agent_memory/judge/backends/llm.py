@@ -1,11 +1,11 @@
 """The reasoning baseline: a local model prompted with the rubric, answering in JSON.
 
 Its self-reported probability is the confidence. The literature says that number is poorly
-calibrated; measuring it against the decision backends is part of the experiment.
+calibrated; measuring it against the readout and Jev judges is part of the experiment.
 
 The judge is the same on either server: `llm:` asks Ollama, `llamacpp:` asks llama-server.
-Each runs under its own backend name, so one run can hold verdicts from both and the report
-lays them side by side. Only an `llm:` backend can be the reference judge.
+Each runs under its own name, so one run can hold verdicts from both and the report lays
+them side by side. Only an `llm:` judge can be the reference judge.
 """
 
 from __future__ import annotations
@@ -156,12 +156,12 @@ class ReasoningJudge:
 
 
 def ollama_judge(model: str, *, host: str = OLLAMA_HOST, think: bool = True) -> ReasoningJudge:
-    """The `llm:<model>` backend."""
+    """The `llm:<model>` judge."""
     return ReasoningJudge(f"llm:{model}", Ollama(model, host), think=think)
 
 
 def llamacpp_judge(model: str, *, host: str = LLAMACPP_HOST, think: bool = True) -> ReasoningJudge:
-    """The `llamacpp:<model>` backend. It asks for thinking apart from the text, so the
+    """The `llamacpp:<model>` judge. It asks for thinking apart from the text, so the
     answer is not buried in it."""
     return ReasoningJudge(
         f"llamacpp:{model}", LlamaCpp(model, host, split_thinking=True), think=think

@@ -58,7 +58,7 @@ def import_command(
     ctx: typer.Context,
     source: Annotated[Path, typer.Option("--from", help="Frozen v4 experiment run directory.")],
     backend: Annotated[
-        str, typer.Option(help="Judge arm whose gates to import.")
+        str, typer.Option(help="The judge whose answers to import.")
     ] = DEFAULT_BACKEND,
     embedder: Annotated[str, typer.Option()] = DEFAULT_EMBEDDER,
 ) -> None:
@@ -136,9 +136,11 @@ def run_command(
     ctx: typer.Context,
     day: Annotated[str | None, typer.Option(help="UTC day; defaults to today.")] = None,
     drafter: Annotated[str, typer.Option()] = DEFAULT_DRAFTER,
-    backend: Annotated[str | None, typer.Option(help="Must match the fitted backend.")] = None,
+    backend: Annotated[
+        str | None, typer.Option(help="Must match the judge the approver was fitted with.")
+    ] = None,
 ) -> None:
-    """Draft and judge captured turns, then quarantine surviving lessons."""
+    """Draft and judge captured turns, then admit the surviving lessons as memories."""
     cfg = _config(ctx)
     with _locked(cfg):
         result = run_day(
@@ -155,9 +157,9 @@ def review_command(
     seed: Annotated[int, typer.Option()] = 1,
     limit: Annotated[int | None, typer.Option(min=1)] = None,
     plain: Annotated[bool, typer.Option("--plain")] = False,
-    again: Annotated[bool, typer.Option("--again", help="Reopen completed reviews.")] = False,
+    again: Annotated[bool, typer.Option("--again", help="Show answered lessons again.")] = False,
 ) -> None:
-    """Review blinded lessons, including a seeded sample of rejected drafts."""
+    """Rate blinded lessons, including a seeded sample of discarded ones."""
     cfg = _config(ctx)
     with _locked(cfg):
         result = review_day(

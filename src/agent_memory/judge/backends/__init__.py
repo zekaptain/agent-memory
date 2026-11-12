@@ -1,4 +1,4 @@
-"""Judge backends: rules, local readout, local reasoning judge (Ollama or llama.cpp), hosted Jev."""
+"""The judges: rules, local readout, local reasoning judge (Ollama or llama.cpp), hosted Jev."""
 
 from .base import Answer, DecisionBackend, JudgeInput, make_backend
 

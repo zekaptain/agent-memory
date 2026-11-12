@@ -2,7 +2,7 @@
 
 Each step is resumable and writes JSONL under the run directory. Verdicts also land in the
 experiment ledger as `decision` events so the ledger itself can answer "what did the judge
-say about this turn, with which model, at what cost". State text never enters those events.
+say about this turn, with which model, at what cost". No projection text enters those events.
 """
 
 from __future__ import annotations
@@ -65,11 +65,11 @@ def quiet(_: str) -> None:
 
 
 class _Failures:
-    """When the failures of one drafter or backend end a command.
+    """When the failures of one drafter or judge end a command.
 
     A failed item is skipped, and the next command asks it again. The command stops after
     `STOP_AFTER` failures in a row when the fault is not the items': the model server could
-    not be reached each time, or this drafter or backend has written nothing in the run yet.
+    not be reached each time, or this drafter or judge has written nothing in the run yet.
     So an item that fails every time cannot stop a run, and neither a server that is not
     there nor an unfit model can use a run up."""
 
@@ -399,7 +399,7 @@ def draft_items(
         incompatible = sorted(versions - {DRAFTER_VERSION})
         if incompatible:
             raise JudgeError(
-                f"run {run_id} holds {', '.join(incompatible)} drafts; {DRAFTER_VERSION} arms "
+                f"run {run_id} holds {', '.join(incompatible)} drafts; {DRAFTER_VERSION} drafts "
                 "cannot be mixed in. Start a new run."
             )
         drafter = make_drafter(drafter_spec)
@@ -471,7 +471,7 @@ def expected_verdicts(
 
 @dataclass
 class DecideSummary:
-    """Per backend: the verdicts written, and the failures that left a verdict unwritten."""
+    """Per judge: the verdicts written, and the failures that left a verdict unwritten."""
 
     written: dict[str, int] = field(default_factory=dict)
     failed: dict[str, int] = field(default_factory=dict)
@@ -488,7 +488,7 @@ def decide_items(
     log: Log = quiet,
     warn: Log | None = None,
 ) -> DecideSummary:
-    """Run each backend over every (item, draft) without a current verdict. The turn questions
+    """Ask each judge about every (item, draft) without a current verdict. The turn questions
     are asked once per item and copied into every row of that item."""
     warn = warn or log
     ensure_experiment_home(cfg)
@@ -500,7 +500,7 @@ def decide_items(
     if record_events:
         require_judge_agent(cfg)
     expected = expected_verdicts(items, drafts)
-    # A backend named twice is run once. Every verdict file this command will write is held
+    # A judge named twice is run once. Every verdict file this command will write is held
     # before any model is called, so a second command is refused before it costs anything.
     backends = list({b.name: b for b in map(make_backend, backend_specs)}.values())
     summary = DecideSummary()

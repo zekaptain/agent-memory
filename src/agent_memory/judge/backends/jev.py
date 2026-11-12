@@ -1,8 +1,8 @@
-"""Hosted Jev through the OpenRouter Decisions API. Opt-in: it sends redacted state off-machine.
+"""Hosted Jev through the OpenRouter Decisions API. Opt-in: it sends redacted text off-machine.
 
 Request and response shapes follow TypeSafe's System One API (noul, choice, score) as served by
 OpenRouter at /api/alpha/decisions. The model snapshot the gateway served is recorded with
-every answer. State text is never logged by this module.
+every answer. Projection text is never logged by this module.
 """
 
 from __future__ import annotations

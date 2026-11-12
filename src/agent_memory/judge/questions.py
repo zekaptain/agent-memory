@@ -65,7 +65,7 @@ CATEGORIES: dict[str, str] = {
 }
 
 # Where a lesson may already be enforced. Shared by the `enforced` question and the
-# `enforced_by` label, so the judge and the reviewer answer from the same options.
+# `enforced_by` label, so the judge and the labeler answer from the same options.
 ENFORCED: dict[str, str] = {
     "none": "Nothing else makes the agent behave this way; memory would be the only place.",
     "harness": "The harness already enforces it (Mission prompts, system prompt, subagent "
@@ -254,8 +254,8 @@ def draft_questions_for(lesson: Lesson | None) -> tuple[Question, ...]:
     )
 
 
-# How a backend marks a question its judge did not usably answer: the answer's method ends in
-# one of these. The probabilities stored beside it are a uniform placeholder, never evidence.
+# How a judge marks a question it did not usably answer: the answer's method ends in one of
+# these. The probabilities stored beside it are a uniform stand-in, never evidence.
 UNANSWERED: tuple[str, ...] = ("_missing", "_unmatched", "_no_probability")
 
 
@@ -288,6 +288,6 @@ def write_gates(questions_version: str | None) -> tuple[str, ...]:
 
 
 def thresholds_from_run(run: Mapping[str, Any], backend: str | None = None) -> dict[str, float]:
-    """Defaults, then the run's thresholds, then whatever was frozen for this backend."""
+    """Defaults, then the run's thresholds, then whatever was frozen for this judge."""
     frozen = (run.get("frozen") or {}).get("backends", {}).get(backend or "", {})
     return {**DEFAULT_THRESHOLDS, **run.get("thresholds", {}), **frozen.get("thresholds", {})}

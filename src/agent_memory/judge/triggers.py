@@ -246,7 +246,7 @@ def is_correction(text: str | None) -> bool:
 
 
 def tool_error_facts(turn: Turn) -> dict[str, Any]:
-    """Counts the rules backend and the projection share: errors, repeats, tools used."""
+    """Counts the rules judge and the projection share: errors, repeats, tools used."""
     calls = {e.event_id: e for e in turn.of_kind("tool_call")}
     tools_used: list[str] = []
     for call in calls.values():

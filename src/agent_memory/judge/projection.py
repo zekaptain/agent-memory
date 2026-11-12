@@ -1,7 +1,7 @@
-"""State projection (`projection_v3`): the bounded, deterministic text a judge sees for a turn.
+"""The projection (`projection_v3`): the bounded, deterministic text a judge sees for a turn.
 
 Built from ledger events only. Event ids never enter the text; a sidecar maps the numbered
-lines back to events so a verdict can cite evidence without the state leaving the machine.
+lines back to events so a verdict can cite evidence without the text leaving the machine.
 User messages are shown without the harness blocks the transcript wraps them in, and the
 header says who started the session, how the turn closed, and who wrote the next message.
 

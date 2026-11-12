@@ -20,10 +20,10 @@ from .examples import example_for
 from .store import AdmissionStore, memory_split, write_jsonl
 
 GUIDE = textwrap.fill(
-    "Judge the exact lesson, without repairing it. Yes approves it for recall; No retires it; "
-    "Unclear leaves its status alone. Review the rule's scope as well as its claims. "
-    "The approver's verdict and model identities are hidden. You may add a note, go back, "
-    "redo, skip, or quit without losing saved reviews.",
+    "Rate the exact lesson, without repairing it. Yes approves it for recall; No retires it; "
+    "Unclear leaves its status alone. Check the rule's scope as well as its claims. "
+    "The approver's score and the models' names are hidden. You may add a note, go back, "
+    "redo, skip, or quit without losing saved answers.",
     width=58,
 )
 
@@ -123,7 +123,7 @@ class ReviewController:
                 "Add a note?",
                 [Option("edit", "Add/edit note"), Option("continue", "Continue")],
             ),
-            "summary": ("Save this review?", [Option("save", "Save"), Option("redo", "Redo")]),
+            "summary": ("Save this answer?", [Option("save", "Save"), Option("redo", "Redo")]),
         }[step]
         evidence = ""
         if step == "summary":
@@ -168,7 +168,7 @@ class ReviewController:
 
     def apply(self, action: Action) -> None:
         if self.done:
-            raise JudgeError("review session has ended")
+            raise JudgeError("this sitting has ended")
         screen = self.screen()
         step = ("store", "note", "summary")[self.position]
         self.notice = ""
@@ -217,7 +217,7 @@ class ReviewController:
         iid = result["item_id"]
         current = self.day.drafts_by_item().get(iid, [])
         if current != [self.drafts[iid]]:
-            raise JudgeError("draft changed during review; quit and reopen the review")
+            raise JudgeError("draft changed during admission review; quit and start it again")
         previous = self.previous.get(iid)
         revision = int(previous.get("revision", 0)) + 1 if previous else 1
         row = {

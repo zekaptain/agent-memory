@@ -127,9 +127,10 @@ A failed tool call may be intentional: a probe, a negative test, or a search wit
 Answer Yes only when the error was expected and used.
 
 Drafts
-Draft A, B, etc. are in seeded random order. Authors are hidden. No lesson means the author
-declined; it has no draft questions. Citations refer to numbered entries in the projection.
-Missing citation numbers provide no evidence. p opens the full stored projection.
+Draft A, B, etc. are in seeded random order. Which model wrote a draft is hidden. No lesson
+means that model declined; it has no draft questions. Citations refer to numbered entries in
+the projection. Missing citation numbers provide no evidence. p opens the full stored
+projection.
 
 Grounded versus faithful
 Grounded: every claim traces to relevant evidence, especially the cited entries. No if a
@@ -160,6 +161,6 @@ draft. Answer Unclear rather than guessing; unclear or missing answers are not s
 Comparison, notes and saving
 Choose a draft, rate the drafts equally, or keep none. A note is optional and literal text.
 Back restores the previous answer. Changing it removes answers that no longer apply.
-Review the summary before saving. Redo restarts this item. Skip leaves it for another session.
+Review the summary before saving. Redo restarts this item. Skip leaves it for another sitting.
 Quit keeps previously saved items; this item's unsaved answers are not written.
 """

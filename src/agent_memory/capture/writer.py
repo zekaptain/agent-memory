@@ -164,7 +164,7 @@ class Writer:
         except Exception as exc:
             if _ledger_unavailable(exc):
                 raise
-            result.warnings.append(f"answer binding failed: {self._reason(exc)}")
+            result.warnings.append(f"binding citations to replies failed: {self._reason(exc)}")
         return result
 
     def _reason(self, exc: Exception) -> str:
@@ -265,8 +265,8 @@ class Writer:
                 rows.append(("events", layers[depth]))
             result.events = len(event_rows)
 
-        # Online writes and queued replay share exactly the same dedupe,
-        # proposal, sources and review semantics. Returned queued IDs persist.
+        # Online writes and queued replay share exactly the same dedupe, proposal,
+        # sources and review action semantics. Returned queued IDs persist.
         plan = LifecyclePlan(self.client)
         memory_recs = {
             ids.memory_id(r.agent_id, r.harness_session_id, r.source_key): r
@@ -409,7 +409,8 @@ def _dependencies(
 ) -> tuple[dict[int, set[int]], dict[int, Exception]]:
     """For each position in the batch, the positions of the records it refers to: its parent
     event, the events a memory names as sources, and the memories a correction or review
-    names. Also returns the positions whose references could not be read, with the error."""
+    action names. Also returns the positions whose references could not be read, with the
+    error."""
     events = {
         ids.event_id(rec.agent_id, rec.harness_session_id, rec.kind, rec.source_key): index
         for index, rec in enumerate(batch)

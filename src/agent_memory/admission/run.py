@@ -30,7 +30,7 @@ DEFAULT_DRAFTER = "ollama:gemma4:26b"
 
 
 def _local_drafter(spec: str) -> Any:
-    # Admission deliberately does not offer the hosted experiment drafter arm.
+    # Admission deliberately does not offer the experiment's hosted drafter.
     if spec.startswith("ollama:"):
         host = endpoints.OLLAMA_HOST
     elif spec.startswith("llamacpp:"):

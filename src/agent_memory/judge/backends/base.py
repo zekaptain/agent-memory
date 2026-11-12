@@ -1,4 +1,4 @@
-"""The one interface every judge backend implements, and the answer shape they all return."""
+"""The one interface every judge implements, and the answer shape they all return."""
 
 from __future__ import annotations
 
@@ -86,9 +86,9 @@ def normalize(probabilities: Mapping[str, float], options: Sequence[str]) -> dic
 def answer_from_probabilities(
     question: Question, probabilities: Mapping[str, float], *, method: str, **extra: Any
 ) -> Answer:
-    """An answer from whatever distribution a backend read. A distribution with no mass on
+    """An answer from whatever distribution a judge read. A distribution with no mass on
     any of the question's options is no answer: the result is a uniform placeholder whose
-    method says so, whichever backend produced it."""
+    method says so, whichever judge produced it."""
     options = question.options()
     probs = normalize(probabilities, options)
     if not unanswered(method) and not any(float(probabilities.get(o, 0.0)) > 0 for o in options):

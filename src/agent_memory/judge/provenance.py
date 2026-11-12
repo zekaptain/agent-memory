@@ -1,4 +1,4 @@
-"""Who is speaking (`provenance_v1`): session callers and the provenance of user messages.
+"""Who is speaking (`provenance_v1`): the caller of a session and the author of a user message.
 
 A Droid transcript's `user` role carries three different authors. A person types in a
 top-level session. A parent agent writes the opening task and any follow-ups of a spawned

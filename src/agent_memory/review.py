@@ -1,5 +1,5 @@
-"""`mem review`: the memories that wait for a human, and the human's approval or retirement
-of one. Registered on the main app from cli.py."""
+"""`mem review`: the memories awaiting approval, and a human's approval or retirement of
+one. Registered on the main app from cli.py."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from .lifecycle import HUMAN_AGENT, LifecyclePlan
 from .mcp_server.tools import MemoryTools
 
 review_app = typer.Typer(
-    help="The memories that wait for a human, and the human's approval or retirement of one.",
+    help="The memories awaiting approval, and a human's approval or retirement of one.",
     no_args_is_help=True,
 )
 
@@ -62,7 +62,7 @@ class Waiting:
 def waiting(
     client: MemoryClient, *, scopes: list[str] | None = None, memory_id: str | None = None
 ) -> list[Waiting]:
-    """What waits for a human, oldest first. It is not a recall: none of it is something an
+    """The memories awaiting approval, oldest first. It is not a recall: none of it is something an
     agent may be shown, and nothing is recorded about the reading."""
     filters = ""
     if scopes:
@@ -96,7 +96,7 @@ def waiting(
 
 
 def reviewer(cfg: Config) -> MemoryTools:
-    """What a human's review is written with: the human agent, in a session of its own."""
+    """What a human's review action is written with: the human agent, in a session of its own."""
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     return MemoryTools(cfg, HUMAN_AGENT, harness_session_id=f"review-{stamp}", observed=COMMAND)
 
@@ -120,7 +120,7 @@ SCOPES = Annotated[
 ]
 MEMORY_ID = Annotated[str, typer.Argument(callback=_memory_id, help="The memory's id.")]
 REASON = Annotated[
-    str, typer.Option(callback=_reason, help="Why. It is kept with the review, redacted.")
+    str, typer.Option(callback=_reason, help="Why. It is kept with the review action, redacted.")
 ]
 
 
@@ -163,31 +163,31 @@ def _decide(cfg: Config, action: str, memory_id: str, reason: str) -> None:
 
 @review_app.command("list")
 def list_waiting(ctx: typer.Context, scope: SCOPES = None) -> None:
-    """Every memory that waits for a human, oldest first: those in quarantine, and active
-    ones a tool's output asked to put in another memory's place."""
+    """Every memory awaiting approval, oldest first: those in quarantine, and active ones a
+    tool's output asked to put in another memory's place."""
     with MemoryClient.from_config(command_config(ctx)) as client:
         found = waiting(client, scopes=scope)
     if not found:
-        print("nothing waits for review")
+        print("nothing awaits approval")
         return
     for memory in found:
         _show(memory)
         print()
     count = len(found)
-    print(f"{count} {'memory waits' if count == 1 else 'memories wait'} for review")
+    print(f"{count} {'memory awaits' if count == 1 else 'memories await'} approval")
 
 
 @review_app.command()
 def approve(ctx: typer.Context, memory_id: MEMORY_ID, reason: REASON) -> None:
-    """Let a waiting memory be recalled. It shows the memory and asks for a yes typed at a
-    terminal: an approval is a human's, so an answer that is piped in is refused."""
+    """Let a memory awaiting approval be recalled. It shows the memory and asks for a yes
+    typed at a terminal: an approval is a human's, so a yes that is piped in is refused."""
     if not sys.stdin.isatty():
         raise ReviewError(
             "approving a memory takes a human at a terminal; run `mem review approve` yourself"
         )
     cfg = command_config(ctx)
     with MemoryClient.from_config(cfg) as client:
-        # A duplicate's id stands for its canonical, as it does in every review.
+        # A duplicate's id stands for its canonical, as it does in every review action.
         target = LifecyclePlan(client).resolve(memory_id)
         found = waiting(client, memory_id=target)
         if not found:
@@ -208,5 +208,5 @@ def approve(ctx: typer.Context, memory_id: MEMORY_ID, reason: REASON) -> None:
 
 @review_app.command()
 def retire(ctx: typer.Context, memory_id: MEMORY_ID, reason: REASON) -> None:
-    """Withdraw a memory for good, whether or not it waits. Retirement is not undone."""
+    """Withdraw a memory for good, whether or not it awaits approval. Retirement is not undone."""
     _decide(command_config(ctx), "retire", memory_id, reason)

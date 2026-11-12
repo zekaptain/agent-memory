@@ -235,9 +235,9 @@ def test_a_label_is_saved_only_over_the_label_its_writer_read(tmp_path):
     assert saved[first["item_id"]]["note"] == "mine"
     before = store.labels_path.read_bytes()
     for stale in (first, None):
-        with pytest.raises(JudgeError, match="Another labeling session"):
+        with pytest.raises(JudgeError, match="Another sitting has saved"):
             store.save_label({**first, "note": "theirs"}, seen=stale)
-    with pytest.raises(JudgeError, match="Another labeling session"):
+    with pytest.raises(JudgeError, match="Another sitting has saved"):
         store.save_label({"item_id": "new", "failed": True}, seen=first)
     assert store.labels_path.read_bytes() == before
     # What comes back is what a later reader sees, so it serves as the next `seen`.
