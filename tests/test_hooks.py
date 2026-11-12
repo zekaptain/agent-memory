@@ -20,7 +20,6 @@ EVENTS = [
     "SessionEnd",
     "UserPromptSubmit",
     "PreCompact",
-    "SubagentStop",
     "Notification",
     "Stop",
 ]
@@ -78,7 +77,7 @@ def test_install_writes_one_command_at_each_hook_event_capture_needs(mem, hooks_
     assert read(hooks_file) == {event: [hook(capture(mem))] for event in EVENTS}
     assert list(read(hooks_file)) == EVENTS
     assert hooks_file.stat().st_mode & 0o777 == 0o600
-    assert "7 hooks" in out
+    assert f"{len(EVENTS)} hooks" in out
     assert capture(mem) in out
     # A hook runs with Droid's environment, so the command names everything itself.
     assert THIS_MEM.is_absolute()
@@ -227,7 +226,7 @@ def test_uninstall_leaves_the_file_as_it_was_without_mem(mem, hooks_file):
     # An event that held nothing before mem's hook holds nothing after, and is not kept.
     assert read(hooks_file) == {event: groups for event, groups in theirs().items() if groups}
     assert list(read(hooks_file)) == ["SessionStart", "PreToolUse"]
-    assert "7 hooks" in out
+    assert f"{len(EVENTS)} hooks" in out
     assert "2 other hooks" in out
     # With nothing of mem's in it the file is not written again.
     hooks_file.write_text(json.dumps(theirs()))
@@ -243,17 +242,17 @@ def test_uninstall_leaves_the_file_as_it_was_without_mem(mem, hooks_file):
 def test_status_says_at_which_hook_events_capture_runs(mem, hooks_file):
     code, out, _ = mem("hooks", "status", "--file", str(hooks_file))
     assert code == 1
-    assert out.count("missing") == 7
+    assert out.count("missing") == len(EVENTS)
     assert mem("hooks", "install", "--keep-raw", "--file", str(hooks_file))[0] == 0
     code, out, _ = mem("hooks", "status", "--file", str(hooks_file))
     assert code == 0
-    assert out.count("installed") >= 7
+    assert out.count("installed") >= len(EVENTS)
     assert "missing" not in out
     # Read with another port in use, the same file runs something else.
     moved = Mem(home=mem.home, port=mem.port + 1, capsys=mem.capsys)
     code, out, _ = moved("hooks", "status", "--file", str(hooks_file))
     assert code == 1
-    assert out.count("differs") == 7
+    assert out.count("differs") == len(EVENTS)
     assert capture(mem, "--keep-raw") in out
     # One hook event short, and one too many.
     found = read(hooks_file)

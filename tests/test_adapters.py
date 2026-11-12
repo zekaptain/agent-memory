@@ -411,7 +411,20 @@ def test_droid_pre_tool_hook_is_off_by_default():
     assert note.content == "Read {}"
 
 
-@pytest.mark.parametrize("event", ["Notification", "SubagentStop", "PreToolUse", "BrandNewEvent"])
+def test_droid_subagent_stop_hook_records_nothing():
+    # Droid sends a finished task's name and result and names neither the task nor a
+    # message. The parent's transcript gains a message that holds both, so what the hook
+    # wrote could not be told from the transcript's record of the same task.
+    payload = hook(
+        "SubagentStop",
+        stop_hook_active=False,
+        task_name="Explore the capture path",
+        task_result="A report of some thousand words.",
+    )
+    assert DroidAdapter().from_hook(payload) == []
+
+
+@pytest.mark.parametrize("event", ["Notification", "PreToolUse", "BrandNewEvent"])
 def test_droid_hooks_one_message_can_raise_twice_are_separate_events(event, monkeypatch):
     # The message's id does not tell the first from the second, so when each ran does.
     ran_at = iter(datetime(2026, 11, 11, 12, 0, second, tzinfo=UTC) for second in (1, 2))
@@ -455,11 +468,11 @@ def test_droid_names_the_hook_events_capture_needs():
         "SessionEnd",
         "UserPromptSubmit",
         "PreCompact",
-        "SubagentStop",
         "Notification",
         "Stop",
         "PreToolUse",
         "PostToolUse",
+        "SubagentStop",
     ]
     adapter = DroidAdapter()
     needed = [
@@ -468,7 +481,7 @@ def test_droid_names_the_hook_events_capture_needs():
         if adapter.from_hook(hook(event)) or adapter.transcript_due(hook(event))
     ]
     assert list(HOOK_EVENTS) == list(adapter.hook_events) == needed
-    assert needed == known[:7]
+    assert needed == known[:6]
     # Asked to record a note before each tool call, it needs that hook event too.
     noting = DroidAdapter(record_pre_tool=True)
     assert list(noting.hook_events) == [
@@ -476,7 +489,7 @@ def test_droid_names_the_hook_events_capture_needs():
         for event in known
         if noting.from_hook(hook(event)) or noting.transcript_due(hook(event))
     ]
-    assert list(noting.hook_events) == known[:8]
+    assert list(noting.hook_events) == known[:7]
 
 
 def test_droid_precompact_and_session_end():

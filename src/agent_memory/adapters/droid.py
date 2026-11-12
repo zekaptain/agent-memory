@@ -16,21 +16,23 @@ from .base import UnsupportedTranscript, iter_jsonl, project_of, render_tool_cal
 AGENT_ID = "factory-droid"
 
 # What each hook event is recorded as. A hook records what the transcript does not hold, or
-# holds only later; the transcript is the record of replies, tool calls, and compactions.
-# None is nothing at all. Stop carries no reply text. PostToolUse names no call, so what it
-# wrote could not be told from the transcript's record of the same call, and it is not sent
-# for a call made inside a script. PreCompact says a compaction was asked for; the
-# compaction itself, with its summary, is a transcript entry.
+# holds only later; the transcript is the record of replies, tool calls, compactions, and
+# finished tasks. None is nothing at all. Stop carries no reply text. PostToolUse names no
+# call, so what it wrote could not be told from the transcript's record of the same call,
+# and it is not sent for a call made inside a script. SubagentStop carries a finished
+# task's name and result and names neither the task nor a message; the session that
+# started the task gains a transcript message with both. PreCompact says a compaction was
+# asked for; the compaction itself, with its summary, is a transcript entry.
 _HOOK_KINDS = {
     "SessionStart": "session_start",
     "SessionEnd": "session_end",
     "UserPromptSubmit": "user_msg",
     "PreCompact": "note",
-    "SubagentStop": "note",
     "Notification": "note",
     "Stop": None,
     "PreToolUse": None,
     "PostToolUse": None,
+    "SubagentStop": None,
 }
 
 # Events keyed on the message id Droid sends with them, when it sends one. The id names
