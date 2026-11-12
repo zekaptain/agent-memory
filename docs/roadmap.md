@@ -309,6 +309,11 @@ Verified against the code in the audit of 2026-11 and still open.
   nothing of its turn. Before, it held a null turn marked not complete
   (`capture/writer.py`, `adapters/droid.py`). See "What an event keeps
   of its message and turn" in [phase-1-spec.md](phase-1-spec.md).
+- A source distribution built from a working tree holds every file there
+  that `.gitignore` does not name, tracked or not: `uv build` packed an
+  untracked `.ori/state.sqlite`. The wheel holds the package alone, and
+  nothing in the repository publishes a source distribution
+  (`pyproject.toml`).
 
 Reported in the same audit and not yet checked against the code: the
 hand-maintained `ALL_TABLES` list; lockdown happening after the listener
