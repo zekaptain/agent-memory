@@ -19,7 +19,7 @@ As of 2026-11-13.
 | Phase 3: audit tooling | Not started. `mem audit check` exists, but as a preflight for migrations, not as the commands below. | below |
 | Phase 4: memory quality | Partly built: the relation graph's first step and lesson admission (migration 0007). | below, [admission-spec.md](admission-spec.md) |
 | Phase 5: Markdown projection | Not started | below |
-| Lifecycle, coverage, and attribution hardening | Done (migrations 0002 to 0006, and 0008 for a session's start). No live home has been migrated past 0001; the migrations through 0008 ran on copies of both homes on 2026-11-11. | [logic-hardening-spec.md](logic-hardening-spec.md) |
+| Lifecycle, coverage, and attribution hardening | Done (migrations 0002 to 0006, 0008 for a session's start, and 0009 for its title, caller, and harness version). The production home is at 0008 and the experiment home at 0001. The migrations through 0008 ran on copies of both homes on 2026-11-11, and 0009 on a copy of the experiment home on 2026-11-13. | [logic-hardening-spec.md](logic-hardening-spec.md) |
 | Judge experiment | Built; four runs stored | [judge-experiment-spec.md](judge-experiment-spec.md), [run logs](archive/judge-experiments.md) |
 | Memory usefulness study | Design only | [memory-utility-evaluation-spec.md](memory-utility-evaluation-spec.md) |
 | Parametric consolidation | Research proposal | [parametric-consolidation-spec.md](parametric-consolidation-spec.md) |
@@ -292,19 +292,6 @@ Verified against the code in the audit of 2026-11 and still open.
   covered (`audit.py`, `adapters/droid.py`, the `session_summary` view).
   The live ledger showed it on 2026-11-12: no error, and 259 warnings
   for 93 sessions.
-- A session's row holds what the first record of the session knew, and
-  for a session captured through the hooks that is the `SessionStart`
-  hook: no title, no model, no Droid version. `session_summary` gives
-  the model from the imports and has no column for the version. Its
-  `effective_metadata` is the metadata of the latest observation, a
-  hook's included, so a later prompt or notification replaces the title
-  and the caller an import gave with the hook's two fields: it named the
-  caller for 1 of 13 sessions a Task call started and a title for 77 of
-  93. Nothing in the code reads `effective_metadata`. The judge takes a
-  caller's role (`worker`, `explorer`) from the row's title, so a
-  session the hooks captured has a caller without a role
-  (`capture/session.py`, `judge/provenance.py`, the `session_summary`
-  view).
 - The judge reads some harness text as a person's. It tells the author
   of a user message by how the text opens, and it does not know
   "Background Execute command finished." or "Background task error.".
@@ -326,16 +313,6 @@ Verified against the code in the audit of 2026-11 and still open.
   record of the change and not the one line the agent got. A result
   keeps its id, so reading its transcript again changes nothing
   (`adapters/droid.py`).
-- A session's row still carries the time of the first record the ledger
-  received of it. `session_summary.started_at` is the earlier of that
-  and the session's first event (migration 0008), and `mem audit check`
-  reads the summary. `mem judge live --since` and admission's search for
-  sessions it has not seen read the row, and a judge item's
-  `session_started_at` is the row's (`judge/pipeline.py`,
-  `judge/triggers.py`, `admission/run.py`). In a copy of the experiment
-  home, 1,974 of 2,335 rows start after their session's first event, the
-  median row by 17 days: an import made before 2026-11-11 dated a
-  session's start at the time of the read.
 - A hook with no id of its own is keyed on the time it ran, so a hook
   command that runs twice records each notification twice.
   `mem hooks install` leaves one hook of its own at each hook event. A
@@ -462,14 +439,8 @@ The same audit proposed removing the following. Each was looked at on
   answers today.
 - Should a refused approval leave a row in the ledger? Today one the
   tool refuses leaves none.
-- Should `mem judge live --since` and admission take a session's start
-  from `session_summary`, as `mem audit check` does? For a session
-  imported before 2026-11-11 the row's start is the time of the import.
 - Should a Droid session captured from start to end be able to read as
   fully covered, and what would have to be true of it?
-- Should the judge and admission read a session's title, caller, and
-  model from `session_summary` too, once its `effective_metadata` holds
-  what the imports said?
 - Should timeouts in a row stop a judge command? A timeout can be the
   item's doing, so today only an unreachable model server stops one.
 - Are the `readout` and `jev` judges and the `actionable` question still

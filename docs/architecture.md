@@ -197,7 +197,10 @@ Derived views:
   capture errors, plus capability tier and separately observed coverage.
   Placeholders are not counted as captured replies. A session starts at the
   earlier of its row's start and its first event (0008); the row's own start
-  is `recorded_started_at`.
+  is `recorded_started_at`. A session's model, project, title, caller
+  (`calling_session_id`), and harness version are what a transcript import
+  said of it, then what the latest other observation said, then its row
+  (0009).
 - `why_answer`: for a reply, every retrieval item, cited memory, and
   context event behind it, each memory's source events and agent, its status
   at recall, and its status now.

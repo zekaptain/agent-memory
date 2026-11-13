@@ -130,6 +130,58 @@ therefore a gap.
 seen still read the row's start, and a judge item's `session_started_at`
 is the row's.
 
+### What the summary says of a session, as built (2026-11-13)
+
+A session's row holds what the first record received of the session
+knew. For a session captured through Droid's hooks that record is a
+hook's, and no hook knows the session's title, its model, or the Droid
+version. The transcript import at the end of a turn says all three in
+its observation, and hooks go on writing observations after it.
+`session_summary` took a session's metadata from its latest observation,
+so a later prompt or notification replaced what the import had said. In
+the production ledger on 2026-11-13, `effective_metadata` held the title
+of 111 of the 123 sessions an import had titled, and the caller of 2 of
+13.
+
+Migration `0009_session_facts` replaces `session_summary`. For each fact
+about a session (`model`, `project`, and `effective_metadata` as a
+whole) the view takes what an observation of a transcript import said,
+the latest that states the fact. Failing that it takes what the latest
+other observation said, and failing that the row. Three facts get
+columns of their own: `title`, `calling_session_id`, and
+`harness_version`. A caller that no observation and no row names is the
+one the session's start events name: a `SessionStart` hook's payload has
+always held it. No row was rewritten.
+
+The judge and admission now read a session through the summary:
+
+- `session_callers` takes the title and the calling session from it. A
+  spawned session that the hooks captured gets its caller's role
+  (`worker`, `explorer`) once its transcript is imported. Where the
+  summary names no caller and the judge's import log points at the
+  session's transcript, the first line of that file is still read, as
+  for a session imported before the adapter kept the caller.
+- `mem judge live --since` takes the sessions whose summary start is at
+  or after the date. Admission's search for sessions it has not seen
+  compares the same start with its watermark and its cutoff.
+- A judge item's `session_started_at` and `project` are the summary's.
+
+`session_callers` refuses a server whose database lacks migration 0009,
+and says to stop it, run `mem migrate`, and start it again. `mem judge
+live` and `mem admit run` ask the same first, before a transcript is
+imported or a day's files are made, so a refused command leaves nothing
+behind.
+
+Checked on 2026-11-13. The new view was read against the production
+ledger without being installed there. Of 127 Droid sessions it gives a
+title for 123, a caller for 13, and a Droid version for 123, and model,
+project, start, and coverage are what they were for every session. In a
+migrated copy of the experiment home the 2,335 sessions have the callers
+they had, and the same 10,593 turns give the same 1,750 candidates. Only
+`session_started_at` differs: it is earlier for each of the 1,974
+sessions that have turns. `--since 2026-11-01` takes 34 sessions there,
+where the row's start took 79.
+
 ## Attribution preserves uncertainty
 
 Append-only `answer_bindings` connect placeholders to captured replies with
