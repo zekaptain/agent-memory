@@ -16,7 +16,7 @@ from ..judge.backends.base import DecisionBackend, require_remote
 from ..judge.drafter import make_drafter
 from ..judge.pipeline import Log, quiet
 from ..judge.projection import PROJECTION_VERSION, project_candidate
-from ..judge.provenance import session_callers
+from ..judge.provenance import require_summary, session_callers
 from ..judge.questions import QUESTIONS_VERSION
 from ..judge.store import JudgeError, RunStore, utc_now_iso
 from ..judge.triggers import candidates_from_turns, fetch_turn_events, segment_turns
@@ -76,7 +76,7 @@ def _discover(cfg: Config, store: AdmissionStore, day: RunStore, cutoff: str) ->
         known.update(row["item_id"] for row in RunStore.read_jsonl(path))
     with MemoryClient.from_config(cfg) as client:
         _, rows = client.query(
-            "SELECT s.session_id::VARCHAR FROM sessions s WHERE s.agent_id NOT IN "
+            "SELECT s.session_id::VARCHAR FROM session_summary s WHERE s.agent_id NOT IN "
             f"({sql_literal(JUDGE_AGENT)}, {sql_literal(ledger.ADMISSION_AGENT)}) "
             f"AND s.started_at <= {sql_literal(cutoff)}::TIMESTAMPTZ{since}"
         )
@@ -235,6 +235,8 @@ def run_day(
         model, min_writes=state.get("min_writes", 20)
     ):
         raise JudgeError("auto admission is below the held-out bar; enable --shadow and refit")
+    with MemoryClient.from_config(cfg) as client:
+        require_summary(cfg, client)  # Before an older day is resumed or a day file is made.
     day = day or datetime.now(UTC).strftime("%Y-%m-%d")
     target = store.day(day)
     count = 0

@@ -355,6 +355,57 @@ def test_resume_after_commit_and_late_turn_in_old_session(admission_live, models
 
 
 @pytest.mark.parametrize(
+    "row_dated", [timedelta(seconds=-30), timedelta(hours=1)], ids=["before the run", "after it"]
+)
+def test_a_session_is_found_and_dated_by_its_first_event_not_by_its_row(
+    admission_live, models, row_dated
+):
+    cfg = admission_live
+    store = install_model(cfg)
+    # The first record the ledger gets of the session is a later one, which dates its row:
+    # a record that arrives out of order, or one from a clock that ran ahead.
+    late = Record("factory-droid", "capture", "note", datetime.now(UTC) + row_dated, "n")
+    with MemoryClient.from_config(cfg) as client:
+        Writer(client, cfg.blob_dir, make_redactor(cfg)).write([late])
+    capture(cfg)
+    assert run.run_day(cfg, day="2026-11-10")["processed"] == 1
+    [(began, earlier)] = query(
+        cfg,
+        "SELECT started_at::VARCHAR, started_at < recorded_started_at FROM session_summary "
+        "WHERE harness_session_id = 'capture'",
+    )
+    assert earlier
+    [item] = RunStore.read_jsonl(store.day("2026-11-10").items_path)
+    assert item["session_started_at"] == began
+
+
+def test_a_run_is_refused_before_a_day_begins_where_the_server_lacks_the_summary(
+    tmp_path, monkeypatch, models
+):
+    from agent_memory import db
+    from agent_memory.config import Config
+    from agent_memory.judge.provenance import SUMMARY_MIGRATION
+    from agent_memory.smoke import free_port
+
+    cfg = Config(home=tmp_path / "older", port=free_port())
+    earlier = [m for m in db.available_migrations() if m.version < SUMMARY_MIGRATION]
+    server = MemoryServer(cfg, export_interval_hours=0)
+    # A server that a package without the migration started.
+    with monkeypatch.context() as patch:
+        patch.setattr(db, "available_migrations", lambda: earlier)
+        db.initialize_home(cfg)
+        server.start()
+    try:
+        store = install_model(cfg)
+        capture(cfg)
+        with pytest.raises(JudgeError, match=re.escape(f"mem --home {cfg.home} migrate")):
+            run.run_day(cfg, day="2026-11-10")
+        assert not store.day("2026-11-10").exists()
+    finally:
+        server.stop()
+
+
+@pytest.mark.parametrize(
     ("answer", "status", "action"),
     [
         ("1", "active", "approve"),
