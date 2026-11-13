@@ -7,7 +7,7 @@ still undecided. The design of what is built is in
 
 ## Status
 
-As of 2026-11-12.
+As of 2026-11-13.
 
 | Work | State | Where it is specified |
 |------|-------|-----------------------|
@@ -160,12 +160,16 @@ raise a second `SessionStart` within a second, a `resume` with no
 finishes. Droid can raise `UserPromptSubmit` and `Stop` many times for
 one message, and raises `UserPromptSubmit` for text it wrote itself. A
 transcript message says who saw it (`visibility`), and a call a Script
-made names the Script's call.
+made names the Script's call. What Droid tells the user alone is in the
+transcript as a message with the role of user, and a tool result holds
+the text the agent was given beside the one the user was shown, where
+the two differ.
 See "What a Droid hook carries", "What Droid's turn and session hooks
 carry", "When a Droid session ends, and what its transcript says of
 hooks", "`mem hooks` writes capture into Droid's hooks file", "What
 Droid's `SubagentStop` hook carries", "What `/clear` starts in Droid",
-and "What the first sessions captured through the hooks showed" in
+"What the first sessions captured through the hooks showed", and "A
+notice only the user saw, and the text of a tool result" in
 [phase-1-spec.md](phase-1-spec.md).
 
 | Harness | Events | Payload | Gaps for capture |
@@ -302,24 +306,26 @@ Verified against the code in the audit of 2026-11 and still open.
   (`capture/session.py`, `judge/provenance.py`, the `session_summary`
   view).
 - The judge reads some harness text as a person's. It tells the author
-  of a user message by how the text opens, and it does not know "The
-  model provider declined this request again.", "Request blocked by
-  model provider safety checks.", "Background Execute command
-  finished.", or "Background task error.". In 69 captured transcripts
-  it took 15 of 295 texts that only the model saw, and 21 of 29 notices
-  that only the user saw, for a person's or a calling agent's. Droid
-  marks both kinds (`visibility`), and an import keeps the mark since
-  2026-11-12, but nothing reads it, and a prompt the `UserPromptSubmit`
-  hook wrote first has none (`judge/provenance.py`,
-  `adapters/droid.py`).
-- A notice Droid shows the user and does not give the model is imported
-  as a `user_msg`, like a message in the conversation, and the judge
-  starts a turn at it (`adapters/droid.py`, `judge/triggers.py`).
-- The import keeps a tool result's `content`, which is what Droid showed
-  the user, and drops `model_content`, what it gave the model, where
-  Droid stores both: 87 of 2,119 top-level results in the captured
-  transcripts, and 2,037 of 9,141 results of calls a Script made, which
-  the model never saw as they are (`adapters/droid.py`).
+  of a user message by how the text opens, and it does not know
+  "Background Execute command finished." or "Background task error.".
+  In 69 captured transcripts it took 15 of 295 texts that Droid gave
+  the agent alone for a person's or a calling agent's. Droid marks such
+  a text (`visibility`), and an import keeps the mark since 2026-11-12,
+  but nothing reads it, and a prompt the `UserPromptSubmit` hook wrote
+  first has none (`judge/provenance.py`, `adapters/droid.py`).
+- A notice imported before 2026-11-13 is a `user_msg`, where a later
+  import writes a `note`. The judge starts a turn at it, and does not
+  know how most of them open ("The model provider declined this request
+  again.", "Request blocked by model provider safety checks."): it took
+  21 of 29 for a person's or a calling agent's. The ledger of the
+  production home holds 40. No event is rewritten, and a whole-file
+  import of such a transcript adds the `note` beside the `user_msg`
+  (`adapters/droid.py`, `judge/triggers.py`, `judge/provenance.py`).
+- A tool result imported before 2026-11-13 holds what Droid showed the
+  user, where Droid stored a second text for the agent: for an edit, a
+  record of the change and not the one line the agent got. A result
+  keeps its id, so reading its transcript again changes nothing
+  (`adapters/droid.py`).
 - A session's row still carries the time of the first record the ledger
   received of it. `session_summary.started_at` is the earlier of that
   and the session's first event (migration 0008), and `mem audit check`
@@ -387,8 +393,8 @@ Proposed in the audit of 2026-11. None of these is approved.
   and the end of a session in a terminal, and a long first import in a
   running Droid.
 - Give the judge a new provenance version that reads who saw a message
-  from the event, and decide whether a notice only the user saw is a
-  `user_msg` at all.
+  from the event, and that knows a notice an earlier import wrote as a
+  `user_msg`.
 - Keep `mem event` from loading what capture does not use, which would
   about halve a hook's start-up.
 - An adapter for Ori's runtime, as the second harness (see "One harness
@@ -464,10 +470,6 @@ The same audit proposed removing the following. Each was looked at on
 - Should the judge and admission read a session's title, caller, and
   model from `session_summary` too, once its `effective_metadata` holds
   what the imports said?
-- Is a tool result's text what Droid showed the user or what it gave
-  the model, where the two differ?
-- Should a notice Droid shows only the user be a `note`, not a
-  `user_msg`?
 - Should timeouts in a row stop a judge command? A timeout can be the
   item's doing, so today only an unreachable model server stops one.
 - Are the `readout` and `jev` judges and the `actionable` question still

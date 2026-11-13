@@ -43,7 +43,7 @@ One stretch of activity by one agent, recorded in the ledger as a unit. A conver
 _Avoid_: Thread, chat, conversation (which is only one kind of session)
 
 **Event**:
-One thing that happened in a session: a message, a tool call or its result, a recall, a memory write, a compaction, a judge's verdict, or an outcome.
+One thing that happened in a session: a message, a notice, a tool call or its result, a recall, a memory write, a compaction, a judge's verdict, or an outcome.
 _Avoid_: Log entry, record, message (for anything that is not a message)
 
 **Turn**:
@@ -69,6 +69,10 @@ _Avoid_: Subagent session, child session, task (Droid's name for the tool that s
 **Author**:
 Who wrote a message that a transcript gives the role of user: a human, a parent agent, or the harness. The role alone does not say which.
 _Avoid_: Provenance (which is the chain behind a reply), speaker, user (for the author)
+
+**Notice**:
+Something a harness tells the user and does not give the agent, such as a request the model provider refused or a usage limit that was reached. It is part of the session and no message of the conversation, whatever role a transcript gives it: no turn starts at it.
+_Avoid_: User message, harness message (both of which the agent is given), alert
 
 **Capture record**:
 The normalised form of one event on its way into the ledger, the same for every harness.

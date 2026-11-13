@@ -130,6 +130,11 @@ not glued to its neighbour) but are not candidates, and a harness message
 never counts as a turn's "next message": that is the next message a person
 or a parent agent wrote.
 
+What Droid shows the user and does not give the agent, such as a request
+the model provider declined, is no user message. Since 2026-11-13 an
+import writes it as a `note`, and no turn starts at a note. One imported
+before is a `user_msg` and is tagged by how it opens, like any other.
+
 ### Candidates (`triggers_v3`)
 
 Deterministic flags from ledger facts only; the agent's own claims are never

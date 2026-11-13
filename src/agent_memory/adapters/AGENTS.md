@@ -22,6 +22,12 @@ unless they start with `docs/` or `tests/`.
   places it in the session (a resume, a request to compact). One that a
   message can raise several times, each saying something else, such as a
   notification, is keyed on the time the hook ran.
+- An event of the conversation holds what the agent was given. Where
+  Droid keeps a second text for the user's screen, as it does for the
+  result of an edit (`content` beside `model_content`), the event holds
+  the agent's. What Droid showed the user and did not give the agent
+  (`visibility` `user_only`) is a `note`, never a `user_msg`: a turn
+  starts at each `user_msg`.
 - One hook command does all of Droid's capture. `mem event` records the
   hook's own event and, at the hook events the adapter names
   (`transcript_due`: `Stop` and `SessionEnd`), imports what the
