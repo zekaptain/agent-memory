@@ -67,6 +67,8 @@ _TURN_KINDS = ("user_msg", "assistant_msg", "tool_call", "tool_result", "outcome
 # payloads hold whole file contents, so only the two fields segmentation needs are fetched.
 # User snippets are taken after the harness blocks are removed, since a reminder alone can be
 # longer than the snippet; a message truncated inside a block is finished from its blob.
+# A session's project and start are the summary's, not its row's: the row holds what the
+# first record received of the session knew, and that record need not be the session's first.
 HARNESS_BLOCK_SQL = "'<system-(reminder|notification)>.*?</system-(reminder|notification)>'"
 EVENTS_SQL = (
     "SELECT e.session_id::VARCHAR, s.project, e.event_id::VARCHAR, e.kind, e.seq, "
@@ -81,7 +83,7 @@ EVENTS_SQL = (
     "json_extract(CAST(e.payload AS JSON), '$.is_error')) END::VARCHAR AS payload, "
     "e.parent_event_id::VARCHAR, s.started_at::VARCHAR, "
     "CASE WHEN e.kind = 'user_msg' AND e.truncated THEN e.blob_ref END AS blob_ref "
-    "FROM events e JOIN sessions s USING (session_id) "
+    "FROM events e JOIN session_summary s USING (session_id) "
     "WHERE e.kind IN ({kinds}){extra} "
     "ORDER BY e.session_id, e.ts, e.seq, e.recorded_at"
 )

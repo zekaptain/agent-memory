@@ -28,7 +28,7 @@ from .backends import make_backend
 from .drafter import DRAFTER_VERSION, draft_hash, make_drafter
 from .labeling import LABELS_VERSION
 from .projection import PROJECTION_VERSION, drafter_rendering, project_candidate
-from .provenance import PROVENANCE_VERSION, session_callers
+from .provenance import PROVENANCE_VERSION, require_summary, session_callers
 from .questions import DEFAULT_THRESHOLDS, QUESTIONS_VERSION, thresholds_from_run
 from .store import (
     JudgeError,
@@ -253,9 +253,11 @@ def assign_splits(
 
 
 def _session_ids_since(client: MemoryClient, since: datetime) -> list[str]:
+    """Droid's sessions that began at or after `since`. A session's row can carry a later
+    time than its first event, so the start is the summary's."""
     stamp = sql_literal(since.astimezone(UTC).isoformat())
     _, rows = client.query(
-        "SELECT session_id::VARCHAR FROM sessions "
+        "SELECT session_id::VARCHAR FROM session_summary "
         f"WHERE agent_id = 'factory-droid' AND started_at >= {stamp}::TIMESTAMPTZ"
     )
     return [str(r[0]) for r in rows]
@@ -654,8 +656,12 @@ def live_step(
         raise JudgeError("thresholds are not frozen; run `mem judge report --freeze` first")
     require_judge_agent(cfg)
     day = day or datetime.now(UTC).strftime("%Y-%m-%d")
-    imported = import_sessions(cfg, sessions_dir, since=since, log=log)
     child = parent.live_day(day)
+    if not child.has_items():
+        # The day's sessions and their callers are read through the summary.
+        with MemoryClient.from_config(cfg) as client:
+            require_summary(cfg, client)
+    imported = import_sessions(cfg, sessions_dir, since=since, log=log)
     known = {row["item_id"] for row in parent.items()}
     for other in parent.live_days():
         known.update(row["item_id"] for row in other.items())
