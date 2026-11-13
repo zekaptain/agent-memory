@@ -372,6 +372,57 @@ def test_droid_notice_only_the_user_saw_is_a_note_inside_its_turn(tmp_path):
         assert (attribution["turn_id"], attribution["turn_complete"]) == ("p1", True)
 
 
+def test_droid_tool_result_is_the_text_the_agent_got(tmp_path):
+    # As Droid writes them. After an edit the agent gets one line, and Droid keeps it as
+    # `model_content` beside the record of the change it puts on the user's screen. After a
+    # read the agent gets the lines and a reminder of which they were. A call that failed,
+    # like most calls, has one text.
+    updated = "The file /x/demo/a.py has been updated successfully."
+    lines = "1→x = 1"
+    reminder = "<system-reminder>[Showing lines 1-1 of 9 total lines]</system-reminder>"
+    entries = [
+        {"type": "session_start", "id": "texts", "timestamp": "2026-11-13T10:00:00Z"},
+        said("p1", "user", "Fix it.", "2026-11-13T10:00:01Z"),
+        calls("c1", "edit", "Edit", "2026-11-13T10:00:02Z"),
+        returns(
+            "t1",
+            "edit",
+            "2026-11-13T10:00:03Z",
+            content='{"success":true,"diff":"-x = 0\\n+x = 1"}',
+            model_content=updated,
+        ),
+        calls("c2", "read", "Read", "2026-11-13T10:00:04Z"),
+        returns(
+            "t2",
+            "read",
+            "2026-11-13T10:00:05Z",
+            content=lines,
+            model_content=f"{lines}\n\n{reminder}",
+            is_error=False,
+        ),
+        calls("c3", "again", "Edit", "2026-11-13T10:00:06Z"),
+        returns("t3", "again", "2026-11-13T10:00:07Z", content="No match found.", is_error=True),
+        calls("c4", "plain", "Execute", "2026-11-13T10:00:08Z"),
+        returns("t4", "plain", "2026-11-13T10:00:09Z"),
+    ]
+    records = DroidAdapter().from_transcript(write(tmp_path / "texts.jsonl", entries))
+    r = by_key(records)
+    edit = r[("tool_result", "edit")]
+    assert (edit.content, edit.payload) == (updated, {"content_from": "model_content"})
+    read = r[("tool_result", "read")]
+    assert read.content == f"{lines}\n\n{reminder}"
+    assert read.payload == {"is_error": False, "content_from": "model_content"}
+    failed = r[("tool_result", "again")]
+    assert (failed.content, failed.payload) == ("No match found.", {"is_error": True})
+    assert (r[("tool_result", "plain")].content, r[("tool_result", "plain")].payload) == (
+        "ok",
+        None,
+    )
+    assert '"success"' not in "".join(record.to_json() for record in records)
+    # What an import writes changed with the notice and the result, and so did its name.
+    assert covered(records)["adapter_version"] == "droid_transcript_v4"
+
+
 def test_droid_attribution_holds_only_what_droid_sends(tmp_path):
     # Nothing recorded from Droid names a turn or a channel on a message, or a turn, a
     # channel, or a final message in a hook payload. Where one is named it is not read.

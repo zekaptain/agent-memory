@@ -423,14 +423,21 @@ def _message_records(
         elif ptype == "tool_result":
             tool_id = str(part.get("tool_use_id") or f"{entry_id}#tool_result")
             key = identity.tool_result_key(tool_id)
+            result_payload = {"is_error": part.get("is_error")} if "is_error" in part else {}
+            # Droid keeps a second text where what it put on the user's screen is not what
+            # the tool gave the agent: the record of an edit, where the agent got one line.
+            # The result is what the agent got.
+            given = part.get("model_content")
+            if given is not None:
+                result_payload["content_from"] = "model_content"
             out.append(
                 Record(
                     **base,
                     kind="tool_result",
                     source_key=key,
                     parent_key=identity.tool_call_key(tool_id),
-                    content=text_of(part.get("content")),
-                    payload={"is_error": part.get("is_error")} if "is_error" in part else None,
+                    content=text_of(part.get("content") if given is None else given),
+                    payload=result_payload or None,
                 )
             )
         elif ptype == "thinking" and include_thinking and part.get("thinking"):
