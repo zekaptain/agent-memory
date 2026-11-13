@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import itertools
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import duckdb
 import pytest
@@ -535,6 +535,90 @@ def test_session_summary_starts_a_session_at_the_earliest_the_ledger_knows_of_it
         rows = [{**event, "session_id": session["session_id"]} for event in events]
         insert_rows(con, {"sessions": [session], "events": rows})
         assert starts(session["session_id"]) == (chain.now, chain.now)
+
+
+def observation(session_id: str, mode: str, at: datetime, said: dict) -> dict:
+    return {
+        "observation_id": new_id(),
+        "session_id": session_id,
+        "source_mode": mode,
+        "adapter_version": "synthetic",
+        "policy_version": "synthetic",
+        "source_fingerprint": "sha256:synthetic",
+        "parse_errors": [],
+        "exclusions": [],
+        "session_metadata": said,
+        "recorded_at": at,
+    }
+
+
+def test_session_summary_keeps_what_an_import_said_when_a_hook_reports_later(con, chain):
+    # As Droid's hooks capture a session: the start hook writes the row, and neither it nor
+    # any later hook knows the title, the model, or the Droid version. The import does.
+    sid = new_id()
+    row = {"session_id": sid, "agent_id": "factory-droid", "capture_completeness": "partial"}
+    insert_rows(con, {"sessions": [{**row, "started_at": chain.now, "project": "demo"}]})
+
+    def after(mode: str, minutes: int, said: dict) -> tuple | None:
+        at = chain.now + timedelta(minutes=minutes)
+        insert_rows(con, {"capture_observations": [observation(sid, mode, at, said)]})
+        return con.execute(
+            "SELECT title, calling_session_id, harness_version, model, project, "
+            "effective_metadata.metadata.title::VARCHAR FROM session_summary "
+            "WHERE session_id = ?",
+            [sid],
+        ).fetchone()
+
+    hook = {"project": "demo", "metadata": {"transcript_path": "/synthetic/demo/s.jsonl"}}
+    called = {"calling_session_id": "parent"}
+    start = {**hook, "metadata": {**hook["metadata"], **called}}
+    assert after("hook", 0, start) == (None, "parent", None, None, "demo", None)
+    read = {"project": "demo", "model": "fixture-model", "harness_version": "0.99.0"}
+    first = {**read, "metadata": {"title": "Worker: Build the parser", **called}}
+    known = ("Worker: Build the parser", "parent", "0.99.0", "fixture-model", "demo")
+    assert after("transcript_import", 1, first) == (*known, known[0])
+    # A prompt in another directory. The hook that reports it says nothing an import said.
+    assert after("hook", 2, {**hook, "project": "elsewhere"}) == (*known, known[0])
+    # Of two imports the later is believed, and a fact it leaves out stays as it was.
+    renamed = {"project": "demo", "metadata": {"title": "Worker: Parser built"}}
+    assert after("transcript_import", 3, renamed) == (
+        "Worker: Parser built",
+        *known[1:],
+        "Worker: Parser built",
+    )
+
+
+def test_session_summary_names_a_title_and_a_caller_that_no_observation_gives(con, chain):
+    def facts(session_id: str) -> tuple | None:
+        return con.execute(
+            "SELECT title, calling_session_id, harness_version FROM session_summary "
+            "WHERE session_id = ?",
+            [session_id],
+        ).fetchone()
+
+    def session(**columns) -> str:
+        row = {"session_id": new_id(), "agent_id": "factory-droid", "started_at": chain.now}
+        insert_rows(con, {"sessions": [{**row, "capture_completeness": "partial", **columns}]})
+        return row["session_id"]
+
+    # An import made before observations were kept left what it read in the row.
+    said = {"title": "Explorer: Find the parser", "calling_session_id": "parent"}
+    imported = session(metadata=said, harness_version="0.98.0")
+    assert facts(imported) == ("Explorer: Find the parser", "parent", "0.98.0")
+    # A start hook's payload names the caller whether or not anything else kept it. A
+    # session that is resumed starts again, and that start names nobody.
+    hooked = session(metadata={"permission_mode": "auto-high"})
+    starts = [{"source": "startup", "calling_session_id": "parent"}, {"source": "resume"}]
+    events = [
+        {"event_id": new_id(), "session_id": hooked, "seq": seq, "ts": chain.now, "payload": said}
+        for seq, said in enumerate(starts)
+    ]
+    insert_rows(
+        con, {"events": [{**e, "kind": "session_start", "role": "harness"} for e in events]}
+    )
+    assert facts(hooked) == (None, "parent", None)
+    assert facts(session()) == (None, None, None)
+    assert facts(chain.session_id) == (None, None, None)
 
 
 def test_full_text_search_indexes_new_memories(con, chain):
