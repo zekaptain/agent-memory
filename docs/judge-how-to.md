@@ -335,8 +335,9 @@ uv run mem judge live --run "$RUN" \
 
 This imports recently modified transcripts, selects previously unseen
 turns from sessions **started** on or after `--since`, drafts lessons,
-and judges them using the run's frozen thresholds. Use the same model
-specifications you calibrated.
+and judges them using the run's frozen thresholds. A session started
+when its first event says, whenever its transcript was imported. Use the
+same model specifications you calibrated.
 
 - `--since` is required; it accepts an ISO date or datetime.
 - `--day` names the live day. It defaults to today's UTC date.

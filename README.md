@@ -426,7 +426,10 @@ boundary and exclusions; they do not prove coverage of later activity.
 Old full-capture assertions without evidence are labeled unverified.
 `session_summary.started_at` is the earliest the ledger knows of a
 session: its row's start or its first event, whichever is earlier.
-`recorded_started_at` is the row's own.
+`recorded_started_at` is the row's own. The summary's `model`, `project`,
+`title`, `calling_session_id`, and `harness_version` are what a
+transcript import said of the session where one did: a hook knows few
+of them.
 
 `cite` can return a placeholder before the reply has been imported.
 `answer_bindings` records a reply only when captured turn evidence uniquely
@@ -614,8 +617,9 @@ uv run mem admit review --day 2026-11-10
 
 Defaults use local Ollama models: `gemma4:26b` for drafting and judging,
 `nomic-embed-text` for lesson embeddings. All commands need the
-`admission` agent row, which migration 0007 adds. If missing, stop the
-server, run `mem migrate`, then restart it.
+`admission` agent row, which migration 0007 adds, and `mem admit run`
+reads sessions through the view of migration 0009. If either is missing,
+stop the server, run `mem migrate`, then restart it.
 
 Admission review approves or retires exact lessons and samples 30
 discarded ones by default. Add `--plain` for numbered prompts, or

@@ -146,7 +146,9 @@ transcripts. It segments turns and takes all of them as items
 (`n=None`), clean controls included. The watermark starts at the
 beginning of captured history. Later runs include sessions started since
 the watermark and older sessions with newly recorded events, so ongoing
-or late-imported capture is not silently lost.
+or late-imported capture is not silently lost. A session's start is the
+one `session_summary` gives: its first event, where that is earlier than
+the start its row carries.
 
 Existing `item_id_for` identities prevent repeated admission. A rerun
 can add newly captured turns to the same day but skips completed items.

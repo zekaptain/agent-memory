@@ -36,6 +36,11 @@ attribution, the `mem audit check` preflight, or rollout policy.
   them: the capture writer, the MCP tools, `mem graph`, `mem review`, and
   admission. A new writer opens a `LedgerSession` and builds its events
   with `event_row`; it does not assemble either row itself.
+- A session's row holds what the first record received of the session
+  knew, and is never changed: a hook's row has no title, no model, and
+  the time of that hook. Read a session's start, model, project, title,
+  caller, and harness version from `session_summary`, which completes
+  them from the session's observations and events, not from the row.
 - Only the `human` agent approves a memory. An agent that could approve
   what it wrote from tool output would hold the key to its own
   quarantine. The check (`lifecycle.check_asker`) is made where an
