@@ -286,32 +286,35 @@ def test_droid_transcript_entry_for_a_hook_run_is_not_an_event(tmp_path):
     assert "said by the hook" not in "".join(r.to_json() for r in records)
 
 
+def seen_by(entry: dict, visibility: str) -> dict:
+    """The entry as Droid marks one that the user and the agent did not both see."""
+    return {**entry, "message": {**entry["message"], "visibility": visibility}}
+
+
+def calls(entry_id: str, tool_id: str, name: str, at: str, **part) -> dict:
+    use = {"type": "tool_use", "id": tool_id, "name": name, "input": {}, **part}
+    return {
+        "type": "message",
+        "id": entry_id,
+        "timestamp": at,
+        "message": {"role": "assistant", "content": [use]},
+    }
+
+
+def returns(entry_id: str, tool_id: str, at: str, **part) -> dict:
+    result = {"type": "tool_result", "tool_use_id": tool_id, "content": "ok", **part}
+    return {
+        "type": "message",
+        "id": entry_id,
+        "timestamp": at,
+        "message": {"role": "user", "content": [result]},
+    }
+
+
 def test_droid_transcript_keeps_who_saw_a_text_and_which_script_made_a_call(tmp_path):
-    # As Droid writes them. Text it gives the model and does not show the user is
-    # `llm_only`, a notice it shows the user and does not give the model is `user_only`, and
-    # what a person or a calling agent wrote has neither. A call a Script made is
-    # `user_only` too and names the Script's own call.
-    def seen_by(entry: dict, visibility: str) -> dict:
-        return {**entry, "message": {**entry["message"], "visibility": visibility}}
-
-    def calls(entry_id: str, tool_id: str, name: str, at: str, **part) -> dict:
-        use = {"type": "tool_use", "id": tool_id, "name": name, "input": {}, **part}
-        return {
-            "type": "message",
-            "id": entry_id,
-            "timestamp": at,
-            "message": {"role": "assistant", "content": [use]},
-        }
-
-    def returns(entry_id: str, tool_id: str, at: str) -> dict:
-        result = {"type": "tool_result", "tool_use_id": tool_id, "content": "ok"}
-        return {
-            "type": "message",
-            "id": entry_id,
-            "timestamp": at,
-            "message": {"role": "user", "content": [result]},
-        }
-
+    # As Droid writes them. Text it gives the agent and does not show the user is
+    # `llm_only`, and what a person or a calling agent wrote has no visibility. A call a
+    # Script made is `user_only` and names the Script's own call.
     inside = {"run_id": "run-1", "outer_tool_use_id": "outer", "seen": True}
     entries = [
         {"type": "session_start", "id": "seen", "timestamp": "2026-11-12T10:00:00Z"},
@@ -326,23 +329,47 @@ def test_droid_transcript_keeps_who_saw_a_text_and_which_script_made_a_call(tmp_
         seen_by(
             said("n1", "user", "Background task completed.", "2026-11-12T10:00:06Z"), "llm_only"
         ),
-        seen_by(
-            said("n2", "user", "The model provider declined.", "2026-11-12T10:00:07Z"), "user_only"
-        ),
     ]
     records = DroidAdapter().from_transcript(write(tmp_path / "seen.jsonl", entries))
     r = by_key(records)
     assert r[("user_msg", "p1")].payload is None
     assert r[("user_msg", "n1")].payload == {"visibility": "llm_only"}
-    assert r[("user_msg", "n2")].payload == {"visibility": "user_only"}
     assert r[("tool_call", "outer")].payload == {"tool_name": "Script", "tool_input": {}}
     assert r[("tool_call", "inner")].payload == {
         "tool_name": "Read",
         "tool_input": {},
         "outer_tool_use_id": "outer",
     }
-    # What an import writes changed with these two, and so did the name it goes by.
-    assert covered(records)["adapter_version"] == "droid_transcript_v3"
+
+
+def test_droid_notice_only_the_user_saw_is_a_note_inside_its_turn(tmp_path):
+    # As Droid writes it. The provider refuses a request, Droid says so on the user's screen
+    # in a message marked `user_only`, and the agent, which is not given that text, goes on.
+    refused = "The model provider declined this request again."
+    entries = [
+        {"type": "session_start", "id": "notice", "timestamp": "2026-11-13T10:00:00Z"},
+        said("p1", "user", "Run it.", "2026-11-13T10:00:01Z"),
+        seen_by(said("n1", "user", refused, "2026-11-13T10:00:02Z"), "user_only"),
+        said("r1", "assistant", "Done.", "2026-11-13T10:00:03Z"),
+        {"type": "agent_turn_outcome", "turnId": "p1", "reason": "completed", "resultKind": "text"},
+    ]
+    records = DroidAdapter().from_transcript(write(tmp_path / "notice.jsonl", entries))
+    assert keys_of(records) == [
+        ("session_start", "notice"),
+        ("user_msg", "p1"),
+        ("note", "n1"),
+        ("assistant_msg", "r1"),
+        ("outcome", "p1"),
+    ]
+    r = by_key(records)
+    assert r[("note", "n1")].content == refused
+    assert r[("note", "n1")].payload == {"visibility": "user_only"}
+    # The agent was not given the notice, so no turn ends at it: the prompt before it and
+    # the reply after it are both of the turn the outcome names.
+    for key in (("user_msg", "p1"), ("note", "n1"), ("assistant_msg", "r1")):
+        attribution = r[key].attribution
+        assert attribution is not None
+        assert (attribution["turn_id"], attribution["turn_complete"]) == ("p1", True)
 
 
 def test_droid_attribution_holds_only_what_droid_sends(tmp_path):

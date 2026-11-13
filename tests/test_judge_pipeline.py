@@ -18,6 +18,7 @@ from agent_memory.capture import ids
 from agent_memory.capture.pipeline import deliver
 from agent_memory.capture.record import Record
 from agent_memory.cli import main
+from agent_memory.db import sql_literal
 from agent_memory.judge import cli as judge_cli
 from agent_memory.judge import pipeline
 from agent_memory.judge.drafter import Draft
@@ -30,7 +31,9 @@ from agent_memory.judge.pipeline import (
 )
 from agent_memory.judge.provenance import HUMAN, session_callers
 from agent_memory.judge.store import JudgeError, RunStore, imports_log, sole_writer
+from agent_memory.judge.triggers import fetch_turn_events, segment_turns
 from tests.conftest import FIXTURES
+from tests.test_adapters import said, seen_by, write
 
 
 @pytest.fixture(scope="module")
@@ -420,3 +423,33 @@ def test_a_session_another_session_started_is_read_as_an_agents(live_cfg, live_c
             "callers-parent",
         )
     assert callers[ids.session_id("factory-droid", "callers-own")] == HUMAN
+
+
+def test_a_notice_only_the_user_saw_starts_no_turn(live_cfg, live_client, tmp_path):
+    # Droid tells the user that the provider refused a request, in a message the agent is
+    # not given, and the agent goes on. The import writes a note there, so the turn the
+    # prompt began runs on to its outcome.
+    refused = "The model provider declined this request again."
+    entries = [
+        {"type": "session_start", "id": "notice-turn", "timestamp": "2026-11-13T10:00:00Z"},
+        said("p1", "user", "Run it.", "2026-11-13T10:00:01Z"),
+        seen_by(said("n1", "user", refused, "2026-11-13T10:00:02Z"), "user_only"),
+        said("r1", "assistant", "Done.", "2026-11-13T10:00:03Z"),
+        {"type": "agent_turn_outcome", "turnId": "p1", "reason": "completed", "resultKind": "text"},
+    ]
+    records = DroidAdapter().from_transcript(write(tmp_path / "notice-turn.jsonl", entries))
+    written = deliver(live_cfg, records).written
+    assert written is not None
+    assert written.events == 5
+    sid = ids.session_id("factory-droid", "notice-turn")
+    _, rows = live_client.query(
+        f"SELECT kind, content FROM events WHERE session_id = {sql_literal(sid)} ORDER BY ts"
+    )
+    assert [tuple(row) for row in rows][1:4] == [
+        ("user_msg", "Run it."),
+        ("note", refused),
+        ("assistant_msg", "Done."),
+    ]
+    (turn,) = segment_turns(fetch_turn_events(live_client, session_ids=[sid]))
+    assert [event.kind for event in turn.events] == ["user_msg", "assistant_msg", "outcome"]
+    assert (turn.closed_by, turn.next_user) == ("outcome", None)

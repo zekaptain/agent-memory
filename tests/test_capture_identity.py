@@ -18,6 +18,7 @@ from agent_memory.db import sql_literal
 from agent_memory.mcp_server import MemoryTools
 from tests.conftest import FIXTURES
 from tests.support import new_id
+from tests.test_adapters import said, seen_by, write
 
 
 def transcript(tmp_path, retrieval=None, placeholder=None):
@@ -224,6 +225,42 @@ def test_own_mcp_session_binds_captured_reply_and_cleans_audit(
         tools.close()
 
 
+def test_a_notice_imported_as_a_message_keeps_that_event_beside_its_note(
+    live_cfg, live_client, tmp_path
+):
+    # An import named `droid_transcript_v3` or earlier wrote a notice only the user saw as
+    # a `user_msg`. An event's kind is part of its id and no event is rewritten, so reading
+    # the whole transcript again adds the note and leaves the message where it was.
+    limit = "Usage limit reached."
+    path = tmp_path / f"{tmp_path.name}.jsonl"
+    entries = [
+        {"type": "session_start", "id": path.stem, "timestamp": "2026-11-13T10:00:00Z"},
+        said("p1", "user", "Run it.", "2026-11-13T10:00:01Z"),
+        seen_by(said("n1", "user", limit, "2026-11-13T10:00:02Z"), "user_only"),
+    ]
+    records = DroidAdapter().from_transcript(write(path, entries))
+    earlier = [
+        replace(r, kind="user_msg", source_key=identity.prompt_key(r.source_key, r.ts))
+        if r.kind == "note"
+        else r
+        for r in records
+    ]
+    earlier[0] = replace(
+        earlier[0],
+        observation={**(records[0].observation or {}), "adapter_version": "droid_transcript_v3"},
+    )
+    first = deliver(live_cfg, earlier).written
+    assert first is not None
+    again = deliver(live_cfg, records).written
+    assert again is not None
+    assert (first.events, again.events) == (3, 1)
+    sid = ids.session_id("factory-droid", path.stem)
+    assert live_client.query(
+        "SELECT kind FROM events "
+        f"WHERE session_id = {sql_literal(sid)} AND content = {sql_literal(limit)} ORDER BY kind"
+    )[1] == [("note",), ("user_msg",)]
+
+
 def test_unkeyed_hook_prompt_is_marked():
     record = DroidAdapter().from_hook(
         {"session_id": "unkeyed", "hook_event_name": "UserPromptSubmit", "prompt": "hi"}
@@ -242,6 +279,7 @@ def test_identity_builders_preserve_existing_keys_and_hashes():
     ts = datetime(2026, 11, 9, tzinfo=UTC)
     assert identity.prompt_key("message-1", ts) == "message-1"
     assert identity.reply_key("message-1") == "message-1"
+    assert identity.notice_key("message-1") == "message-1"
     assert identity.thinking_key("message-1") == "message-1#thinking"
     assert identity.tool_call_key("tool-1") == "tool-1"
     assert identity.tool_result_key("tool-1") == "tool-1"
