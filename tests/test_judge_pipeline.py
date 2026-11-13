@@ -8,6 +8,7 @@ import shutil
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from functools import partial
 
 import pytest
@@ -16,7 +17,7 @@ from rich.table import Table
 from agent_memory.adapters.droid import DroidAdapter
 from agent_memory.capture import ids
 from agent_memory.capture.pipeline import deliver
-from agent_memory.capture.record import Record
+from agent_memory.capture.record import Record, SessionInfo
 from agent_memory.cli import main
 from agent_memory.db import sql_literal
 from agent_memory.judge import cli as judge_cli
@@ -29,7 +30,7 @@ from agent_memory.judge.pipeline import (
     import_sessions,
     purge_run,
 )
-from agent_memory.judge.provenance import HUMAN, session_callers
+from agent_memory.judge.provenance import HUMAN, SUMMARY_MIGRATION, session_callers
 from agent_memory.judge.store import JudgeError, RunStore, imports_log, sole_writer
 from agent_memory.judge.triggers import fetch_turn_events, segment_turns
 from tests.conftest import FIXTURES
@@ -380,19 +381,30 @@ def test_a_session_another_session_started_is_read_as_an_agents(live_cfg, live_c
         )
 
     called = {"calling_session_id": "callers-parent"}
+    project = tmp_path / "-synthetic-callers"
+    project.mkdir()
+    # An import made before the adapter kept the caller left the session's title in its row
+    # and a line in the import log. The first entry of that transcript names the caller.
+    before = {"type": "session_start", "id": "callers-before", "title": "Reviewer: Check it"}
+    old = write(
+        project / "callers-before.jsonl", [{**before, "callingSessionId": "callers-parent"}]
+    )
+    titled = SessionInfo(metadata={"title": before["title"]})
     records = [
         start("callers-spawned", **called),
         start("callers-earlier", keeps_caller=False, **called),
         start("callers-imported", keeps_caller=False, **called),
         start("callers-own"),
+        Record("factory-droid", old.stem, "note", datetime.now(UTC), "n1", session=titled),
     ]
     written = deliver(live_cfg, records).written
     assert written is not None
-    assert (written.sessions, written.events) == (4, 4)
+    assert (written.sessions, written.events) == (5, 5)
+    RunStore.write_jsonl(
+        imports_log(live_cfg), [{"path": str(old), "mtime": old.stat().st_mtime}], append=True
+    )
     # The judge imported the transcript of one of them. Its first entry names the caller
     # as well, and its title gives the caller's role, which no hook says.
-    project = tmp_path / "-synthetic-callers"
-    project.mkdir()
     entries = [
         {
             "type": "session_start",
@@ -414,7 +426,12 @@ def test_a_session_another_session_started_is_read_as_an_agents(live_cfg, live_c
     assert (imported.files, imported.errors) == (1, [])
 
     callers = session_callers(live_cfg, live_client)
-    roles = {"callers-spawned": None, "callers-earlier": None, "callers-imported": "worker"}
+    roles = {
+        "callers-spawned": None,
+        "callers-earlier": None,
+        "callers-imported": "worker",
+        "callers-before": "reviewer",
+    }
     for name, role in roles.items():
         caller = callers[ids.session_id("factory-droid", name)]
         assert (caller.kind, caller.role, caller.calling_session_id) == (
@@ -423,6 +440,124 @@ def test_a_session_another_session_started_is_read_as_an_agents(live_cfg, live_c
             "callers-parent",
         )
     assert callers[ids.session_id("factory-droid", "callers-own")] == HUMAN
+
+
+def test_a_session_the_hooks_captured_gets_its_callers_role_from_its_import(
+    live_cfg, live_client, tmp_path
+):
+    # As Droid's hooks capture a subagent's session. The start hook names the caller and no
+    # title, the import at the end of a turn brings the title, and a later hook reports
+    # again. The judge imported nothing, so its import log does not know the session.
+    entries = [
+        {
+            "type": "session_start",
+            "id": "roles-spawned",
+            "title": "Explorer: Find the parser",
+            "callingSessionId": "roles-parent",
+        },
+        said("p1", "user", "Find it.", "2026-11-13T10:00:01Z"),
+        said("r1", "assistant", "Found.", "2026-11-13T10:00:02Z"),
+    ]
+    path = write(tmp_path / "roles-spawned.jsonl", entries)
+
+    def hooked(event: str, **fields) -> list[Record]:
+        payload = {"session_id": path.stem, "transcript_path": str(path), "cwd": "/synthetic"}
+        return DroidAdapter().from_hook({**payload, "hook_event_name": event, **fields})
+
+    for records in (
+        hooked("SessionStart", source="startup", calling_session_id="roles-parent"),
+        DroidAdapter().from_transcript(path),
+        hooked("Notification", message="Droid is waiting."),
+    ):
+        assert deliver(live_cfg, records).written
+    caller = session_callers(live_cfg, live_client)[ids.session_id("factory-droid", path.stem)]
+    assert (caller.kind, caller.role, caller.calling_session_id) == (
+        "agent",
+        "explorer",
+        "roles-parent",
+    )
+
+
+def test_a_server_started_before_the_summary_named_callers_is_refused_before_work(
+    tmp_path, monkeypatch, capsys, sessions_dir
+):
+    from agent_memory import db
+    from agent_memory.config import Config
+    from agent_memory.smoke import free_port
+
+    cfg = Config(home=tmp_path / "older", port=free_port())
+    earlier = [m for m in db.available_migrations() if m.version < SUMMARY_MIGRATION]
+    server = db.MemoryServer(cfg, export_interval_hours=0)
+    with monkeypatch.context() as patch:
+        patch.setattr(db, "available_migrations", lambda: earlier)
+        db.initialize_home(cfg)
+        server.start()
+    store = RunStore(cfg, "older")
+    store.create({"questions_version": "questions_v4", "frozen": {"synthetic": True}})
+    live = ["judge", "live", "--run", "older", "--since", "2026-01-01"]
+    args = ["--home", str(cfg.home), "--port", str(cfg.port), *live]
+    try:
+        with db.MemoryClient.from_config(cfg) as client:
+            with pytest.raises(JudgeError, match=f"mem --home {cfg.home} migrate"):
+                build_candidates(cfg, "fresh")
+            assert not RunStore(cfg, "fresh").exists()
+            assert main([*args, "--sessions-dir", str(sessions_dir)]) == 1
+            assert f"mem --home {cfg.home} migrate" in capsys.readouterr().err
+            # Refused before the import: no transcript was read and no day was begun.
+            assert client.query("SELECT count(*) FROM events")[1] == [(0,)]
+            assert not store.live_dir.exists()
+    finally:
+        server.stop()
+
+
+def test_judge_live_takes_the_sessions_that_began_since_not_the_rows_written_since(
+    live_cfg, live_client, tmp_path
+):
+    # Hooks installed while a session is running: the first record the ledger gets of it is
+    # today's turn, which dates its row, and its transcript then brings the turns of the
+    # weeks before. Another session began today.
+    now, step = datetime.now(UTC), timedelta(seconds=1)
+
+    def turn(session: str, key: str, at: datetime) -> list[Record]:
+        parts = [("user_msg", "Run it."), ("assistant_msg", "Done."), ("outcome", "completed")]
+        return [
+            Record(
+                "factory-droid", session, kind, at + step * n, f"{key}-{kind}", content=text, seq=n
+            )
+            for n, (kind, text) in enumerate(parts)
+        ]
+
+    for records in (
+        turn("since-running", "p9", now),
+        turn("since-running", "p1", now - timedelta(days=30)),
+        turn("since-new", "p1", now),
+    ):
+        assert deliver(live_cfg, records).written
+    running, new = (ids.session_id("factory-droid", s) for s in ("since-running", "since-new"))
+    store = RunStore(live_cfg, "since")
+    store.create({"questions_version": "questions_v4", "frozen": {"synthetic": True}})
+    (tmp_path / "none").mkdir()
+    pipeline.live_step(
+        live_cfg,
+        "since",
+        sessions_dir=tmp_path / "none",
+        since=now - timedelta(hours=1),
+        backends=["rules"],
+        day="2026-11-13",
+    )
+    judged = {item["session_id"] for item in store.live_day("2026-11-13").items()}
+    assert new in judged
+    assert running not in judged
+    # A turn carries its session's start as the summary has it, before the row's.
+    _, rows = live_client.query(
+        "SELECT started_at::VARCHAR, started_at < recorded_started_at FROM session_summary "
+        f"WHERE session_id = {sql_literal(running)}"
+    )
+    [(began, earlier)] = rows
+    assert earlier
+    assert {
+        started for _, _, started, _ in fetch_turn_events(live_client, session_ids=[running])
+    } == {began}
 
 
 def test_a_notice_only_the_user_saw_starts_no_turn(live_cfg, live_client, tmp_path):
