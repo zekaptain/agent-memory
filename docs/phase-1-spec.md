@@ -1440,3 +1440,90 @@ difference. Not seen: what Droid shows while a hook runs for 13 s.
 Regressions are in `tests/test_adapters.py` and
 `tests/test_judge_pipeline.py`. What stays wrong is in
 [roadmap.md](roadmap.md#known-defects).
+
+### A notice only the user saw, and the text of a tool result (2026-11-13)
+
+Two questions the first captured sessions left (see the section before
+this one) were decided on 2026-11-13, and the import changed with each.
+The ledger of the production home then held 126 sessions and 25,775
+events. The same comparison found every imported line of 121
+transcripts as it should be, and `mem event` had run 1,128 times, each
+exiting 0. A session that was running before the hooks were installed
+took 13.4 s at its first `Stop`, as the trial above had it.
+
+**A notice.** What Droid tells the user and does not give the agent is
+in the transcript as a message with the role of user and a `visibility`
+of `user_only`. The 121 transcripts held 40, among 582 texts with that
+role:
+
+| what the notice says | notices |
+|---|---|
+| the model provider declined or blocked a request, or the model's safety checks did | 19 |
+| a usage limit was reached, or a credit limit cleared | 6 |
+| some MCP tools are unavailable | 4 |
+| guidance and skills in an untrusted folder were skipped | 4 |
+| a skill was activated | 4 |
+| a compaction brought back the model that safety checks had replaced | 2 |
+| the model finished without a text answer | 1 |
+
+Where Droid tells the agent too, as it does of a declined request, it
+writes a second message for the agent alone (`llm_only`). No
+`UserPromptSubmit` hook ran for a notice. An import wrote each as a
+`user_msg`, like a message of the conversation. The judge starts a turn
+at every `user_msg`, so it started one at the notice, in the middle of
+the turn the agent was working on, and it took 21 of the first 29
+notices for a person's or a calling agent's message.
+
+An import now writes a notice as a `note`, keyed on the entry's id, with
+the `visibility` in its payload. No turn starts at a note: a prompt, a
+notice after it, and the reply after that are one turn, and the
+attribution kept with each names it. In `mem audit check`, a session
+whose only text with the role of user is a notice no longer counts as
+one that holds a user message.
+
+**The text of a tool result.** Where what Droid put on the user's screen
+is not what the tool gave the agent, the result holds both: `content`
+for the screen and `model_content` for the agent. 2,282 of the 12,334
+results in the 121 transcripts held both, 2,140 of them results of calls
+a Script made. All were results of four tools:
+
+| tool | results | `content` | `model_content` |
+|---|---|---|---|
+| Edit | 1,653 | a JSON object with the change, about 1,300 characters at the median and up to 29,000 | "The file … has been updated successfully." |
+| Create | 540 | a JSON object of about 110 characters | "The file … has been created successfully." |
+| ApplyPatch | 51 | a JSON object with the change, about 5,800 characters at the median and up to 163,000 | "Success. Applied changes to the following files: …" |
+| Read | 38 | the lines read | the lines read, then a reminder of which lines of the file they were |
+
+The 15 edits that failed held one text. A result's content is now
+`model_content` where the result holds one, and its payload says so
+(`content_from`).
+
+- No result of an `agent-memory` tool held two texts. Attribution reads
+  the id of a retrieval from the result of a recall, and reads what it
+  read before.
+- The judge's projection shows the first 120 characters of a result that
+  is no error. For an edit that is now the line the agent got, where it
+  was the opening of the JSON object.
+
+**What the ledger already holds.** An import's observation names the
+adapter `droid_transcript_v4`. No event is rewritten:
+
+- A tool result keeps the id it had. One imported before keeps the text
+  for the screen, however often its transcript is read again.
+- A notice imported before stays a `user_msg`. An event's kind is part
+  of its id ([ADR 0003](adr/0003-deterministic-capture-ids.md)), so a
+  whole-file import (`mem ingest`) of its transcript adds the `note`
+  beside the `user_msg`, with the same text and time. A hook reads on
+  from where the last import ended and adds nothing for an earlier
+  line. The ledger of the production home held 40 such messages, and
+  the judge still starts a turn at each; see
+  [roadmap.md](roadmap.md#known-defects).
+
+Regressions are
+`test_droid_notice_only_the_user_saw_is_a_note_inside_its_turn` and
+`test_droid_tool_result_is_the_text_the_agent_got` in
+`tests/test_adapters.py`,
+`test_a_notice_only_the_user_saw_starts_no_turn` in
+`tests/test_judge_pipeline.py`, and
+`test_a_notice_imported_as_a_message_keeps_that_event_beside_its_note`
+in `tests/test_capture_identity.py`.
