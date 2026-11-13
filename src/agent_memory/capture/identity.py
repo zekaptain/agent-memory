@@ -19,6 +19,11 @@ def reply_key(message_id: str) -> str:
     return str(message_id)
 
 
+def notice_key(message_id: str) -> str:
+    """For what a harness showed the user and did not give the agent."""
+    return message_id
+
+
 def thinking_key(message_id: str) -> str:
     return f"{reply_key(message_id)}#thinking"
 

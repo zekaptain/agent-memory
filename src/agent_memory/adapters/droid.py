@@ -356,7 +356,7 @@ class DroidAdapter:
         metadata["model"] = model
         observation = {
             "source_mode": "transcript_import",
-            "adapter_version": "droid_transcript_v3",
+            "adapter_version": "droid_transcript_v4",
             "source_fingerprint": source_fingerprint,
             "covered_from": min(observed) if observed else None,
             "covered_through": max(observed) if observed else None,
@@ -444,7 +444,11 @@ def _message_records(
                 )
             )
     if texts or documents:
-        kind = "user_msg" if role == "user" else "assistant_msg"
+        # A text marked `user_only` is a notice Droid showed the user and did not give the
+        # agent, such as a refused request or a usage limit. The agent's conversation does
+        # not hold it, so it is a note and no message.
+        notice = role == "user" and msg.get("visibility") == "user_only"
+        kind = "note" if notice else "user_msg" if role == "user" else "assistant_msg"
         payload: dict[str, Any] = {}
         if role == "assistant":
             payload.update({k: msg[k] for k in _ASSISTANT_META if msg.get(k) is not None})
@@ -453,9 +457,8 @@ def _message_records(
         if msg.get("userMessageSource"):
             payload["userMessageSource"] = msg["userMessageSource"]
         if msg.get("visibility"):
-            # `llm_only` is text Droid gave the model and did not show the user, `user_only`
-            # a notice it showed the user and did not give the model. A message a person or
-            # a calling agent wrote has neither.
+            # `llm_only` is text Droid gave the agent and did not show the user. A message a
+            # person or a calling agent wrote has no visibility.
             payload["visibility"] = msg["visibility"]
         text = "\n".join(texts)
         if documents and not text:
@@ -466,7 +469,9 @@ def _message_records(
                 **base,
                 kind=kind,
                 source_key=(
-                    identity.prompt_key(entry_id, base["ts"])
+                    identity.notice_key(entry_id)
+                    if notice
+                    else identity.prompt_key(entry_id, base["ts"])
                     if role == "user"
                     else identity.reply_key(entry_id)
                 ),
