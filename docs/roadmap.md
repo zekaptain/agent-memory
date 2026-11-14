@@ -7,7 +7,7 @@ still undecided. The design of what is built is in
 
 ## Status
 
-As of 2026-11-13.
+As of 2026-11-14.
 
 | Work | State | Where it is specified |
 |------|-------|-----------------------|
@@ -36,6 +36,13 @@ session in a terminal, and what Droid shows during a long first import.
 Retrieval tuning and wider graph use follow measured failures.
 Parametric consolidation remains research until usefulness and
 withdrawal/backflow can be measured.
+
+Also agreed on 2026-11-13, from the measurements under "Growth" below,
+and in this order: keep fewer Parquet snapshots; give the server a
+memory limit and remove old files from `spool/done/` on a schedule;
+then decide whether old events ever leave the ledger (see "Open
+decisions"). The first step agreed is done: the binding check after a
+write no longer reads every event.
 
 ## Phases
 
@@ -179,6 +186,66 @@ notice only the user saw, and the text of a tool result" in
 | omp (`~/.omp/agent/hooks/{pre,post}/*.ts`) | `session_start`, `session_switch`, `session_compact`, `session_shutdown`, `agent_start`, `agent_end`, `turn_start`, `turn_end`, `message_start`, `message_end`, `tool_call`, `tool_result`, `tool_execution_*`, `tool_approval_*`, `auto_compaction_*`, `session_stop` | Typed in-process payloads with full message text, tool inputs and results, compaction entries, `session_file`. | None material. Skip the high-volume `message_update` and `tool_execution_update`. |
 | Amp (`.amp/plugins/*.ts`) | `session.start`, `agent.start`, `tool.call`, `tool.result`, `agent.end` | In-process: thread id, prompt and message id on `agent.start`; `toolUseID`, `tool`, `input`, `status`, `output` on tool events; every `ThreadMessage` of the turn on `agent.end`. | No compaction or session-end event; `onDispose` runs on unload for about 3 s. |
 | Junie | none | MCP tools only | Everything except what the agent chooses to log. |
+
+## Growth
+
+Measured on 2026-11-13 and 14 on a machine with 18 cores and 48 GB, on
+copies of the experiment home: 330,779 events of 2,335 sessions over
+194 days, and that ledger grown to 1, 3, and 10 million events by
+adding its sessions again under new ids. No ledger that large has come
+from real use.
+
+**Disk.** With the defaults a home takes about 20.5 KB for each event:
+3.65 KB in the database, 1.9 KB in blobs, and 1.07 KB in each of the 14
+Parquet snapshots the server keeps, which together are 73% of it. With
+two snapshots kept it is 7.7 KB. The experiment home gained 52,000
+events a month over six months, and 251,000 in its busiest. The
+production home, captured through hooks, is gaining about 205,000 a
+month. At 52,000 a month a home reaches 13 GB in a year and 64 GB in
+five; at 250,000 a month, 62 GB and 308 GB.
+
+**Hooks.** A hook has 2 s before it spools. Each one ran the binding
+check, which read the payload of every event (see "Which placeholders a
+write reads" in [logic-hardening-spec.md](logic-hardening-spec.md)).
+Before that change and after it, on the same ledgers with no citation
+in them:
+
+| Events | Prompt hook | Eight hooks at once, the slowest | `Stop` with one new turn |
+|--------|-------------|----------------------------------|--------------------------|
+| 330,000 | 1.02 s, then 0.40 s | 1.79 s, then 0.68 s | 1.09 s, then 0.47 s |
+| 1 million | 1.34 s, then 0.40 s | 2.70 s, then 0.64 s | 1.40 s, then 0.46 s |
+| 3 million | 1.94 s, then 0.43 s | 2.82 s, then 0.75 s | 2.16 s, then 0.50 s |
+| 10 million | 2.60 s, then 0.39 s | 3.42 s, then 0.64 s | 4 to 17 s over four runs, then 0.46 s |
+
+Before, all eight hooks at once missed the deadline from 1 million
+events on, and so did every hook alone at 10 million. After, none did.
+Most of what is left is the start of the `mem` process (see "Known
+defects").
+
+The check now costs by the placeholders that wait for a reply: 0.1 to
+0.2 ms each, at every write. At 10 million events, 750 waiting made a
+prompt hook 0.56 s. 7,500 made it 1.95 s, and all eight at once missed
+the deadline again. No ledger in use holds a citation yet. The typed
+table under "Proposed directions" took 1.5 ms as a prototype, whatever
+waited, and 0.3 s to fill for 20,000 cited events.
+
+**What else grows with the ledger.**
+
+- Memory. After 20 hooks on the ledger of 10 million events, with 7,500
+  placeholders waiting, the server held 2.3 GB, and 5.9 GB with the
+  earlier check. After an audit and the judge's reads as well, with the
+  earlier check, it held 0.9 GB at 330,000 events, 2.8 GB at 1 million,
+  8.2 GB at 3 million, and 27 GB at 10 million.
+- A snapshot: 381 MB in 3.4 s at 330,000 events, and 11.2 GB in 128 s
+  at 10 million.
+- `mem audit check`: 1.3 s at 330,000 events, and 15 s at 10 million.
+- Reading every row of `session_summary`: 1.1 s at 1 million events,
+  and 6.3 s at 10 million.
+- `cite`. To find the sessions that saw its placeholder it reads the
+  attribution evidence of every capture observation: 0.3 s for 420,000
+  observations, and 0.6 s on a busy server (`capture/attribution.py`).
+
+Recall did not slow: 24 to 35 ms at every size.
 
 ## Risks and open questions
 
@@ -351,6 +418,23 @@ Verified against the code in the audit of 2026-11 and still open.
   untracked `.ori/state.sqlite`. The wheel holds the package alone, and
   nothing in the repository publishes a source distribution
   (`pyproject.toml`).
+- The server sets no memory limit, so DuckDB's default applies: 80% of
+  the machine's memory (`db.py`). See "Growth" for what a server holds.
+- The server's first automatic export comes a full interval after it
+  starts, 24 hours by default. A server that is restarted every day
+  never exports (`db.py`).
+- Nothing removes what a home gathers beside the database. A replayed
+  spool file stays under `spool/done/` until someone runs `mem ingest
+  --spool --purge-done DAYS`, and launchd appends to `serve.log` and
+  `admit.log` without end (`capture/spool.py`, `scripts/`).
+- A hook whose write is still going at its deadline puts its records in
+  the spool, and the server may commit the same write a moment later.
+  Nothing is stored twice, because replay finds the records present,
+  but the file waits until the server next starts or someone runs
+  `mem ingest --spool` (`capture/pipeline.py`).
+- A tool call's input is stored twice: in the text of the event, and as
+  `tool_input` in its payload, which has no size limit. The largest
+  payload measured was 713 KB (`adapters/droid.py`).
 
 Reported in the same audit and not yet checked against the code: the
 hand-maintained `ALL_TABLES` list; lockdown happening after the listener
@@ -386,6 +470,9 @@ Proposed in the audit of 2026-11. None of these is approved.
 - A restore that is verified, blobs included.
 - A labeler's identity on each label, and a machine-readable report.
 - Harden admission before auto mode is used.
+- A typed table of the placeholders that wait for a reply, which `cite`
+  would write (a migration). The binding check after a write would then
+  never read `payload`. Proposed on 2026-11-13; see "Growth".
 
 Modules that would gain from deepening, in the order the audit ranked
 them: a ledger connection with two adapters; auto-approval in one place.
@@ -448,5 +535,10 @@ The same audit proposed removing the following. Each was looked at on
 - May a run be relabeled after a freeze? Should `--freeze` also ask for
   every judge's verdicts on the calibration items?
 - Do Phases 0.5, 3, and 5 stay on this roadmap?
-- Is the Parquet export a backup or a browsing aid?
+- Is the Parquet export a backup or a browsing aid? The 14 snapshots
+  the server keeps are about three quarters of a home's size (see
+  "Growth"), so the answer decides how many to keep.
+- Do old events ever leave the ledger for an archive? The ledger only
+  grows. Moving events out would be a new rule beside "append-only",
+  and would need a record under `docs/adr/`.
 - What happens to `example-memory-db-schema.sql` and the prototype branch?
