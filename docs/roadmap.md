@@ -38,11 +38,11 @@ Parametric consolidation remains research until usefulness and
 withdrawal/backflow can be measured.
 
 Also agreed on 2026-11-13, from the measurements under "Growth" below,
-and in this order: keep fewer Parquet snapshots; give the server a
-memory limit and remove old files from `spool/done/` on a schedule;
-then decide whether old events ever leave the ledger (see "Open
-decisions"). The first step agreed is done: the binding check after a
-write no longer reads every event.
+and in this order: give the server a memory limit and remove old files
+from `spool/done/` on a schedule; then decide whether old events ever
+leave the ledger (see "Open decisions"). Two steps agreed before these
+are done: the binding check after a write no longer reads every event,
+and the server keeps two Parquet snapshots where it kept 14.
 
 ## Phases
 
@@ -195,14 +195,15 @@ copies of the experiment home: 330,779 events of 2,335 sessions over
 adding its sessions again under new ids. No ledger that large has come
 from real use.
 
-**Disk.** With the defaults a home takes about 20.5 KB for each event:
-3.65 KB in the database, 1.9 KB in blobs, and 1.07 KB in each of the 14
-Parquet snapshots the server keeps, which together are 73% of it. With
-two snapshots kept it is 7.7 KB. The experiment home gained 52,000
-events a month over six months, and 251,000 in its busiest. The
-production home, captured through hooks, is gaining about 205,000 a
-month. At 52,000 a month a home reaches 13 GB in a year and 64 GB in
-five; at 250,000 a month, 62 GB and 308 GB.
+**Disk.** A home takes about 7.7 KB for each event: 3.65 KB in the
+database, 1.9 KB in blobs, and 1.07 KB in each of the two Parquet
+snapshots the server keeps. It kept 14 until 2026-11-14, which made
+20.5 KB, 73% of it snapshots. The experiment home gained 52,000 events
+a month over six months, and 251,000 in its busiest. The production
+home, captured through hooks, is gaining about 205,000 a month. At
+52,000 a month a home reaches 5 GB in a year and 24 GB in five; at
+250,000 a month, 23 GB and 115 GB. With 14 snapshots those were 13 and
+64 GB, and 62 and 308 GB.
 
 **Hooks.** A hook has 2 s before it spools. Each one ran the binding
 check, which read the payload of every event (see "Which placeholders a
@@ -421,8 +422,12 @@ Verified against the code in the audit of 2026-11 and still open.
 - The server sets no memory limit, so DuckDB's default applies: 80% of
   the machine's memory (`db.py`). See "Growth" for what a server holds.
 - The server's first automatic export comes a full interval after it
-  starts, 24 hours by default. A server that is restarted every day
-  never exports (`db.py`).
+  starts, 24 hours by default, and the interval is counted on a clock
+  that stops while the machine sleeps: on the development machine it was
+  4.3 hours behind the wall clock 78 hours after boot. A server that is
+  restarted every day never exports, and one on a laptop exports less
+  often than daily. With two snapshots kept, the newest is the copy to
+  fall back on, and it can be days old (`db.py`).
 - Nothing removes what a home gathers beside the database. A replayed
   spool file stays under `spool/done/` until someone runs `mem ingest
   --spool --purge-done DAYS`, and launchd appends to `serve.log` and
@@ -535,9 +540,6 @@ The same audit proposed removing the following. Each was looked at on
 - May a run be relabeled after a freeze? Should `--freeze` also ask for
   every judge's verdicts on the calibration items?
 - Do Phases 0.5, 3, and 5 stay on this roadmap?
-- Is the Parquet export a backup or a browsing aid? The 14 snapshots
-  the server keeps are about three quarters of a home's size (see
-  "Growth"), so the answer decides how many to keep.
 - Do old events ever leave the ledger for an archive? The ledger only
   grows. Moving events out would be a new rule beside "append-only",
   and would need a record under `docs/adr/`.
