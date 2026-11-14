@@ -297,6 +297,10 @@ _SNAPSHOT_DIR = re.compile(r"\d{8}T\d{6}\d{6}Z")
 
 # How many times a client copies the tables before it gives up on a ledger that keeps growing.
 EXPORT_ATTEMPTS = 3
+# How many snapshots the server keeps. The tables only grow, so the newest snapshot holds all
+# that an older one does. The one before it stays for a reader that opened it as the latest,
+# and in case the newest cannot be read.
+EXPORT_KEEP = 2
 
 
 def export_snapshot(con: duckdb.DuckDBPyConnection, export_dir: Path, keep: int = 0) -> Path:
@@ -371,7 +375,7 @@ class MemoryServer:
     """Owns the database file and serves it to local clients over Quack."""
 
     def __init__(
-        self, cfg: Config, *, export_interval_hours: float = 24.0, export_keep: int = 14
+        self, cfg: Config, *, export_interval_hours: float = 24.0, export_keep: int = EXPORT_KEEP
     ) -> None:
         self.cfg = cfg
         self.export_interval_hours = export_interval_hours

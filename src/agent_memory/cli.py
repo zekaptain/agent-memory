@@ -20,6 +20,7 @@ from .capture.pipeline import IMPORT_DEADLINE, Delivery, catch_up, deliver, repl
 from .capture.spool import Spool
 from .config import Config, ConfigError, RootOptions, command_config
 from .db import (
+    EXPORT_KEEP,
     AgentMemoryError,
     MemoryClient,
     MemoryServer,
@@ -125,7 +126,7 @@ def serve(
     ] = 24.0,
     export_keep: Annotated[
         int, typer.Option(min=0, help="Snapshots to keep; older ones are deleted. 0 keeps all.")
-    ] = 14,
+    ] = EXPORT_KEEP,
 ) -> None:
     """Serve the database to local clients over Quack until interrupted."""
     cfg = command_config(ctx)

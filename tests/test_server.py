@@ -196,6 +196,16 @@ def test_server_export_writes_every_table(served):
     assert (cfg.export_dir / "latest").resolve() == path.resolve()
 
 
+def test_a_server_keeps_its_two_newest_snapshots(served):
+    """It kept 14, which were three quarters of what a home took on disk, and each holds
+    all that the ones before it do."""
+    cfg, server = served
+    paths = [server.export() for _ in range(3)]
+    kept = sorted(p.name for p in cfg.export_dir.iterdir() if p.name != "latest")
+    assert kept == [p.name for p in paths[1:]]
+    assert (cfg.export_dir / "latest").resolve() == paths[-1].resolve()
+
+
 class _Between:
     """A connection under which the ledger grows right after `sessions` has been copied."""
 
