@@ -255,6 +255,36 @@ The JSON report is `version` 2. Its `status` is `clean`, `warnings`,
 `findings` (at least one error) or `error` (incomplete), whatever flags
 were passed. Its `exit_code` is the code the command exits with.
 
+### Which placeholders a write reads, as built (2026-11-14)
+
+Binding runs after every write and after every `cite`. Its step for an
+explicit `answer_event_id` found placeholders by reading the `payload`
+of every event in the ledger. `payload` is a `VARIANT` and no index
+covers it, so the step took longer as the ledger grew: 0.6 s at 330,000
+events and 3.6 s at 10 million, where a hook has 2 s. The history it
+was measured on held no placeholder at all.
+
+The step now starts from typed columns. A placeholder still waiting is
+an assistant message with no content that a `context_links` row names
+and no `answer_bindings` row binds. `payload` is read for those events
+alone, by event id, to confirm that each is a placeholder and to learn
+which reply its citation named. The replies named are read by id in the
+same way. The bindings written are the ones the earlier query wrote,
+and a later write to the placeholder's session or to the reply's still
+finishes one that was left undone.
+
+This relies on how `cite` writes a placeholder: without content, and
+with its `context_links` rows in the same insert. Nothing else writes
+one.
+
+With no placeholder waiting the step takes 2 ms at every size tried, up
+to 10 million events. What it costs now follows the placeholders that
+wait, and one that is never bound waits for good. Each adds 0.1 to
+0.2 ms to every write: at 10 million events 750 of them added 0.15 s
+and 7,500 added 1.5 s, which puts a hook back at its deadline. A typed
+table of waiting placeholders would end that; see "Growth" in
+[roadmap.md](roadmap.md).
+
 ## Judge version boundary
 
 New runs use `questions_v4` and `labels_v4`. Structured lessons and per-claim

@@ -14,3 +14,7 @@ are in `src/agent_memory/adapters/AGENTS.md`. The spec is
   event` runs as a hook, so it prints nothing on stdout and never exits 2.
   Add regression coverage for replay, partial failures, and parent/result
   linkage.
+- A hook has two seconds, and binding runs after every write. What runs
+  at every write must not take longer as the ledger grows: look events
+  up by id, and do not filter the ledger on `payload`, which no index
+  covers.
