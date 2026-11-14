@@ -294,8 +294,15 @@ schema was written. The tests pin the ones the design depends on.
 - Migrations: stop the service, run `mem migrate`, start it again. Applied
   migrations are checksummed and immutable; edits require a new migration.
 - Backups: the daily Parquet snapshot in `export/<timestamp>/`, with
-  `export/latest` pointing at the newest. The server keeps the newest 14
-  (`--export-keep`). A failed export is logged and retried at the next
+  `export/latest` pointing at the newest. A snapshot is two things: what
+  is read without the server, and a second copy of the tables. Both need
+  only the newest, because the tables only grow and a snapshot holds all
+  that an older one does. So the server keeps the newest two
+  (`--export-keep`), the second for a reader that opened it as the latest
+  and in case the newest cannot be read. It kept 14 until 2026-11-14,
+  which were about three quarters of what a home took on disk. A snapshot
+  is on the same disk as the database and holds no blobs, and no command
+  restores from one. A failed export is logged and retried at the next
   interval; it does not stop the server. A snapshot holds the ledger as it
   was at one moment. The server, and `mem export --direct`, copy every
   table in one transaction. `mem export` through a running server cannot
