@@ -696,3 +696,16 @@ def test_serve_says_which_step_failed(down_mem, monkeypatch):
     assert code == 0, err
     assert "correction maintenance failed: ledger busy" in err
     assert "export failed" not in err
+
+
+def test_serve_keeps_two_snapshots_unless_told_how_many(down_mem, monkeypatch):
+    import agent_memory.cli as cli
+
+    kept: list[int] = []
+    monkeypatch.setattr(
+        MemoryServer, "serve_forever", lambda self, stop, **kwargs: kept.append(self.export_keep)
+    )
+    monkeypatch.setattr(cli.signal, "signal", lambda *a: None)
+    assert down_mem("serve")[0] == 0
+    assert down_mem("serve", "--export-keep", "14")[0] == 0
+    assert kept == [2, 14]
