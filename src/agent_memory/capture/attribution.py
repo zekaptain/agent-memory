@@ -6,7 +6,7 @@ import json
 import os
 import uuid
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from typing import Any
 
 import duckdb
@@ -169,15 +169,68 @@ def reconcile_answers(
     return total
 
 
+# A placeholder as `cite` writes it, told by typed columns: an assistant message with no
+# content, linked in the insert that wrote it. Binding runs after every write, and reading
+# `payload` costs many times what a typed column does for the same rows, so these columns
+# choose the few events whose payload is then read.
+_UNBOUND_SQL = (
+    "SELECT DISTINCT cl.answer_event_id::VARCHAR FROM context_links cl "
+    "JOIN events e ON e.event_id = cl.answer_event_id "
+    "WHERE e.kind = 'assistant_msg' AND e.content IS NULL AND NOT EXISTS "
+    "(SELECT 1 FROM answer_bindings b WHERE b.placeholder_event_id = cl.answer_event_id)"
+)
+LOOKUP_IDS = 500
+
+
+def _looked_up(
+    client: MemoryClient, event_ids: Iterable[str]
+) -> dict[str, tuple[str, bool, str, str | None]]:
+    """Each event's kind, whether it is a placeholder, its session, and the reply it names."""
+    found: dict[str, tuple[str, bool, str, str | None]] = {}
+    ordered = sorted(set(event_ids))
+    for start in range(0, len(ordered), LOOKUP_IDS):
+        literals = ", ".join(sql_literal(mid) for mid in ordered[start : start + LOOKUP_IDS])
+        # The ids are the whole condition. Beside a long list, a second condition on a
+        # column makes DuckDB 2.0.0 scan the table instead of using the primary key.
+        _, rows = client.query(
+            "SELECT event_id::VARCHAR, kind, "
+            "coalesce(try_cast(payload.placeholder AS BOOLEAN), false), session_id::VARCHAR, "
+            "try_cast(payload.explicit_answer_event_id AS UUID)::VARCHAR "
+            f"FROM events WHERE event_id IN ({literals})"
+        )
+        for mid, kind, placeholder, event_sid, named in rows:
+            found[str(mid)] = (
+                str(kind),
+                bool(placeholder),
+                str(event_sid),
+                str(named) if named else None,
+            )
+    return found
+
+
 def _reconcile_explicit(client: MemoryClient, sid: str) -> int:
-    _, rows = client.query(
-        "SELECT p.event_id::VARCHAR, a.event_id::VARCHAR, p.session_id::VARCHAR FROM events p "
-        "JOIN events a ON a.event_id = try_cast(p.payload.explicit_answer_event_id AS UUID) "
-        f"WHERE (a.session_id = {sql_literal(sid)} OR p.session_id = {sql_literal(sid)}) "
-        "AND coalesce(try_cast(p.payload.placeholder AS BOOLEAN), false) "
-        "AND a.kind = 'assistant_msg' "
-        "AND NOT coalesce(try_cast(a.payload.placeholder AS BOOLEAN), false) "
-        "AND NOT EXISTS (SELECT 1 FROM answer_bindings b WHERE b.placeholder_event_id = p.event_id)"
+    """Bind each placeholder to the reply its citation named, once the ledger holds that
+    reply and either of the two is in this session."""
+    _, unbound = client.query(_UNBOUND_SQL)
+    named = {
+        mid: (event_sid, reply)
+        for mid, (kind, placeholder, event_sid, reply) in _looked_up(
+            client, (str(row[0]) for row in unbound)
+        ).items()
+        if kind == "assistant_msg" and placeholder and reply
+    }
+    replies = {
+        mid: event_sid
+        for mid, (kind, placeholder, event_sid, _) in _looked_up(
+            client, (reply for _, reply in named.values())
+        ).items()
+        if kind == "assistant_msg" and not placeholder
+    }
+    session = _uuid(sid) or sid
+    rows = sorted(
+        (placeholder, reply, placeholder_sid)
+        for placeholder, (placeholder_sid, reply) in named.items()
+        if reply in replies and session in (placeholder_sid, replies[reply])
     )
     if rows:
         client.insert(
