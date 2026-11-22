@@ -285,6 +285,9 @@ schema was written. The tests pin the ones the design depends on.
 | `now()` is fixed per transaction, and `uuidv7()` is not monotonic within a millisecond. | Review order uses `(created_at, rowid)`. On append-only tables `rowid` follows insertion order within a transaction and commit order across transactions. |
 | `enable_external_access`, `allowed_directories`, and `lock_configuration` can be set after `quack_serve`. | Lockdown happens after the listener is up. |
 | The Python client needs `pytz` to fetch `TIMESTAMPTZ`. | `pytz` is a dependency. |
+| A `COPY` to Parquet that keeps a table's order holds what it has read and not yet written, 122,880 rows on every thread, and fails under a memory limit smaller than that. With `PRESERVE_ORDER false` and `ROW_GROUP_SIZE_BYTES` it writes as it reads. | `events` is copied unordered in row groups of 8 MB (see "Operations"). |
+| `memory_limit` counts the pages DuckDB keeps and what a query works with, not all the process holds. | The server holds more than its limit, and far more while a client takes a large result (see "Operations"). |
+| DuckDB removes its temporary files when it closes. A process that is killed leaves them, and they stay until a later process first writes temporary files of its own. | `mem serve` deletes them when it starts. |
 
 ## Operations
 
@@ -312,6 +315,40 @@ schema was written. The tests pin the ones the design depends on.
   again if one grew meanwhile, and after three tries publishes nothing and
   exits 1. A file copy of `memory.duckdb` is only consistent while the
   server is stopped.
+- Every table but `events` is copied in the order its rows were written,
+  which views break ties by (`rowid`). `events.parquet` holds every
+  event, not in that order: events are copied as they are read, in row
+  groups of 8 MB. Copied in order, DuckDB holds what it has read and
+  not yet written, 122,880 rows at a time on every thread. That was 15
+  to 35 GB for a million events, and under a memory limit the copy ran
+  out of memory, in the server and in `mem export` alike. Nothing reads
+  the order events were written in. Each event has its `seq`, no view
+  breaks a tie between two events by `rowid`, and an event cannot be
+  inserted in the statement that inserts its parent, whatever the order.
+- Memory: `mem serve` sets DuckDB's `memory_limit` before it serves, to
+  10% of the machine's memory unless `--memory-limit` gives a size or
+  another share. DuckDB's own limit is 80%, and it keeps what it reads
+  until it holds that much: on 10 million events the server process
+  held 26 GiB after a content search and an audit, and went on holding
+  it. Limited to 10%, which was 4.7 GiB there, it held 5.7 GiB after
+  the same reads, and hooks took what they did before. Past the limit
+  DuckDB lets go of what it read. A query that needs more than the
+  limit at once writes the rest to `memory.duckdb.tmp/` beside the
+  database, or fails with an out-of-memory error when what it holds
+  cannot be written there. The default is a share because what a query
+  needs grows with the threads it runs on, one for each core: on 18
+  threads and 10 million events the judge's read of every turn failed
+  with 1 GB and completed with 2. The limit is set before the
+  configuration is locked, so no client can raise it. It bounds what
+  DuckDB counts, which is not all the process holds: about 1 GiB more at
+  rest, and 20 GiB while `mem export` copied those events through a
+  server limited to 4.7. "Growth" in the [roadmap](roadmap.md) has the
+  measurements.
+- A server that is killed while a query writes to `memory.duckdb.tmp/`
+  leaves its temporary files there, 4 GB of them in one case. DuckDB
+  removes them only when a later process first writes temporary files
+  of its own, so `mem serve` deletes them when it starts and says how
+  much they held.
 - While it serves, `mem serve` also applies corrections that have come due,
   once a second. A failed pass, like a failed export, is printed with the
   name of the step and tried again; neither stops the server.
@@ -320,7 +357,9 @@ schema was written. The tests pin the ones the design depends on.
   rejected; `mem ingest --spool` replays the waiting records (the server
   also does this at startup). Rejected records are kept under
   `spool/failed/` and recorded as `capture_error` events; `mem spool retry`
-  returns them to the spool.
+  returns them to the spool. A replayed file moves to `spool/done/`, and
+  every replay deletes the files replayed more than 30 days ago. Only a
+  replay adds to that directory, so no timer is needed to keep it bounded.
 - Redaction runs in the capture pipeline (`agent_memory.capture.redact`),
   before the spool and before the ledger, and again at replay so a rule added
   later still covers queued records. The server token is always a rule.
