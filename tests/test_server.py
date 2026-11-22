@@ -18,6 +18,7 @@ from agent_memory import db
 from agent_memory.config import Config
 from agent_memory.db import (
     ALL_TABLES,
+    MEMORY_LIMIT,
     AgentMemoryError,
     MemoryClient,
     MemoryServer,
@@ -347,6 +348,47 @@ def test_connection_errors_never_include_the_token(served, uri):
         MemoryClient(uri or cfg.uri, token)
     assert token not in str(info.value)
     assert token not in str(info.value.__cause__)
+
+
+def test_a_server_holds_no_more_memory_than_it_is_told(cfg):
+    """DuckDB's own limit is 80% of the machine's memory, and it keeps what it has read until
+    it holds that much."""
+    server = MemoryServer(cfg, export_interval_hours=0, memory_limit="256MiB")
+    server.start()
+    try:
+        assert server.con is not None
+        limit = "SELECT current_setting('memory_limit')"
+        assert server.con.execute(limit).fetchall() == [("256.0 MiB",)]
+        with pytest.raises(duckdb.Error, match="locked"):
+            server.con.execute("SET memory_limit = '64GiB'")
+        with MemoryClient.from_config(cfg) as client:
+            with pytest.raises(AgentMemoryError, match="authorization policy"):
+                client.query("SET memory_limit = '64GiB'")
+            assert client.query(limit)[1] == [("256.0 MiB",)]
+    finally:
+        server.stop()
+
+
+def test_a_server_has_a_memory_limit_when_given_none(served):
+    _, server = served
+    con = duckdb.connect()
+    try:
+        con.execute(f"SET memory_limit = {sql_literal(MEMORY_LIMIT)}")
+        expected = con.execute("SELECT current_setting('memory_limit')").fetchall()
+    finally:
+        con.close()
+    assert server.con.execute("SELECT current_setting('memory_limit')").fetchall() == expected
+    assert expected != duckdb.connect().execute("SELECT current_setting('memory_limit')").fetchall()
+
+
+def test_a_server_does_not_start_with_a_limit_it_cannot_read(cfg):
+    server = MemoryServer(cfg, export_interval_hours=0, memory_limit="lots")
+    with pytest.raises(AgentMemoryError, match="'lots' is not a memory limit"):
+        server.start()
+    assert server.con is None
+    with pytest.raises(AgentMemoryError, match="Is `mem serve` running"):
+        MemoryClient.from_config(cfg)
+    open_direct(cfg.db_path).close()  # the file is not left locked
 
 
 def test_serve_forever_survives_export_failures(cfg):

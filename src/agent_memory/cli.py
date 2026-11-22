@@ -21,6 +21,7 @@ from .capture.spool import DONE_KEEP_DAYS, Spool
 from .config import Config, ConfigError, RootOptions, command_config
 from .db import (
     EXPORT_KEEP,
+    MEMORY_LIMIT,
     AgentMemoryError,
     MemoryClient,
     MemoryServer,
@@ -127,10 +128,22 @@ def serve(
     export_keep: Annotated[
         int, typer.Option(min=0, help="Snapshots to keep; older ones are deleted. 0 keeps all.")
     ] = EXPORT_KEEP,
+    memory_limit: Annotated[
+        str,
+        typer.Option(
+            help="The most memory the database may hold: a size such as 2GB, "
+            "or a share of the machine's such as 10%."
+        ),
+    ] = MEMORY_LIMIT,
 ) -> None:
     """Serve the database to local clients over Quack until interrupted."""
     cfg = command_config(ctx)
-    server = MemoryServer(cfg, export_interval_hours=export_interval_hours, export_keep=export_keep)
+    server = MemoryServer(
+        cfg,
+        export_interval_hours=export_interval_hours,
+        export_keep=export_keep,
+        memory_limit=memory_limit,
+    )
     stop = threading.Event()
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, lambda *_: stop.set())
