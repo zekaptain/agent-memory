@@ -168,7 +168,9 @@ Layout: `spool/<agent_id>/<harness_session_id>.jsonl`, appended with
   `spool/replaying/<agent_id>/`, writes the claimed records as one batch so
   that a record can refer to one in another file, then moves each file to
   `spool/done/<agent_id>/<harness_session_id>.<ts>.<ns>.jsonl`. `--purge-done
-  <days>` deletes old done files; nothing is deleted by default.
+  <days>` deletes old done files; nothing was deleted by default until
+  2026-11-22 (see "A replay purges what it replayed long ago" under "As
+  built").
 - A line that fails to parse, or a record the ledger rejects, is recorded as
   a `capture_error` event (content: the reason, payload: the raw line
   truncated to 4 KiB, source_key: `sha256(line)`), the line is kept in
@@ -1527,3 +1529,34 @@ Regressions are
 `tests/test_judge_pipeline.py`, and
 `test_a_notice_imported_as_a_message_keeps_that_event_beside_its_note`
 in `tests/test_capture_identity.py`.
+
+### A replay purges what it replayed long ago (2026-11-22)
+
+Nothing took a file out of `spool/done/` unless someone ran `mem ingest
+--spool --purge-done DAYS`. The production home held one replayed file
+of 56 MB there, beside a database of 65 MB.
+
+- Every replay now ends by deleting the files replayed more than 30 days
+  ago (`DONE_KEEP_DAYS` in `capture/spool.py`). It does so also when
+  nothing waits to be replayed, and when no server runs, because
+  deleting them asks nothing of the ledger. `--purge-done DAYS` changes
+  the age for one replay; `--purge-done 0` deletes what that replay
+  itself moved there, as before.
+- No timer does this. Only a replay adds to `spool/done/`, so a replay
+  that also takes from it keeps the directory to what was replayed in
+  the 30 days before the last replay. `mem serve` replays once, when it
+  starts. A server that runs for months keeps what it replayed then
+  until it starts again or someone runs `mem ingest --spool`, and gains
+  nothing there meanwhile.
+- A file's age is the time since its replay, not since its records were
+  spooled: replay writes a claimed file again, redacted, before it moves
+  it.
+- `spool/failed/` is not purged. A record there is in no other place.
+
+Regressions are `test_a_replay_purges_the_files_replayed_long_ago`,
+`test_a_replay_with_nothing_to_deliver_still_purges`, and
+`test_a_file_is_kept_from_its_replay_however_long_it_waited` in
+`tests/test_spool.py`, and
+`test_serve_purges_at_startup_the_files_replayed_long_ago` and
+`test_ingest_spool_purges_unless_told_another_age` in
+`tests/test_cli_capture.py`.
