@@ -28,7 +28,9 @@ attribution, the `mem audit check` preflight, or rollout policy.
 - Redact before any persistent write, including spool, blobs, metadata,
   and projections; redact spooled data again at replay. Keep tokens out of
   errors and traceback locals. Preserve loopback-only serving, private file
-  permissions, and the server's external-access/configuration lockdown.
+  permissions, the server's memory limit, and its
+  external-access/configuration lockdown. A setting the server needs is set
+  before the lock, which refuses every later one.
 
 ## Writers and readers
 

@@ -9,6 +9,7 @@ import threading
 import time
 from pathlib import Path
 
+import duckdb
 import pytest
 
 from agent_memory.adapters.droid import DroidAdapter
@@ -17,7 +18,7 @@ from agent_memory.capture.record import Record, now
 from agent_memory.capture.spool import DONE_KEEP_DAYS, Spool
 from agent_memory.capture.writer import Writer
 from agent_memory.cli import main
-from agent_memory.db import MemoryClient, MemoryServer, sql_literal
+from agent_memory.db import MEMORY_LIMIT, MemoryClient, MemoryServer, sql_literal
 from tests.conftest import FIXTURES
 from tests.test_cli import Mem
 
@@ -742,3 +743,32 @@ def test_serve_keeps_two_snapshots_unless_told_how_many(down_mem, monkeypatch):
     assert down_mem("serve")[0] == 0
     assert down_mem("serve", "--export-keep", "14")[0] == 0
     assert kept == [2, 14]
+
+
+def shown(limit: str) -> str:
+    """A memory limit as DuckDB reports it once set."""
+    con = duckdb.connect()
+    try:
+        con.execute(f"SET memory_limit = {sql_literal(limit)}")
+        return str(con.execute("SELECT current_setting('memory_limit')").fetchall()[0][0])
+    finally:
+        con.close()
+
+
+def test_serve_limits_the_servers_memory_unless_told_how_much(down_mem, monkeypatch):
+    import agent_memory.cli as cli
+
+    limits: list[object] = []
+
+    def limit_then_stop(self, stop, **kwargs):
+        limits.append(self.con.execute("SELECT current_setting('memory_limit')").fetchall()[0][0])
+
+    monkeypatch.setattr(MemoryServer, "serve_forever", limit_then_stop)
+    monkeypatch.setattr(cli.signal, "signal", lambda *a: None)
+    assert down_mem("serve")[0] == 0
+    assert down_mem("serve", "--memory-limit", "256MiB")[0] == 0
+    assert limits == [shown(MEMORY_LIMIT), "256.0 MiB"]
+    code, out, err = down_mem("serve", "--memory-limit", "lots")
+    assert code == 1
+    assert "'lots' is not a memory limit" in err
+    assert "serving" not in out

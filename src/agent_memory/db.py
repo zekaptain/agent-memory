@@ -370,16 +370,34 @@ def prune_snapshots(export_dir: Path, keep: int) -> list[Path]:
 
 # Server
 
+# The most memory DuckDB may hold of the database while it is served: a share of the
+# machine's, `10%`, or a size, `2GB`. DuckDB's own limit is 80%, and what it reads it keeps
+# until it has that much, so a server left alone takes more as its ledger grows. Past the
+# limit it lets go of what it read, and a query that needs more writes to
+# `memory.duckdb.tmp` beside the database, or fails when it cannot. The default is a share
+# because what a query needs grows with the threads it runs on, one for each core, and a
+# machine with more cores has more memory: on 18 threads and 10 million events, the judge's
+# read of every turn failed with 1 GB and completed with 2. The process holds more than
+# the limit, because DuckDB does not count all the process takes: about 1 GiB more at
+# rest, and several times the limit while a client takes a result of millions of rows.
+MEMORY_LIMIT = "10%"
+
 
 class MemoryServer:
     """Owns the database file and serves it to local clients over Quack."""
 
     def __init__(
-        self, cfg: Config, *, export_interval_hours: float = 24.0, export_keep: int = EXPORT_KEEP
+        self,
+        cfg: Config,
+        *,
+        export_interval_hours: float = 24.0,
+        export_keep: int = EXPORT_KEEP,
+        memory_limit: str = MEMORY_LIMIT,
     ) -> None:
         self.cfg = cfg
         self.export_interval_hours = export_interval_hours
         self.export_keep = export_keep
+        self.memory_limit = memory_limit
         self.con: duckdb.DuckDBPyConnection | None = None
 
     def start(self) -> None:
@@ -387,6 +405,13 @@ class MemoryServer:
         self.cfg.export_dir.mkdir(parents=True, exist_ok=True)
         con = open_direct(self.cfg.db_path)
         try:
+            try:
+                con.execute(f"SET memory_limit = {sql_literal(self.memory_limit)}")
+            except duckdb.Error as exc:
+                raise AgentMemoryError(
+                    f"{self.memory_limit!r} is not a memory limit. Give a size such as 2GB, "
+                    "or a share of the machine's memory such as 10%."
+                ) from exc
             con.execute("LOAD quack")
             pending = pending_migrations(con)
             if pending:
