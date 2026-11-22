@@ -17,7 +17,7 @@ from . import __version__, audit
 from .adapters import HARNESS_NAMES, UnsupportedTranscript, get_adapter
 from .admission.cli import admit_app
 from .capture.pipeline import IMPORT_DEADLINE, Delivery, catch_up, deliver, replay_spool
-from .capture.spool import Spool
+from .capture.spool import DONE_KEEP_DAYS, Spool
 from .config import Config, ConfigError, RootOptions, command_config
 from .db import (
     EXPORT_KEEP,
@@ -251,7 +251,8 @@ REASONS_SHOWN = 5
 
 
 def _drain_spool(cfg: Config) -> None:
-    """Replay what accumulated while the server was down. Never fatal for the server."""
+    """Replay what accumulated while the server was down, and delete the files replayed long
+    ago. Never fatal for the server."""
     try:
         result = replay_spool(cfg)
     except Exception as exc:
@@ -261,6 +262,11 @@ def _drain_spool(cfg: Config) -> None:
         print(
             f"spool replayed: {result.files} file(s), {result.inserted} rows inserted, "
             f"{result.skipped} already present, {result.failed_lines} line(s) failed",
+            flush=True,
+        )
+    if result.purged:
+        print(
+            f"spool purged: {result.purged} replayed file(s) older than {DONE_KEEP_DAYS:g} days",
             flush=True,
         )
 
@@ -386,16 +392,16 @@ def ingest(
         bool, typer.Option("--spool-only", help="Write to the spool without trying the server.")
     ] = False,
     purge_done: Annotated[
-        float | None,
+        float,
         typer.Option(help="With --spool, delete replayed files older than this many days."),
-    ] = None,
+    ] = DONE_KEEP_DAYS,
 ) -> None:
     """Import a transcript, or replay the spool. Exits 0 once the records are kept anywhere."""
     cfg = command_config(ctx)
     if spool == (transcript is not None):
         raise typer.BadParameter("pass exactly one of --transcript PATH or --spool")
     if spool:
-        result = replay_spool(cfg)
+        result = replay_spool(cfg, purge_done_days=purge_done)
         print(
             f"spool: {result.files} file(s), {result.inserted} rows inserted, "
             f"{result.skipped} already present, {result.failed_lines} line(s) failed"
@@ -404,9 +410,8 @@ def ingest(
             print(f"  {error}", file=sys.stderr)
         for path in result.failed_paths:
             print(f"  failed lines kept in {path}", file=sys.stderr)
-        if purge_done is not None:
-            removed = Spool(cfg.spool_dir).purge_done(purge_done)
-            print(f"purged {len(removed)} replayed file(s)")
+        if result.purged:
+            print(f"purged {result.purged} replayed file(s)")
         return
     if transcript is None or harness is None:
         raise typer.BadParameter("--transcript needs --harness")

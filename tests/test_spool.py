@@ -6,6 +6,7 @@ import os
 import threading
 import time
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -13,7 +14,7 @@ import pytest
 from agent_memory.capture import ids
 from agent_memory.capture.pipeline import deliver, replay_spool
 from agent_memory.capture.record import Record
-from agent_memory.capture.spool import Spool
+from agent_memory.capture.spool import DONE_KEEP_DAYS, Spool
 from agent_memory.capture.writer import Writer
 from agent_memory.db import AgentMemoryError, MemoryClient, MemoryServer, sql_literal
 
@@ -109,6 +110,61 @@ def test_replay_lands_everything_and_moves_files(down_cfg):
     spool = Spool(down_cfg.spool_dir)
     assert spool.pending() == []
     assert len(list(spool.done_dir.rglob("*.jsonl"))) == 2
+
+
+def aged(path: Path, days: float) -> Path:
+    """Make a file look as if it was last written that many days ago."""
+    then = time.time() - days * 86400
+    os.utime(path, (then, then))
+    return path
+
+
+def replayed(spool: Spool, hsid: str, days: float) -> Path:
+    """A file that a replay moved to done/ that many days ago."""
+    spool.append([rec(hsid, "a")])
+    (file,) = spool.pending()
+    return aged(spool.mark_done(file), days)
+
+
+def test_a_replay_purges_the_files_replayed_long_ago(down_cfg):
+    """Only a replay adds to done/, and nothing else took from it unless someone asked."""
+    spool = Spool(down_cfg.spool_dir)
+    old = replayed(spool, "r-old", DONE_KEEP_DAYS + 1)
+    recent = replayed(spool, "r-recent", DONE_KEEP_DAYS - 1)
+    spool.append([rec("r-now", "a")])
+    server = MemoryServer(down_cfg, export_interval_hours=0)
+    server.start()
+    try:
+        result = replay_spool(down_cfg)
+    finally:
+        server.stop()
+    assert (result.files, result.purged) == (1, 1)
+    assert not old.exists()
+    assert recent.exists()
+    assert len(list(spool.done_dir.rglob("*.jsonl"))) == 2
+
+
+def test_a_replay_with_nothing_to_deliver_still_purges(down_cfg):
+    """It asks nothing of the ledger for this, so it does not matter that no server runs."""
+    spool = Spool(down_cfg.spool_dir)
+    old = replayed(spool, "r-old", DONE_KEEP_DAYS + 1)
+    result = replay_spool(down_cfg)
+    assert (result.files, result.purged) == (0, 1)
+    assert not old.exists()
+
+
+def test_a_file_is_kept_from_its_replay_however_long_it_waited(down_cfg):
+    spool = Spool(down_cfg.spool_dir)
+    (waiting,) = spool.append([rec("r-waited", "a")])
+    aged(waiting, 3 * DONE_KEEP_DAYS)
+    server = MemoryServer(down_cfg, export_interval_hours=0)
+    server.start()
+    try:
+        result = replay_spool(down_cfg)
+    finally:
+        server.stop()
+    assert (result.files, result.purged) == (1, 0)
+    assert len(list(spool.done_dir.rglob("*.jsonl"))) == 1
 
 
 def test_bad_lines_become_capture_errors_and_are_kept(down_cfg):

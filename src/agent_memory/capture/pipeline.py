@@ -16,7 +16,7 @@ from ..db import MemoryClient
 from .observations import last_import_end, last_import_waiting
 from .record import Record, RecordError, now
 from .redact import Redactor, redactor_for
-from .spool import Spool, SpoolFile
+from .spool import DONE_KEEP_DAYS, Spool, SpoolFile
 from .writer import Rejection, Writer, WriteResult
 
 if TYPE_CHECKING:
@@ -192,26 +192,30 @@ class ReplayResult:
     inserted: int = 0
     skipped: int = 0
     failed_lines: int = 0
+    purged: int = 0
     failed_paths: list[Path] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 
 
-def replay_spool(cfg: Config) -> ReplayResult:
+def replay_spool(cfg: Config, *, purge_done_days: float = DONE_KEEP_DAYS) -> ReplayResult:
     """Replay every pending spool file in order. A line that cannot be read, or a record the
     ledger rejects, becomes a capture_error event and is kept under spool/failed/; the rest
-    still lands. When the ledger is unavailable this raises and the files stay pending."""
+    still lands. When the ledger is unavailable this raises and the files stay pending.
+
+    Then delete the files replayed more than `purge_done_days` ago. Only a replay adds to
+    spool/done/, so one that also takes from it is all that keeps the directory bounded."""
     spool = Spool(cfg.spool_dir)
     result = ReplayResult()
     with spool.replay_lock() as acquired:
         if not acquired:
             return result
         pending = spool.pending()
-        if not pending:
-            return result
-        redactor = make_redactor(cfg)
-        with MemoryClient.from_config(cfg) as client:
-            writer = Writer(client, cfg.blob_dir, redactor)
-            _replay_files(spool, writer, [spool.claim(file) for file in pending], result)
+        if pending:
+            redactor = make_redactor(cfg)
+            with MemoryClient.from_config(cfg) as client:
+                writer = Writer(client, cfg.blob_dir, redactor)
+                _replay_files(spool, writer, [spool.claim(file) for file in pending], result)
+        result.purged = len(spool.purge_done(purge_done_days))
     return result
 
 

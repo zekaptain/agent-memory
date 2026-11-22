@@ -19,6 +19,10 @@ from .record import Record
 _SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 _CLAIM_SUFFIX = re.compile(r"\.claim-[0-9a-f]{32}$")
 
+# How many days a replayed file stays under done/. Its records are in the ledger by then, or
+# under failed/, so the file is only for whoever asks what a replay was handed.
+DONE_KEEP_DAYS = 30.0
+
 
 def _safe(name: str) -> str:
     return _SAFE.sub("_", name)[:200] or "_"
@@ -192,7 +196,10 @@ class Spool:
                 file.path.unlink()
         return files, lines
 
-    def purge_done(self, older_than_days: float) -> list[Path]:
+    def purge_done(self, older_than_days: float = DONE_KEEP_DAYS) -> list[Path]:
+        """Delete the replayed files that replay left that long ago. Replay rewrites a file
+        redacted before it moves it here, so the file's age is the time since its replay,
+        however long its records waited."""
         cutoff = time.time() - older_than_days * 86400
         removed = []
         if self.done_dir.exists():

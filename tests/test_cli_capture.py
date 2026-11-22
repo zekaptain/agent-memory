@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import threading
 import time
 from pathlib import Path
@@ -13,7 +14,7 @@ import pytest
 from agent_memory.adapters.droid import DroidAdapter
 from agent_memory.capture import ids
 from agent_memory.capture.record import Record, now
-from agent_memory.capture.spool import Spool
+from agent_memory.capture.spool import DONE_KEEP_DAYS, Spool
 from agent_memory.capture.writer import Writer
 from agent_memory.cli import main
 from agent_memory.db import MemoryClient, MemoryServer, sql_literal
@@ -669,6 +670,38 @@ def test_serve_drains_the_spool_at_startup(down_mem, down_cfg, monkeypatch, caps
     assert code == 0, err
     assert "spool replayed: 1 file(s), 2 rows inserted" in out
     assert Spool(down_cfg.spool_dir).pending() == []
+
+
+def replayed_long_ago(mem: Mem, cfg, monkeypatch) -> Path:
+    """A file that a replay moved to spool/done/ before the day a replay purges back to."""
+    feed(monkeypatch, HOOK)
+    assert mem("event", "--harness", "droid")[0] == 0
+    spool = Spool(cfg.spool_dir)
+    (file,) = spool.pending()
+    done = spool.mark_done(file)
+    then = time.time() - (DONE_KEEP_DAYS + 1) * 86400
+    os.utime(done, (then, then))
+    return done
+
+
+def test_serve_purges_at_startup_the_files_replayed_long_ago(down_mem, down_cfg, monkeypatch):
+    done = replayed_long_ago(down_mem, down_cfg, monkeypatch)
+    code, out, err = serve_then_stop(down_mem, monkeypatch)
+    assert code == 0, err
+    assert "spool purged: 1 replayed file(s) older than 30 days" in out
+    assert not done.exists()
+
+
+def test_ingest_spool_purges_unless_told_another_age(down_mem, down_cfg, monkeypatch):
+    done = replayed_long_ago(down_mem, down_cfg, monkeypatch)
+    code, out, _ = down_mem("ingest", "--spool", "--purge-done", "365")
+    assert code == 0
+    assert "purged" not in out
+    assert done.exists()
+    code, out, _ = down_mem("ingest", "--spool")
+    assert code == 0
+    assert "purged 1 replayed file(s)" in out
+    assert not done.exists()
 
 
 def test_serve_says_which_step_failed(down_mem, monkeypatch):
