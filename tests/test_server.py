@@ -391,6 +391,44 @@ def test_a_server_does_not_start_with_a_limit_it_cannot_read(cfg):
     open_direct(cfg.db_path).close()  # the file is not left locked
 
 
+def test_a_server_writes_a_snapshot_of_more_events_than_it_may_hold(cfg):
+    """Events went to Parquet in the order of the table, for which DuckDB holds every event
+    it has read and not yet written: 15 GB and more for a million of them. A server held to
+    less ran out of memory at each snapshot."""
+    sid = _uuid()
+    con = open_direct(cfg.db_path)
+    try:
+        con.execute(
+            "INSERT INTO sessions (session_id, agent_id, capture_completeness, started_at) "
+            "VALUES (?, 'human', 'full', now())",
+            [sid],
+        )
+        con.execute(
+            "INSERT INTO events (event_id, session_id, seq, kind, content, ts) "
+            "SELECT uuidv7(), ?, i, 'note', repeat(md5(i::VARCHAR), 125), now() "
+            "FROM range(30000) AS t(i)",
+            [sid],
+        )
+    finally:
+        con.close()
+    server = MemoryServer(cfg, export_interval_hours=0, memory_limit="100MB")
+    server.start()
+    try:
+        path = server.export()
+    finally:
+        server.stop()
+    events = sql_literal(str(path / "events.parquet"))
+    reader = duckdb.connect()
+    try:
+        copied = reader.execute(
+            "SELECT count(*), count(DISTINCT event_id), sum(length(content)) "
+            f"FROM read_parquet({events})"
+        ).fetchall()
+    finally:
+        reader.close()
+    assert copied == [(30_000, 30_000, 30_000 * 4_000)]
+
+
 def test_serve_forever_survives_export_failures(cfg):
     server = MemoryServer(cfg, export_interval_hours=0.02 / 3600)
     calls: list[str] = []
