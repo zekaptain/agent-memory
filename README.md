@@ -230,7 +230,10 @@ uv run mem spool status
 uv run mem ingest --spool
 ```
 
-Add `--purge-done DAYS` to the replay command to remove old replayed files.
+A replayed file moves to `spool/done/`. Every replay, the one `mem serve`
+makes when it starts included, deletes the files replayed more than 30 days
+ago. Add `--purge-done DAYS` to the replay command to change that age for
+one replay.
 
 A record the ledger rejects does not hold up the rest of its batch. It is
 kept under `spool/failed/`, and the ledger records the reason as a
@@ -452,10 +455,12 @@ duckdb -c "FROM '$HOME/.agent-memory/export/latest/events.parquet' LIMIT 5"
 ```text
 ~/.agent-memory/          mode 0700
   memory.duckdb           the database; only mem serve opens it
+  memory.duckdb.tmp/      what a query needed beyond the server's memory limit
   token                   Quack bearer token, mode 0600
   export/<timestamp>/     Parquet snapshots, one file per table
   export/latest           symlink to the newest snapshot
-  spool/<agent>/*.jsonl   records waiting for the server; done/ after replay
+  spool/<agent>/*.jsonl   records waiting for the server
+  spool/done/<agent>/     replayed files, deleted 30 days after their replay
   spool/failed/<agent>/   records the ledger rejected, kept until mem spool retry
   blobs/<xx>/<sha256>.txt event content over 16 KiB, content-addressed
 ```
@@ -475,12 +480,26 @@ one. Failed exports are logged and retried.
 | Keep only N snapshots after export | `uv run mem export --keep N` |
 | Change the automatic interval | `mem serve --export-interval-hours N` (`0` disables it) |
 | Change automatic retention | `mem serve --export-keep N` |
+| Change the server's memory limit | `mem serve --memory-limit SIZE` (`2GB`, or a share such as `25%`) |
 
 Exports go to `export/<timestamp>/`; `export/latest` points to the newest.
-Each one holds the ledger as it was at one moment. `mem export` checks
-that no table grew while it copied them and copies them again if one did.
-If the ledger is written to during three tries in a row, it exits 1 and
-leaves `latest` where it was; run it again when no agent is writing.
+Each one holds the ledger as it was at one moment. `events.parquet` holds
+every event, but not in the order they were written; order them by `ts`
+and `seq` when the order matters. `mem export` checks that no table grew
+while it copied them and copies them again if one did. If the ledger is
+written to during three tries in a row, it exits 1 and leaves `latest`
+where it was; run it again when no agent is writing.
+
+The server keeps in memory what it has read of the database, up to a
+limit: 10% of the machine's memory unless `--memory-limit` says otherwise.
+Past the limit it lets go of what it read. A query that needs more than
+the limit at once writes the rest to `memory.duckdb.tmp/` and removes it
+when it is done, or fails with an out-of-memory error; capture and recall
+need far less. The limit covers what DuckDB counts, so the process holds
+somewhat more, and much more while a client takes a result of millions of
+rows, as `mem export` does. A server that was killed leaves its temporary
+files, and the next one deletes them when it starts and says how much
+they held.
 
 Stop the server before checking or applying migrations:
 

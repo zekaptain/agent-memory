@@ -37,12 +37,12 @@ Retrieval tuning and wider graph use follow measured failures.
 Parametric consolidation remains research until usefulness and
 withdrawal/backflow can be measured.
 
-Also agreed on 2026-11-13, from the measurements under "Growth" below,
-and in this order: give the server a memory limit and remove old files
-from `spool/done/` on a schedule; then decide whether old events ever
-leave the ledger (see "Open decisions"). Two steps agreed before these
-are done: the binding check after a write no longer reads every event,
-and the server keeps two Parquet snapshots where it kept 14.
+Also agreed on 2026-11-13, from the measurements under "Growth" below:
+decide whether old events ever leave the ledger (see "Open decisions").
+The steps agreed before it are done. The binding check after a write no
+longer reads every event, the server keeps two Parquet snapshots where
+it kept 14, it has a memory limit, and a replay deletes the files
+replayed more than 30 days ago.
 
 ## Phases
 
@@ -236,9 +236,11 @@ waited, and 0.3 s to fill for 20,000 cited events.
   placeholders waiting, the server held 2.3 GB, and 5.9 GB with the
   earlier check. After an audit and the judge's reads as well, with the
   earlier check, it held 0.9 GB at 330,000 events, 2.8 GB at 1 million,
-  8.2 GB at 3 million, and 27 GB at 10 million.
+  8.2 GB at 3 million, and 27 GB at 10 million. The server had no
+  memory limit then; see "Under a memory limit" below.
 - A snapshot: 381 MB in 3.4 s at 330,000 events, and 11.2 GB in 128 s
-  at 10 million.
+  at 10 million. Events were copied in the order of the table then; see
+  the same section.
 - `mem audit check`: 1.3 s at 330,000 events, and 15 s at 10 million.
 - Reading every row of `session_summary`: 1.1 s at 1 million events,
   and 6.3 s at 10 million.
@@ -247,6 +249,58 @@ waited, and 0.3 s to fill for 20,000 cited events.
   observations, and 0.6 s on a busy server (`capture/attribution.py`).
 
 Recall did not slow: 24 to 35 ms at every size.
+
+**Under a memory limit.** Measured on 2026-11-22 on the same machine
+and the ledgers of 1 and 10 million events, once the server had a
+memory limit (10% of the machine's memory unless told otherwise) and
+copied events to Parquet as it reads them. Memory is in GiB here, as
+DuckDB prints a limit: 10% of that machine is 4.7 GiB, and `2GB` is 1.8
+GiB. What a process held is its physical footprint, which counts the
+memory macOS has compressed: the resident size of a server that held 26
+GiB fell to 2 GiB.
+
+What the `mem serve` process held at 10 million events:
+
+| Limit | After 20 hooks | Reading all of `session_summary`, a content search, and `mem audit check`: the most, and idle afterwards | Its own snapshot, in a server just started | While `mem export` read through it |
+|-------|----------------|-------------------|-------------------|-------------------|
+| DuckDB's own, 80% (38.3 GiB) | 0.15 GiB | 27.9 GiB, 26.2 GiB | 28.0 GiB in 11.9 s | 42.6 GiB |
+| 10% (4.7 GiB) | 0.16 GiB | 7.0 GiB, 5.7 GiB | 5.6 GiB in 11.6 s | 20.2 GiB |
+| `2GB` (1.8 GiB) | 0.15 GiB | 3.7 GiB, 2.9 GiB | 3.3 GiB in 10.5 s | 9.2 GiB |
+
+At 1 million events and 10% it held 3.1 GiB after the same reads, which
+is less than the limit, and 7.7 GiB while `mem export` read through it.
+
+- The process holds more than the limit: about 1 GiB more at rest, and
+  far more while a client takes a large result. DuckDB counts the pages
+  of the database it keeps and what a query works with, and not a
+  result on its way to a client; `mem export` asks for every row of
+  every table (see "Known defects").
+- Hooks took the same under every limit from `512MB` up, at both sizes:
+  a prompt hook 0.38 to 0.40 s, the slowest of eight at once 0.64 to
+  0.71 s, and `Stop` with one new turn 0.44 to 0.51 s. None missed its
+  deadline.
+- Reads at 10 million events took what they did without a limit, but
+  for two. `mem audit check` took 18 to 21 s with no limit, 15 to 16 s
+  with 10%, 29 s with `2GB`, and 35 s with `1GB`. A content search took
+  4.0 s with no limit and 2.0 to 2.3 s with one.
+- What fails for want of memory at 10 million events. With `1GB`: the
+  judge's read of every turn, and a window function over the content of
+  a million events. With `512MB`, also reading all of
+  `session_summary`, the judge's read of callers, and the snapshot.
+  With `2GB` all of them complete. At 1 million events the window
+  function still needs `2GB`, and everything else measured there
+  completes with `512MB`; the snapshot fails with `256MB`. The judge's
+  read of every turn was measured at 10 million events only.
+- A snapshot. Copied in the order of the table, the events of the
+  ledger of 1 million took 15 to 35 GiB of memory, and the copy ran out
+  of memory under every limit tried, `512MB` to `8GB`. Copied as they
+  are read, in row groups of 8 MB, they take about 1 s under every
+  limit from `512MB` up, and those of 10 million take 9 to 12 s under
+  every limit from `1GB` up. That snapshot is 10.1 GB on disk, where it
+  was 11.2 GB.
+- `mem export` through the server took 4 to 6 s at 1 million events and
+  60 to 106 s at 10 million, and its own process held 7.0 and 8.5 GiB.
+  `mem audit check` held 1.3 and 8.5 GiB in its own.
 
 ## Risks and open questions
 
@@ -419,8 +473,25 @@ Verified against the code in the audit of 2026-11 and still open.
   untracked `.ori/state.sqlite`. The wheel holds the package alone, and
   nothing in the repository publishes a source distribution
   (`pyproject.toml`).
-- The server sets no memory limit, so DuckDB's default applies: 80% of
-  the machine's memory (`db.py`). See "Growth" for what a server holds.
+- A server killed while it writes a snapshot leaves what it had written
+  in `export/.tmp-<timestamp>/`, and nothing removes it: up to the size
+  of a snapshot each time. A signal waits for the snapshot to end, and
+  launchd kills a server that has not stopped 30 s after it asked
+  (`ExitTimeOut` in the plist). A killed `mem export` leaves the same
+  (`db.py`).
+- The server's memory limit does not bound a result on its way to a
+  client. While `mem export` copied 10 million events through a server
+  limited to 4.7 GiB, the server process held 20 GiB, and 9 GiB when
+  limited to 1.8 GiB. DuckDB counts the pages of the database it keeps
+  and what a query works with, and the rest of what the process held
+  then is outside the limit. The server's own snapshot adds about 1 GiB
+  to the limit, so what reaches this is a client that asks for millions
+  of rows: `mem export`, or a large `mem sql` (`db.py`). See "Growth".
+- `mem export` through a running server holds 7.0 GiB in its own
+  process at 1 million events and 8.5 GiB at 10 million, and `mem audit
+  check` 1.3 and 8.5 GiB. The server's limit is not theirs: each client
+  has a DuckDB of its own with DuckDB's default limit (`db.py`,
+  `audit.py`).
 - The server's first automatic export comes a full interval after it
   starts, 24 hours by default, and the interval is counted on a clock
   that stops while the machine sleeps: on the development machine it was
@@ -428,15 +499,15 @@ Verified against the code in the audit of 2026-11 and still open.
   restarted every day never exports, and one on a laptop exports less
   often than daily. With two snapshots kept, the newest is the copy to
   fall back on, and it can be days old (`db.py`).
-- Nothing removes what a home gathers beside the database. A replayed
-  spool file stays under `spool/done/` until someone runs `mem ingest
-  --spool --purge-done DAYS`, and launchd appends to `serve.log` and
-  `admit.log` without end (`capture/spool.py`, `scripts/`).
+- Nothing removes the logs a home gathers beside the database: launchd
+  appends to `serve.log` and `admit.log` without end (`scripts/`).
 - A hook whose write is still going at its deadline puts its records in
   the spool, and the server may commit the same write a moment later.
   Nothing is stored twice, because replay finds the records present,
   but the file waits until the server next starts or someone runs
-  `mem ingest --spool` (`capture/pipeline.py`).
+  `mem ingest --spool` (`capture/pipeline.py`). A server that replayed
+  now and then while it serves would end the wait, and would purge
+  `spool/done/` as often, which today happens only when it starts.
 - A tool call's input is stored twice: in the text of the event, and as
   `tool_input` in its payload, which has no size limit. The largest
   payload measured was 713 KB (`adapters/droid.py`).
