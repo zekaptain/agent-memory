@@ -149,6 +149,12 @@ def serve(
         signal.signal(sig, lambda *_: stop.set())
     server.start()
     print(f"serving {cfg.db_path} on {cfg.uri}", flush=True)
+    if server.removed_temporary_bytes:
+        print(
+            f"temporary files removed: {server.removed_temporary_bytes / 1e6:.1f} MB "
+            "left by an earlier server",
+            flush=True,
+        )
     try:
         _drain_spool(cfg)
         server.serve_forever(
