@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -427,6 +428,34 @@ def test_a_server_writes_a_snapshot_of_more_events_than_it_may_hold(cfg):
     finally:
         reader.close()
     assert copied == [(30_000, 30_000, 30_000 * 4_000)]
+
+
+def test_a_server_removes_the_temporary_files_one_before_it_left(cfg):
+    """What a query cannot hold in memory DuckDB writes to a directory beside the database,
+    and removes when it closes. A server that was killed left the files, 4 GB of them from
+    one killed during a snapshot, and they stayed until a later server wrote temporary
+    files of its own, which it may never need to."""
+    con = open_direct(cfg.db_path)
+    try:
+        directory = Path(con.execute("SELECT current_setting('temp_directory')").fetchall()[0][0])
+    finally:
+        con.close()
+    directory.mkdir(exist_ok=True)
+    left = directory / f"duckdb_temp_{os.getpid() + 1}_0_storage_DEFAULT-0.tmp"
+    in_use = directory / f"duckdb_temp_{os.getpid()}_0_owner"
+    not_duckdbs = directory / "notes.txt"
+    for path in (left, in_use, not_duckdbs):
+        path.write_bytes(b"x" * 4096)
+    server = MemoryServer(cfg, export_interval_hours=0)
+    server.start()
+    try:
+        assert not left.exists()
+        # DuckDB names a temporary file by its process, and this process's may be in use.
+        assert in_use.exists()
+        assert not_duckdbs.exists()
+        assert server.removed_temporary_bytes == 4096
+    finally:
+        server.stop()
 
 
 def test_serve_forever_survives_export_failures(cfg):

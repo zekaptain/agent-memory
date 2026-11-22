@@ -18,7 +18,7 @@ from agent_memory.capture.record import Record, now
 from agent_memory.capture.spool import DONE_KEEP_DAYS, Spool
 from agent_memory.capture.writer import Writer
 from agent_memory.cli import main
-from agent_memory.db import MEMORY_LIMIT, MemoryClient, MemoryServer, sql_literal
+from agent_memory.db import MEMORY_LIMIT, MemoryClient, MemoryServer, open_direct, sql_literal
 from tests.conftest import FIXTURES
 from tests.test_cli import Mem
 
@@ -772,3 +772,23 @@ def test_serve_limits_the_servers_memory_unless_told_how_much(down_mem, monkeypa
     assert code == 1
     assert "'lots' is not a memory limit" in err
     assert "serving" not in out
+
+
+def test_serve_says_what_it_removed_of_an_earlier_servers_temporary_files(
+    down_mem, down_cfg, monkeypatch
+):
+    con = open_direct(down_cfg.db_path)
+    try:
+        directory = Path(con.execute("SELECT current_setting('temp_directory')").fetchall()[0][0])
+    finally:
+        con.close()
+    directory.mkdir(exist_ok=True)
+    left = directory / f"duckdb_temp_{os.getpid() + 1}_0_block-7.block"
+    left.write_bytes(b"x" * 2_500_000)
+    code, out, err = serve_then_stop(down_mem, monkeypatch)
+    assert code == 0, err
+    assert "temporary files removed: 2.5 MB left by an earlier server" in out
+    assert not left.exists()
+    code, out, err = serve_then_stop(down_mem, monkeypatch)
+    assert code == 0, err
+    assert "temporary files" not in out

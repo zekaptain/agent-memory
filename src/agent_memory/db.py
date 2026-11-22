@@ -394,6 +394,30 @@ def prune_snapshots(export_dir: Path, keep: int) -> list[Path]:
 MEMORY_LIMIT = "10%"
 
 
+def _remove_stale_temporary_files(con: duckdb.DuckDBPyConnection) -> int:
+    """Delete the temporary files an earlier process left. Returns how many bytes they held.
+
+    DuckDB removes its temporary files when it closes, so a server that was killed leaves
+    them. DuckDB removes those the next time it writes temporary files of its own, which a
+    server may never need to. The connection holds the database file, so no other process
+    is using the directory. DuckDB names a file by its process, and this process's are left
+    alone.
+    """
+    row = con.execute("SELECT current_setting('temp_directory')").fetchone()
+    directory = Path(row[0]) if row and row[0] else None
+    if directory is None or not directory.is_dir():
+        return 0
+    own = f"duckdb_temp_{os.getpid()}_"
+    removed = 0
+    for path in directory.iterdir():
+        if path.name.startswith("duckdb_temp_") and not path.name.startswith(own):
+            with contextlib.suppress(OSError):
+                size = path.stat().st_size
+                path.unlink()
+                removed += size
+    return removed
+
+
 class MemoryServer:
     """Owns the database file and serves it to local clients over Quack."""
 
@@ -409,6 +433,7 @@ class MemoryServer:
         self.export_interval_hours = export_interval_hours
         self.export_keep = export_keep
         self.memory_limit = memory_limit
+        self.removed_temporary_bytes = 0
         self.con: duckdb.DuckDBPyConnection | None = None
 
     def start(self) -> None:
@@ -416,6 +441,7 @@ class MemoryServer:
         self.cfg.export_dir.mkdir(parents=True, exist_ok=True)
         con = open_direct(self.cfg.db_path)
         try:
+            self.removed_temporary_bytes = _remove_stale_temporary_files(con)
             try:
                 con.execute(f"SET memory_limit = {sql_literal(self.memory_limit)}")
             except duckdb.Error as exc:
