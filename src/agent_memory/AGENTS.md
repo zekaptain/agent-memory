@@ -17,7 +17,10 @@ attribution, the `mem audit check` preflight, or rollout policy.
   only through `export_snapshot` (one transaction on the database file) or
   `MemoryClient.export` (a client's statements each see the server as it
   is then, so it compares its copies with one count of every table and
-  copies again). Both rely on every table being append-only.
+  copies again). Both rely on every table being append-only. A snapshot
+  keeps the order rows were written in for every table but `events`,
+  which cannot be copied in order within the server's memory limit. Do
+  not make a view break a tie between two events by `rowid`.
 - Quack in DuckDB 2.0.0 does not forward bound parameters. Preserve the
   client's parameterized local staging tables and streamed inserts.
   `VARIANT` values are encoded through JSON. Insert parents before children

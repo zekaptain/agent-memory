@@ -321,13 +321,24 @@ def export_snapshot(con: duckdb.DuckDBPyConnection, export_dir: Path, keep: int 
     return _publish_snapshot(export_dir, keep, copy)
 
 
+# How `events` is written to Parquet. A table is written in the order of its rows, and for
+# that DuckDB holds what it has read and not yet written, 122,880 rows at a time on every
+# thread: 15 to 35 GB for a million events, and out of memory under any limit a server is
+# given. So events are written as they are read, in row groups of 8 MB. Nothing asks for
+# the order they were written in: each has its `seq`, no view breaks a tie between two by
+# `rowid`, and one cannot be inserted in the statement that inserts its parent, whatever
+# the order. The other tables keep theirs, which views do break ties by.
+_EVENTS_COPY = "FORMAT parquet, PRESERVE_ORDER false, ROW_GROUP_SIZE_BYTES '8MB'"
+
+
 def _copy_tables(con: duckdb.DuckDBPyConnection, staging: Path, prefix: str = "") -> dict[str, int]:
     """Copy every table into the directory. Returns how many rows each file holds."""
     copied = {}
     for table in ALL_TABLES:
         target = sql_literal(str(staging / f"{table}.parquet"))
+        options = _EVENTS_COPY if table == "events" else "FORMAT parquet"
         row = con.execute(
-            f"COPY (SELECT * FROM {prefix}{table}) TO {target} (FORMAT parquet)"
+            f"COPY (SELECT * FROM {prefix}{table}) TO {target} ({options})"
         ).fetchone()
         copied[table] = int(row[0]) if row else 0
     return copied
