@@ -605,6 +605,56 @@ The same audit proposed removing the following. Each was looked at on
   0001 is keyed on the name of 0002, and tests stop at the versions
   between.
 
+Proposed on 2026-11-22, from a reading of Mastra's memory, the memory
+of Hermes Agent, and Anthropic's "The components of agent memory". None
+of these is approved either. The evidence behind them is vendor
+documentation and a vendor's research post, with one outside probe of
+Mastra made in one run; none of it is peer reviewed. Each entry is an
+issue in Linear (see [agents/issue-tracker.md](agents/issue-tracker.md)),
+named here by its identifier, and says what must come before it.
+
+- MEM-1. The design of the usefulness study names a stratum of tasks
+  that hinge on an exact value or on a tool's output, counts a confident
+  wrong reply and "no recall made" on their own, and names the strength
+  of the model and the wording of the MCP instructions as factors. A
+  change to the design only.
+- MEM-2. Measure what matching text over events costs, with an index
+  and without one, at the sizes under "Growth".
+- MEM-3. An agent can recall events by text, as a new strategy for the
+  recall path. After MEM-2, and after the usefulness experiment shows
+  where recall of memories fails.
+- MEM-4. An agent can read on from a recalled event: the events around
+  it, or a session's first and last messages. After MEM-3.
+- MEM-5. Report how many captured sessions make a recall at all, by
+  model and by caller. It reads the production home.
+- MEM-6. Check in a running Droid what the stdout of a `SessionStart`
+  hook does: whether it reaches the agent, and at which kinds of start.
+- MEM-7. `mem` prints a bounded block of active memories for a project
+  and records the retrieval under a strategy of its own. After MEM-5.
+- MEM-8. A Droid session is given that block once when it starts, by a
+  second hook command that a user opts in to; `mem event` still prints
+  nothing. After MEM-6 and MEM-7, and it needs a record under
+  `docs/adr/`.
+- MEM-9. Admission records, without a model, whether the exact values
+  in a rule are in the lines its claims cite. It changes no action.
+- MEM-10. A dry run reads active memories against their source events
+  with a local model, and writes no memory and no review action.
+- MEM-11. That re-check records a confirmation, or a flag for a human.
+  It never approves, retires, or accepts. After MEM-10.
+- MEM-12. `mem review` lists the active memories that recalls return
+  and no reply cites. It says nothing until a ledger in use holds
+  citations.
+- MEM-13. A memory with invisible characters or text that reads as an
+  instruction starts quarantined, whatever trust level its writer
+  claims.
+
+The same reading adds to one entry of the audit's list above. Hermes
+Agent's documentation warns that two agents sharing one memory compound
+each other's entries, and Mastra deprecated the scope that shared
+observations across threads. This ledger is shared by design and its
+`agent_id` is self-reported, which is a further reason for per-harness
+tokens.
+
 ## Open decisions
 
 - Should `mem admit review` and `mem judge label` take their answers
@@ -625,3 +675,16 @@ The same audit proposed removing the following. Each was looked at on
   grows. Moving events out would be a new rule beside "append-only",
   and would need a record under `docs/adr/`.
 - What happens to `example-memory-db-schema.sql` and the prototype branch?
+- What would Phase 5 be for? Anthropic reports that a wiki beside a
+  search tool met 61% of the graded criteria of 25 questions, against
+  53% for the search tool alone, and in a second test 87% against 73%
+  on the questions that need several documents. Those pages combined
+  sources, and one wiki grew to 1.77 times its corpus. A read-only
+  rendering of active memories combines nothing: it would serve a
+  person browsing, not recall. This bears on whether Phase 5 stays
+  (above).
+- Should a human be able to blank the content of a memory or an event
+  while its row, its writer, and its time stay? Anthropic's memory
+  stores do so. Here that takes an admin migration (see "Risks and open
+  questions"), and a rule for it would stand beside "append-only" and
+  need a record under `docs/adr/`.
