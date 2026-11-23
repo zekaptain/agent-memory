@@ -44,6 +44,28 @@ longer reads every event, the server keeps two Parquet snapshots where
 it kept 14, it has a memory limit, and a replay deletes the files
 replayed more than 30 days ago.
 
+On 2026-11-22 the approved work was put into issues (see
+[agents/issue-tracker.md](agents/issue-tracker.md)), and some of what
+was proposed that day was approved (see "Proposed directions"). In
+order:
+
+1. MEM-14: the three checks of capture still to see, above. A person at
+   a running Droid makes them.
+2. MEM-1, then MEM-15: the design of the usefulness study gains what the
+   peer benchmarks leave out, and its build is planned as issues.
+   Building starts when that plan is accepted, and the run needs the
+   user's go-ahead: the design says both need separate approval.
+3. MEM-2, then MEM-16: measure what matching text over events costs,
+   and with that number decide whether old events leave the ledger.
+
+Approved beside that line, to be taken up as it allows: MEM-13 (a
+memory with invisible characters or text that reads as an instruction
+starts quarantined, which closes a known defect), MEM-6 (what Droid
+does with the stdout of a `SessionStart` hook, also for a person), and
+MEM-9 (admission records whether a rule's exact values are in the lines
+it cites). MEM-5 is approved once the user agrees to a read of the
+production home.
+
 ## Phases
 
 The phases that are done are described in
@@ -526,7 +548,9 @@ blinding; an egress error body in exception text.
 
 ## Proposed directions
 
-Proposed in the audit of 2026-11. None of these is approved.
+Proposed in the audit of 2026-11. None of these is approved but the two
+that "Next approved work" names: finishing capture, and the usefulness
+experiment.
 
 - Finish capture. Sessions were captured end to end through installed
   hooks on 2026-11-12, one of them in a terminal. Left to see: `/clear`
@@ -599,47 +623,61 @@ The same audit proposed removing the following. Each was looked at on
   between.
 
 Proposed on 2026-11-22, from a reading of Mastra's memory, the memory
-of Hermes Agent, and Anthropic's "The components of agent memory". None
-of these is approved either. The evidence behind them is vendor
-documentation and a vendor's research post, with one outside probe of
-Mastra made in one run; none of it is peer reviewed. Each entry is an
-issue in Linear (see [agents/issue-tracker.md](agents/issue-tracker.md)),
-named here by its identifier, and says what must come before it.
+of Hermes Agent, and Anthropic's "The components of agent memory". The
+evidence behind them is vendor documentation and a vendor's research
+post, with one outside probe of Mastra made in one run; none of it is
+peer reviewed. Each entry is an issue in Linear (see
+[agents/issue-tracker.md](agents/issue-tracker.md)), named here by its
+identifier. They were triaged the same day, and each entry ends with
+what was decided: approved (see "Next approved work"), waiting for what
+it names, or out of the tracker.
 
 - MEM-1. The design of the usefulness study names a stratum of tasks
   that hinge on an exact value or on a tool's output, counts a confident
   wrong reply and "no recall made" on their own, and names the strength
   of the model and the wording of the MCP instructions as factors. A
-  change to the design only.
+  change to the design only. Approved.
 - MEM-2. Measure what matching text over events costs, with an index
-  and without one, at the sizes under "Growth".
+  and without one, at the sizes under "Growth" and under the server's
+  memory limit. Approved.
 - MEM-3. An agent can recall events by text, as a new strategy for the
-  recall path. After MEM-2, and after the usefulness experiment shows
-  where recall of memories fails.
+  recall path. Waiting for MEM-2, and for the usefulness experiment to
+  show where recall of memories fails.
 - MEM-4. An agent can read on from a recalled event: the events around
-  it, or a session's first and last messages. After MEM-3.
+  it, or a session's first and last messages. Waiting with MEM-3.
 - MEM-5. Report how many captured sessions make a recall at all, by
-  model and by caller. It reads the production home.
+  model and by caller. It reads the production home, and is approved
+  once the user agrees to that read.
 - MEM-6. Check in a running Droid what the stdout of a `SessionStart`
   hook does: whether it reaches the agent, and at which kinds of start.
+  Approved, for a person at a running Droid.
 - MEM-7. `mem` prints a bounded block of active memories for a project
-  and records the retrieval under a strategy of its own. After MEM-5.
+  and records the retrieval under a strategy of its own. Waiting for
+  the number MEM-5 reports: if most sessions already make a recall,
+  this is dropped.
 - MEM-8. A Droid session is given that block once when it starts, by a
   second hook command that a user opts in to; `mem event` still prints
-  nothing. After MEM-6 and MEM-7, and it needs a record under
+  nothing. Waiting for MEM-6 and MEM-7, and it needs a record under
   `docs/adr/`.
 - MEM-9. Admission records, without a model, whether the exact values
   in a rule are in the lines its claims cite. It changes no action.
+  Approved.
 - MEM-10. A dry run reads active memories against their source events
   with a local model, and writes no memory and no review action.
+  Waiting for a count: how many active memories in the production home
+  name source events.
 - MEM-11. That re-check records a confirmation, or a flag for a human.
-  It never approves, retires, or accepts. After MEM-10.
+  It never approves, retires, or accepts. Waiting for what the dry run
+  of MEM-10 finds. Decided at triage: a memory the re-check finds
+  unsupported stays active until a human acts, because nothing yet
+  says how often the re-check is right.
 - MEM-12. `mem review` lists the active memories that recalls return
   and no reply cites. It says nothing until a ledger in use holds
-  citations.
+  citations, so it is out of the tracker until one does: canceled
+  there, not refused.
 - MEM-13. A memory with invisible characters or text that reads as an
   instruction starts quarantined, whatever trust level its writer
-  claims.
+  claims. Approved.
 
 The same reading adds to one entry of the audit's list above. Hermes
 Agent's documentation warns that two agents sharing one memory compound
@@ -666,7 +704,8 @@ tokens.
 - Do Phases 0.5, 3, and 5 stay on this roadmap?
 - Do old events ever leave the ledger for an archive? The ledger only
   grows. Moving events out would be a new rule beside "append-only",
-  and would need a record under `docs/adr/`.
+  and would need a record under `docs/adr/`. MEM-16 holds the decision,
+  to be made with the question of blanking content, below.
 - What happens to `example-memory-db-schema.sql` and the prototype branch?
 - What would Phase 5 be for? Anthropic reports that a wiki beside a
   search tool met 61% of the graded criteria of 25 questions, against
