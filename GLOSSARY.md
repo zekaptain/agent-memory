@@ -19,7 +19,7 @@ The home your agents use in daily work.
 _Avoid_: Live ledger, real home
 
 **Experiment home**:
-A separate home used only for judge experiments, so that experiment data never mixes with production.
+A separate home used only for one experiment, so that experiment data never mixes with production. The judge experiment has one and the usefulness experiment has another.
 _Avoid_: Judge home, test home
 
 ### Harnesses and agents
@@ -287,7 +287,7 @@ A model, or a fixed set of rules, that answers the turn questions and the draft 
 _Avoid_: Backend (kept only as the name of the option and in stored names), decision model, classifier, approver
 
 **Run**:
-One pass of the judge experiment over one sample of turns, together with everything produced about them: drafts, verdicts, labels, and a report.
+One pass of an experiment over one sample, together with everything produced about it. In the judge experiment the sample is of turns, and a run holds their drafts, verdicts, labels, and a report. In the usefulness experiment it is of tasks, and a run holds their trials, grades, and a report.
 _Avoid_: Experiment (the study as a whole), batch, job
 
 **Item**:
@@ -323,7 +323,7 @@ A deterministic signal, read only from what the ledger records, that a turn may 
 _Avoid_: Heuristic, detector
 
 **Stratum**:
-The group of turns that share a trigger, used to sample an experiment evenly.
+A group within a sample that is drawn or reported by itself: in the judge experiment the turns that share a trigger, used to sample evenly; in the usefulness experiment the tasks that a registered rule puts together.
 _Avoid_: Bucket, category
 
 **Clean control**:
@@ -364,7 +364,7 @@ _Avoid_: Gate (for the approver, for the held-out bar, or for a threshold on a j
 
 **Threshold**:
 The value a judge's answer, or the approver's score, is compared with to choose an action.
-_Avoid_: Cut, cutoff, gate
+_Avoid_: Cut, cutoff (which is the moment a memory set is made), gate
 
 **Review band**:
 The range of values that give the action review: a judge's answer too close to its threshold, or an approver's score between its two thresholds.
@@ -383,19 +383,19 @@ The person whose answers become labels.
 _Avoid_: Reviewer, rater, annotator
 
 **Sitting**:
-One stretch of a person's work at labeling or at admission review, from opening it to quitting.
+One stretch of a person's work at labeling, at admission review, or at grading, from opening it to quitting.
 _Avoid_: Session (which is a unit recorded in the ledger), labeling session, pass
 
 **Calibration split**:
-The labeled turns used to choose thresholds.
+The part of a run's sample used to choose what is then frozen: labeled turns for a judge's thresholds, tasks for the settings of a usefulness run.
 _Avoid_: Training set, dev set
 
 **Held-out split**:
-The labeled turns set aside to score the chosen thresholds, never used to choose them.
+The part of a run's sample set aside to score what was frozen, never used to choose it.
 _Avoid_: Test set, validation set
 
 **Freeze**:
-Locking the thresholds chosen on the calibration split, after which held-out results count.
+Locking what was chosen on the calibration split, after which held-out results count: a judge's thresholds, or the registration of a usefulness run.
 _Avoid_: Finalize, lock in
 
 **Partial freeze**:
@@ -440,6 +440,60 @@ _Avoid_: Autopilot, unattended mode
 What the approver's results on the held-out split must reach before auto mode may be turned on.
 _Avoid_: Auto gate, held-out gate, precision bar
 
+### Usefulness experiment
+
+**Usefulness experiment**:
+An offline study of whether having the memory tools helps an agent with a later task, measured by the task's own checks and never by a judge. It writes to no home in use.
+_Avoid_: Usefulness study, utility evaluation, eval, benchmark
+
+**Task**:
+A piece of coding work an agent is given in the usefulness experiment: a repository at a fixed state, a request, and the checks that decide success.
+_Avoid_: Case, problem, prompt, item (which is a turn sampled into a judge run)
+
+**Checks**:
+What decides whether a trial succeeded, written before any trial of the task: its tests, and a list of the behavior required.
+_Avoid_: Rubric, grader, oracle
+
+**Task family**:
+Tasks close enough that one gives another away: reports of the same bug, revisions of the same change, a request and its follow-up. A family is never split between the calibration split and the held-out split, and its tasks do not count as independent of one another.
+_Avoid_: Cluster, group, session family
+
+**Arm**:
+One of the two ways a task is run: the memory arm, with the memory tools, and the no-memory arm, without them. Nothing else differs between the two.
+_Avoid_: Condition, group, treatment, control (a clean control is a turn in the judge experiment), baseline
+
+**Trial**:
+One go of an agent at one task in one arm: started in a fresh environment, ended by the agent's last reply or by a limit, and kept with everything recorded about it.
+_Avoid_: Attempt (which is one request within a model call), run (which is the whole pass over a sample), episode, rollout
+
+**Pair**:
+Two trials of one task, one in each arm, alike in everything but the arm. A task tried more than once gives more than one pair.
+_Avoid_: Match, comparison
+
+**Cutoff**:
+The moment a memory set is made. Nothing recorded after it is in the set, and every task of a run comes from work done after it.
+_Avoid_: Freeze (which locks what calibration chose), as-of date, snapshot time
+
+**Memory set**:
+The ledger that the memory arm of a run recalls from: a copy of a home made at the cutoff and never changed afterwards.
+_Avoid_: Snapshot (which is what the server's export to Parquet is called), memory snapshot, corpus, fixture
+
+**Trial home**:
+The throwaway home that one trial of the memory arm recalls from and writes to: its own copy of the memory set, used by no other trial.
+_Avoid_: Sandbox, scratch home, experiment home (which holds the memory set and the runs)
+
+**Registration**:
+The record, made at the freeze, of everything about a run that must not change once a held-out task is opened: its tasks and how they were chosen, the memory set, the model, the wording the memory tools come with, the limits of a trial, and how the results are analyzed.
+_Avoid_: Pre-registration, protocol, plan, manifest (which lists and hashes one thing, such as the tasks)
+
+**Evaluator**:
+The person who grades trials, without being told the arm.
+_Avoid_: Labeler (who answers the judge experiment's questions), judge, reviewer, rater
+
+**Grade**:
+What is recorded about how one trial ended: whether it met its task's checks, and if not, which kind of failure it was.
+_Avoid_: Outcome (which is the harness's record of how a turn ended), result, score, label, verdict
+
 ### Model calls
 
 **Model call**:
@@ -467,5 +521,5 @@ Said of a model reply that ended because its token budget ran out, not because t
 _Avoid_: Truncated, incomplete
 
 **Egress**:
-Sending session text to a model that is not on this machine. It is off unless the user opts in explicitly.
+Sending session text, or memories written from it, to a model that is not on this machine. It is off unless the user opts in explicitly. What a harness sends to its own model in daily work is not egress; what a trial sends is, because the experiment starts the trial.
 _Avoid_: Remote call, external access

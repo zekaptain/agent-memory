@@ -5,12 +5,13 @@ approval. Judge agreement is not evidence of task benefit.
 
 ## Question and arms
 
-Compare memory-enabled and memory-disabled agents on matched future coding
-tasks. Both arms use the same model version, decoding settings, instructions,
-tool permissions, dependency versions, hardware class, and task budget.
-Only access to the frozen memory snapshot differs.
+Compare agents with and without the memory tools on matched later coding
+tasks: the memory arm and the no-memory arm. Both arms use the same model
+version, decoding settings, instructions, tool permissions, dependency
+versions, hardware class, and task budget. Only access to the memory set
+differs. The terms are in `GLOSSARY.md` under "Usefulness experiment".
 
-Access to the snapshot is the memory tools together with the
+Access to the memory set is the memory tools together with the
 instructions that come with them: the MCP server's instructions and each
 tool's description. Those instructions are part of what differs between
 the arms. Their wording is chosen in calibration and frozen with it (see
@@ -28,27 +29,28 @@ primary endpoint is reported for each, and the registration says whether
 and how the models are pooled. With one, the report says that the result
 holds for that model and is no estimate for a weaker or a stronger one.
 
-Start each attempt in a fresh task environment. Clone the same pre-task
+Start each trial in a fresh task environment. Clone the same pre-task
 repository state into both arms; never reuse build artifacts, conversation
-state, or task output across arms. The memory-enabled arm receives only
-evidence recorded before the task cutoff. Hash the snapshot, its blobs,
-instructions, environment manifest, and task manifest before assigning arms.
-One arm's output must never enter the other arm's memory.
+state, or task output across arms. The memory arm recalls only from the
+memory set, which holds nothing recorded after the cutoff. Hash the memory
+set, its blobs, instructions, environment manifest, and task manifest before
+assigning arms. One arm's output must never enter the other arm's memory.
 
-Use paired tasks and paired random seeds where supported. Randomize execution
-order within each pair. Keep the evaluator blind to arm assignment and
-retrieval/judge scores until task outcomes are finalized.
+Pair the two trials of a task, with the same random seed where supported.
+Randomize execution order within each pair. Keep the evaluator blind to the
+arm, to what was recalled, and to any judge's verdict until every grade is
+final.
 
 ## Sampling and separation
 
 Before running, register the task population, inclusion/exclusion rules,
-sampling seed, sample size, repeated attempts per task, and family grouping.
+sampling seed, sample size, repeated trials per task, and family grouping.
 Separate calibration and held-out tasks by time and task/session family,
 not by random turns from the same session. Closely related bug reports,
 repository revisions, and follow-ups belong to the same family.
 
 Calibration chooses retrieval settings, memory selection policy, budgets,
-scoring rubrics, and the wording of the instructions that come with the
+how checks are written, and the wording of the instructions that come with the
 memory tools: whether they say what memory is for and leave its use to
 the agent, or give rules for when to recall and what to remember. The
 same post reports that an instruction to read its memory before
@@ -61,7 +63,7 @@ A task/environment defect can invalidate a pair only under a
 pre-registered rule applied blind to the arm.
 
 Include tasks where memory should abstain: unrelated work, expired or
-withdrawn facts, conflicting evidence, facts valid only in another scope,
+retired memories, conflicting evidence, facts valid only in another scope,
 and plausible but unapproved tool-origin content. Include recurrence tasks
 with independently verified earlier errors, and tasks with no useful prior
 evidence.
@@ -81,30 +83,31 @@ the rule that puts a task in this stratum before sampling.
 
 Report these strata separately as well as the registered aggregate.
 
-## Outcomes independent of the judge
+## Measures independent of the judge
 
-The primary outcome is paired task success, checked with task-specific tests
-and a prewritten rubric. Use hidden tests where appropriate, an independent
-review of required behavior, and explicit safety/correctness failures.
-A successful build alone does not establish task success.
+The primary endpoint is paired task success, decided by each task's checks:
+its tests, and a list of required behavior written before any trial of it.
+Use hidden tests where appropriate, an independent review of required
+behavior, and explicit safety/correctness failures. A successful build alone
+does not establish task success.
 
 Secondary measures:
 
 | Measure | Definition |
 |---|---|
-| Repeat-error rate | Attempts repeating a pre-specified, independently verified earlier error, divided by recurrence opportunities |
-| Harmful/stale memory use | Attempts where an evaluator links a declared/observed use to a concrete wrong action, plus attempted use of withdrawn, expired, or out-of-scope facts |
-| Confident wrong reply | Attempts whose final reply gives the task as done or a fact as known, with no stated doubt or failure, that the task's checks show to be wrong, and where an evaluator links the wrong part to a declared/observed use of a memory; divided by attempts with a declared/observed use. Reported apart from wrong replies with no such use and from stated failures, beside the rate of confident wrong replies over all attempts of each arm |
+| Repeat-error rate | Trials repeating a pre-specified, independently verified earlier error, divided by recurrence opportunities |
+| Harmful memory use | Trials where an evaluator links a declared/observed use to a concrete wrong action, plus attempted use of a retired, expired, or out-of-scope memory |
+| Confident wrong reply | Trials whose final reply gives the task as done or a fact as known, with no stated doubt or failure, that the task's checks show to be wrong, and where an evaluator links the wrong part to a declared/observed use of a memory; divided by trials with a declared/observed use. Reported apart from wrong replies with no such use and from stated failures, beside the rate of confident wrong replies over all trials of each arm |
 | Total tokens | All input, output, reasoning tokens where available, including recall/tool payloads, retries, and preparation charged to the arm |
 | Latency | End-to-end wall time from fresh-process start to termination, with model, retrieval, build, and retry time itemized |
-| Retrieval coverage | Attempts in which the agent made no recall, and attempts with a recorded successful retrieval, miss, degraded retrieval, or missing record (a recall the transcript shows and the ledger does not hold), each reported separately |
-| Citation coverage | Returned memories declared used, unresolved placeholders, and uniquely bound replies; no inference of causal reasoning |
-| Abstention | Unnecessary or harmful retrieval/use on no-memory-needed tasks and appropriate non-use on those tasks |
+| Recall and retrieval | Trials in which the agent made no recall, and trials with a retrieval that returned memories, a miss, a recall answered without the ledger (degraded), or a missing record (a recall the transcript shows and the ledger does not hold), each reported separately |
+| Citations | Returned memories that a citation declares used, placeholders with no binding, and replies bound to one citation only; nothing is inferred about what caused a reply |
+| Abstention | Unnecessary or harmful recall or use on tasks that need no memory, and appropriate non-use on those tasks |
 
-An attempt of the memory-enabled arm in which the agent made no recall
-stays in that arm for the primary outcome: having the tools is the
-treatment. The difference over the attempts that did make a recall is an
-exploratory slice, because which attempts recall is not assigned at
+A trial of the memory arm in which the agent made no recall stays in
+that arm for the primary endpoint: having the tools is what the arm
+tests. The difference over the trials that did make a recall is an
+exploratory slice, because which trials recall is not assigned at
 random.
 
 Record token fields unavailable from a backend as missing, not zero. Retain
@@ -113,11 +116,12 @@ model refusals, evaluator failures, and ordinary incorrect answers.
 
 ## Analysis and stopping
 
-The registration must name one primary endpoint and its practical benefit
-threshold. Choose sample size from calibration variance and that threshold,
-not from held-out effect estimates. Register exact per-attempt token,
-wall-time, tool-call, and retry limits before the run. Budget exhaustion is
-an outcome under the rubric, not a reason to rerun until success.
+The registration must name one primary endpoint and the difference that
+would count as a practical benefit. Choose sample size from calibration
+variance and that difference, not from held-out effect estimates. Register
+exact per-trial token, wall-time, tool-call, and retry limits before the
+run. A trial that runs out of budget is graded as it stands, and is not run
+again until it succeeds.
 
 Estimate the paired success-rate difference with a 95% confidence interval.
 Bootstrap whole task/session families, preserving pairs and repeats, with a
@@ -133,9 +137,9 @@ exploratory slices.
 
 Stop at the registered sample size or a pre-specified total resource budget.
 Do not inspect significance repeatedly and stop on a favorable result.
-A safety stop may halt the run after a registered harm threshold, with all
-completed and interrupted attempts retained. Any sequential design needs its
-own registered error-control rule before the first held-out attempt.
+A safety stop may halt the run after a registered count of harmful uses,
+with all completed and interrupted trials retained. Any sequential design
+needs its own registered error-control rule before the first held-out trial.
 
 An inconclusive or negative result is valid. Report it without changing the
 primary metric, dropping abstention tasks, or substituting judge agreement.
