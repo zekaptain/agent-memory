@@ -21,7 +21,7 @@ As of 2026-11-14.
 | Phase 5: Markdown projection | Not started | below |
 | Lifecycle, coverage, and attribution hardening | Done (migrations 0002 to 0006, 0008 for a session's start, and 0009 for its title, caller, and harness version). The production home is at 0009, as its server said on 2026-11-22, and the experiment home at 0001. The migrations through 0008 ran on copies of both homes on 2026-11-11, and 0009 on a copy of the experiment home on 2026-11-13. | [logic-hardening-spec.md](logic-hardening-spec.md) |
 | Judge experiment | Built; four runs stored | [judge-experiment-spec.md](judge-experiment-spec.md), [run logs](archive/judge-experiments.md) |
-| Memory usefulness study | Design only | [memory-utility-evaluation-spec.md](memory-utility-evaluation-spec.md) |
+| Usefulness experiment | Designed, and its build planned in stages; nothing built | [memory-utility-evaluation-spec.md](memory-utility-evaluation-spec.md) |
 | Parametric consolidation | Research proposal | [parametric-consolidation-spec.md](parametric-consolidation-spec.md) |
 
 ## Next approved work
@@ -33,6 +33,12 @@ Factory app. On 2026-11-12 the first 120 sessions were captured through
 installed hooks, in the app, in a terminal, and with no interface, and
 each agreed with its transcript. Still to see: `/clear` and the end of a
 session in a terminal, and what Droid shows during a long first import.
+The build of the experiment is planned in stages under "Building it" in
+[memory-utility-evaluation-spec.md](memory-utility-evaluation-spec.md).
+Its first stage does not wait for what is still to see, which concerns a
+session in a terminal, where a trial runs with no interface. Every run,
+every read of a home in use, and a model that is not on this machine
+wait for the user's go-ahead.
 Retrieval tuning and wider graph use follow measured failures.
 Parametric consolidation remains research until usefulness and
 withdrawal/backflow can be measured.
