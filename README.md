@@ -467,12 +467,14 @@ duckdb -c "FROM '$HOME/.agent-memory/export/latest/events.parquet' LIMIT 5"
 
 ## Backups and maintenance
 
-The running server automatically writes a Parquet snapshot every 24 hours
-and keeps the newest two. The tables only grow, so the newest snapshot
-holds everything an older one does; the one before it is kept in case the
+The running server writes a Parquet snapshot when the newest one is 24
+hours old, and keeps the newest two. It looks when it starts, so a home
+with no snapshot, or with an old one, gets one then, and the hours a
+machine slept count. The tables only grow, so the newest snapshot holds
+everything an older one does; the one before it is kept in case the
 newest cannot be read. A snapshot is a copy of the tables on the same disk
 as the database. It does not hold the blobs, and no command restores from
-one. Failed exports are logged and retried.
+one. A failed export is logged and tried again ten minutes later.
 
 | Task | Command or option |
 |---|---|

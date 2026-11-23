@@ -53,7 +53,8 @@ flowchart LR
 
 - `mem serve` is the only process that opens `memory.duckdb`. It calls
   `quack_serve` on localhost, then locks itself down (below). It also writes a
-  Parquet snapshot every 24 hours, because it holds the only connection.
+  Parquet snapshot when the newest is 24 hours old, because it holds the
+  only connection.
 - Clients attach with `ATTACH 'quack:localhost:9494' AS mem (TOKEN ...)` and
   run statements on the server. Many clients can write at once; each
   transaction is atomic across tables. Two kinds of client: harness hooks
@@ -305,9 +306,8 @@ schema was written. The tests pin the ones the design depends on.
   and in case the newest cannot be read. It kept 14 until 2026-11-14,
   which were about three quarters of what a home took on disk. A snapshot
   is on the same disk as the database and holds no blobs, and no command
-  restores from one. A failed export is logged and retried at the next
-  interval; it does not stop the server. A snapshot holds the ledger as it
-  was at one moment. The server, and `mem export --direct`, copy every
+  restores from one. A snapshot holds the ledger as it was at one
+  moment. The server, and `mem export --direct`, copy every
   table in one transaction. `mem export` through a running server cannot
   hold the tables still, because each statement a client sends sees the
   server as it is then. It counts every table in one statement after
@@ -315,6 +315,18 @@ schema was written. The tests pin the ones the design depends on.
   again if one grew meanwhile, and after three tries publishes nothing and
   exits 1. A file copy of `memory.duckdb` is only consistent while the
   server is stopped.
+- The server exports when its newest snapshot is as old as the interval
+  (`--export-interval-hours`, 24 by default). It tells the snapshot's
+  age from the name of its directory and the wall clock: when it
+  starts, so a home with no snapshot gets one then, and an interval
+  after each export from then on. Until 2026-11-22 it counted the
+  interval from its own start, on a clock that stops while the machine
+  sleeps (`time.monotonic`). A server restarted every day never
+  exported, and on one laptop that clock was 83 hours behind the wall
+  clock 290 hours after boot. A snapshot named in the future, by a
+  clock that was wrong, puts the next export off by one interval at
+  most. A failed export is logged and tried again ten minutes later, or
+  an interval later where that is sooner; it does not stop the server.
 - Every table but `events` is copied in the order its rows were written,
   which views break ties by (`rowid`). `events.parquet` holds every
   event, not in that order: events are copied as they are read, in row
