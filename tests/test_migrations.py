@@ -163,3 +163,55 @@ def test_explicit_legacy_approval_is_named_in_acceptance(legacy):
     assert legacy.execute(
         "SELECT evidence_action_id::VARCHAR, method FROM memory_replacements"
     ).fetchall() == [(approval, "legacy_explicit_approval")]
+
+
+# The index over memories
+
+
+def _found(con, query):
+    return [
+        r[0]
+        for r in con.execute(
+            "SELECT content FROM (SELECT content, fts_main_memories.match_bm25(memory_id, ?) "
+            "AS score FROM memories) WHERE score IS NOT NULL ORDER BY score DESC, content",
+            [query],
+        ).fetchall()
+    ]
+
+
+def _memory(con, content):
+    mid = str(uuid4())
+    con.execute(
+        "INSERT INTO memories (memory_id, scope, type, content, content_hash, trust_level) "
+        "VALUES (?, 'numbers', 'fact', ?, ?, 'agent')",
+        [mid, content, mid],
+    )
+
+
+def test_rebuilt_index_finds_numbers_in_memories_old_and_new(monkeypatch):
+    shipped = available_migrations()
+    rebuild = next(m for m in shipped if m.name == "recall_digits")
+    with duckdb.connect(":memory:") as con:
+        con.execute("LOAD fts")
+        monkeypatch.setattr(
+            db, "available_migrations", lambda: [m for m in shipped if m.version < rebuild.version]
+        )
+        db.migrate(con)
+        _memory(con, "Migration 0008 gives a session its start")
+        _memory(con, "The legacy checksum is sha1")
+        assert _found(con, "0008") == []
+        assert _found(con, "sha256") == ["The legacy checksum is sha1"]
+
+        monkeypatch.setattr(db, "available_migrations", lambda: shipped)
+        assert db.migrate(con) == [rebuild]
+        assert _found(con, "0008") == ["Migration 0008 gives a session its start"]
+        assert _found(con, "sha256") == []
+        assert _found(con, "session") == ["Migration 0008 gives a session its start"]
+
+        _memory(con, "The server listens on port 9494")
+        assert _found(con, "9494") == ["The server listens on port 9494"]
+        with pytest.raises(duckdb.Error, match="memories is append-only"):
+            con.execute("UPDATE memories SET content = 'x'")
+        with pytest.raises(duckdb.Error, match="memories is append-only"):
+            con.execute("DELETE FROM memories")
+        assert _found(con, "9494") == ["The server listens on port 9494"]

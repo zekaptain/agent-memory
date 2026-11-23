@@ -13,13 +13,16 @@ from unittest.mock import create_autospec
 import pytest
 from mcp.types import CallToolResult, TextContent
 
+from agent_memory import db
 from agent_memory.capture import ids
 from agent_memory.capture.pipeline import deliver, replay_spool
 from agent_memory.capture.record import Record, now
-from agent_memory.db import MemoryClient, MemoryServer, sql_literal
+from agent_memory.config import Config
+from agent_memory.db import MemoryClient, MemoryServer, initialize_home, sql_literal
 from agent_memory.mcp_server import MemoryTools, ToolError, build_server
-from agent_memory.mcp_server.ranking import normalize_query
+from agent_memory.mcp_server.ranking import DIGITS_MIGRATION, normalize_query
 from agent_memory.review import reviewer
+from agent_memory.smoke import free_port
 
 
 @pytest.fixture
@@ -103,7 +106,7 @@ def test_remember_recall_cite_review_chain(tools, human, live_client):
 
     recall = tools.recall("which Python package manager does the user prefer?")
     assert not recall["degraded"]
-    assert recall["strategy"] == "fts_bm25_v1"
+    assert recall["strategy"] == "fts_bm25_v2"
     returned = [i["memory_id"] for i in recall["items"]]
     assert kept["memory_id"] in returned
     assert tool_memory["memory_id"] not in returned  # quarantined
@@ -118,7 +121,7 @@ def test_remember_recall_cite_review_chain(tools, human, live_client):
         f"FROM retrievals WHERE retrieval_id = {sql_literal(recall['retrieval_id'])}",
     )
     strategy, candidates, returned_n, query_text, params, sql_used = rows[0]
-    assert (strategy, returned_n) == ("fts_bm25_v1", len(recall["items"]))
+    assert (strategy, returned_n) == ("fts_bm25_v2", len(recall["items"]))
     assert candidates == recall["candidates"]
     assert query_text == "which Python package manager does the user prefer?"
     assert "normalized" in params
@@ -282,6 +285,54 @@ def test_types_filter_and_limit(tools):
     only_facts = tools.recall("ducks", scopes=["filters"], types=["fact"])
     assert [i["type"] for i in only_facts["items"]] == ["fact"]
     assert len(tools.recall("ducks", scopes=["filters"], limit=1)["items"]) == 1
+
+
+def test_recall_finds_a_memory_by_a_number(tools):
+    start = "Migration 0008 gives a session its start"
+    title = "Migration 0009 gives a session its title and caller"
+    port = "The server listens on port 9494"
+    for content in (start, title, port, "The legacy checksum is sha1"):
+        tools.remember(content, "fact", scope="numbers")
+    for content in ("The project needs Python 3.12", "The image ships Python 3.13"):
+        tools.remember(content, "fact", scope="versions")
+
+    def found(query: str, scope: str = "numbers") -> list[str]:
+        return [i["content"] for i in tools.recall(query, scopes=[scope])["items"]]
+
+    assert found("9494") == [port]
+    assert found("0008") == [start]
+    # The number decides between two memories that share every other word of the query.
+    assert found("migration 0009") == [title, start]
+    assert found("migration 0008") == [start, title]
+    # A word with a digit in it is one word, not its letters.
+    assert found("sha256") == []
+    assert found("sha1") == ["The legacy checksum is sha1"]
+    # A point divides words, so a version is two, and the memory with both comes first.
+    assert found("3.12", "versions") == [
+        "The project needs Python 3.12",
+        "The image ships Python 3.13",
+    ]
+
+
+def test_a_server_without_the_rebuilt_index_is_named_by_its_old_strategy(tmp_path, monkeypatch):
+    """A server started before the migration existed goes on serving the index that drops
+    digits. What it returns is recorded under the name that index had."""
+    shipped = db.available_migrations()
+    monkeypatch.setattr(
+        db, "available_migrations", lambda: [m for m in shipped if m.version < DIGITS_MIGRATION]
+    )
+    cfg = Config(home=tmp_path / "home", port=free_port())
+    initialize_home(cfg)
+    server = MemoryServer(cfg, export_interval_hours=0)
+    server.start()
+    tools = MemoryTools(cfg, "jetbrains-junie", project="demo")
+    try:
+        tools.remember("The server listens on port 9494", "fact")
+        assert tools.recall("port")["strategy"] == "fts_bm25_v1"
+        assert tools.recall("9494")["items"] == []
+    finally:
+        tools.close()
+        server.stop()
 
 
 @pytest.mark.parametrize(

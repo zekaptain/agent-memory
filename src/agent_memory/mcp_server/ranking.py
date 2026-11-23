@@ -11,7 +11,11 @@ from typing import Any
 
 from ..db import sql_literal
 
-FTS_STRATEGY = "fts_bm25_v1"
+FTS_STRATEGY = "fts_bm25_v2"
+# What a recall by words was called while the index dropped every digit, and still is where
+# the database served has not had the migration that builds the index again.
+FTS_LETTERS_STRATEGY = "fts_bm25_v1"
+DIGITS_MIGRATION = 10
 RECENT_STRATEGY = "recent_v1"
 CANDIDATE_CAP = 50
 
@@ -73,10 +77,11 @@ class TextMatch:
     scopes: Sequence[str]
     types: Sequence[str] | None
     limit: int
+    index_keeps_digits: bool = True
 
     @property
     def name(self) -> str:
-        return FTS_STRATEGY
+        return FTS_STRATEGY if self.index_keeps_digits else FTS_LETTERS_STRATEGY
 
     @property
     def sql(self) -> str:
