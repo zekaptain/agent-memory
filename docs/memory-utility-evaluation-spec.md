@@ -1,7 +1,11 @@
 # Does retrieved memory help future tasks?
 
-Status: design only. Building or running this experiment requires separate
-approval. Judge agreement is not evidence of task benefit.
+Status: designed, with its build planned under "Building it". Nothing is
+built. Building starts when that plan is accepted (see "Next approved work"
+in [roadmap.md](roadmap.md)). A read of a home in use, a model that is not
+on this machine, and every run then each need the user's go-ahead (see
+"What needs the user's go-ahead"). Judge agreement is not evidence of task
+benefit.
 
 ## Question and arms
 
@@ -146,11 +150,314 @@ primary metric, dropping abstention tasks, or substituting judge agreement.
 Publish a local aggregate report with uncertainty and limitations; exporting
 private task content or transcripts needs explicit permission.
 
+## Building it
+
+Planned on 2026-11-22 (MEM-15). Nothing here is built, and what a stage
+finds may change the stages after it.
+
+### The experiment home and a run's files
+
+The usefulness experiment has an experiment home of its own. It is not
+the production home and not the judge experiment's. Its ledger is the
+memory set. Beside the ledger it holds the tasks and, for each run, a
+directory of files: the task manifest, the registration, a record for
+each trial, the grades, the deviations, and the report.
+
+The experiment adds no table, no migration, and no agent to any ledger,
+and it writes to no home in use. A trial home is written by the agent of
+the harness that runs the trial, as in daily work.
+
+### The memory set
+
+- The memory set is made once, at the cutoff: a copy of the database
+  file and the blobs of a home that no server is serving at that moment.
+  It is hashed when it is made and is not written to afterwards.
+- Nothing is cut out of the copy. What the set holds is fixed by when it
+  is made, so the tasks of a run are taken from work done after the
+  cutoff. Cutting a ledger back to an earlier moment was turned down: it
+  needs a rule for every table, and a way to show that nothing later
+  came through.
+- A recall writes. It records a retrieval, and it can carry out work
+  that has fallen due on a correction; an agent can also remember,
+  review, and relate. So each trial of the memory arm has a trial home,
+  served for that trial alone. No trial recalls from the memory set
+  itself or from a home another trial used. This keeps one trial's
+  output out of another's memory, and makes "this trial made no recall"
+  a count over one ledger.
+- What a trial added to its trial home can still be read when the report
+  is built.
+- A memory's status is derived with the server's clock, so a memory
+  whose validity starts or ends during a run can be active in one trial
+  and not in the next. The memory set's manifest counts the memories
+  whose validity starts or ends between the cutoff and the last day the
+  registration gives the run, and the report gives that count as a
+  limit.
+
+### A trial
+
+- A trial runs the harness with no interface, in a fresh clone of the
+  task's repository at the task's commit. The clone is made for that
+  trial and used by no other, and nothing one trial built or downloaded
+  is there for the next.
+- The two arms run the same command with the same settings. In the
+  memory arm the memory tools are attached to the trial home, with the
+  registered wording of their instructions and descriptions, and with
+  the project the task names, so that a memory scoped to that project
+  applies. In the no-memory arm there are no memory tools.
+- A trial reads none of the user's own configuration of the harness:
+  not the user's hooks, MCP servers, instruction files, skills, or
+  subagents. The production home's capture hook in particular must not
+  run, or every trial would be captured into the production ledger.
+  What a trial reads instead is part of the environment manifest.
+- A task's repository may carry harness configuration of its own. That
+  is part of the task and the same in both arms, except that memory
+  tools it configures are taken out of both: the only memory tools in a
+  trial are the ones the memory arm is given.
+- No capture hook runs during a trial, in either arm. When a trial of
+  the memory arm has ended, its transcript is imported into its trial
+  home, so that attribution can bind its citations.
+- Tokens, wall time, tool calls, the last reply, and the changes to the
+  repository are read the same way in both arms: from what the harness
+  reports and from the clone, never from a ledger in one arm and from
+  the harness in the other. A token count the harness does not report
+  is recorded as missing.
+- The runner enforces the registered limits that it can, and records
+  the others. A trial that reaches a limit, is interrupted, or fails
+  because of its environment is kept, with its failure category.
+  Whether its pair is run again is decided by the registered rule and
+  by nothing else.
+- A trial sends the task, the repository, and in the memory arm what
+  recall returned, to the model the harness runs. When that model is not
+  on this machine, this is egress. The command that starts trials takes
+  a model to be hosted unless the registered settings point the harness
+  at a model server on this machine, and it refuses a hosted one unless
+  the user has opted in, with the same check and the same opt-in as a
+  hosted judge.
+
+### Tasks
+
+- A task is a directory in the experiment home, never in this
+  repository: the repository and commit it starts from, the request,
+  its checks, the project its memories are scoped to, when the work it
+  was taken from was done, its family, and its strata. Tests among the
+  checks that the agent must not see are added to the clone only after
+  the agent has finished.
+- The task manifest lists every task with a hash of each part, the
+  families, the tasks left out with a reason code, and the split. It is
+  written once, before the first calibration trial.
+- The split is by time and by family: every calibration task comes from
+  earlier work than every held-out task, and no family is in both.
+- A held-out task is opened when its first trial starts. The runner
+  refuses to open one in a run that has no registration.
+
+### The registration
+
+Before a held-out task is opened, the registration names:
+
+- the primary endpoint, and the difference that would count as a
+  practical benefit;
+- the task manifest, by its hash: the population, the rules for taking
+  a task in or leaving it out, the sampling seed, the sample size, the
+  trials for each task, the families, the split, and the rule for each
+  stratum, the one for tasks that hinge on an exact value among them;
+- the memory set, by its hash, with its cutoff and the last day of the
+  run;
+- the model or models, the settings the harness lets a run fix, and
+  whether and how models are pooled;
+- the wording of the memory tools' instructions and descriptions, and
+  every other setting that calibration chose;
+- the environment manifest, by its hash: the harness and its version,
+  the commit of this repository, the tools a trial may use, the
+  hardware class, and what a trial reads in place of the user's
+  configuration;
+- the limits of a trial in tokens, wall time, tool calls, and retries,
+  and which of them the runner enforces;
+- the rule under which a defect of a task or of its environment makes a
+  pair invalid;
+- the analysis: the seed and the number of resamples of the bootstrap,
+  how the secondary measures are handled, and which slices are
+  exploratory;
+- where the run stops: at the sample size or at a total budget, at what
+  count of harmful uses a safety stop halts it, and the error-control
+  rule of any sequential design.
+
+The registration is one file in the run's directory, written once at
+the freeze. The code that keeps a run's files has no way to change it.
+Its SHA-256 is in the record of every held-out trial and in the report,
+and it is committed to this repository, under "Runs" below, before the
+first held-out task is opened. The hash gives nothing of the tasks
+away, and the commit dates the registration. Whatever then turns out
+different from the registration is appended to the run's deviations
+with its date and its reason, and the report lists every one.
+
+### Grades
+
+- A task's checks are run on the trial's clone after the agent has
+  finished, in the same way in both arms.
+- The evaluator grades in the labeling helper. The evaluator is shown
+  the request, the checks and what they gave, the changes to the
+  repository, and the last reply; not the arm, not a call to a memory
+  tool, and nothing from a ledger. Where what is shown gives the arm
+  away, the evaluator says so, and the report counts those trials.
+- Linking a wrong action, or a confident wrong reply, to a use of a
+  memory needs the recalls. It is done after grading: it cannot be
+  opened until every grade of the run is final, and it changes no
+  grade.
+- No model grades a trial. If a later change brings in a model's help,
+  it goes through the shared model call and its egress check, and it
+  stays out of the primary endpoint.
+
+### What is taken from the judge experiment
+
+Taken as it is:
+
+- the guard that refuses the default home (`ensure_experiment_home`),
+  but for its message, which names `mem judge`;
+- the code that keeps a run's files whole (`judge/store.py`): a file
+  replaced in one step, the lock, one writer for a file that grows,
+  JSON lines, and a `RunStore` rooted in a directory of the
+  experiment's own, as admission roots its own;
+- the loop that shows a controller's screens (`drive`), with its plain
+  interface and the Go helper;
+- the check of whether a model server is on this machine, and the
+  opt-in for one that is not (`endpoints.py`).
+
+Taken as a pattern, in new code, because the judge's is written for
+turns: sampling by a seeded shuffle of a sorted list, and the refusal
+to show held-out results before the freeze.
+
+Not taken:
+
+- `mem judge import`. It replays transcript files into the judge's
+  experiment home, to sample turns from. A trial's transcript goes in
+  through `mem ingest --transcript`, the capture path.
+- The shared model call, for running a trial. It asks for one JSON
+  object and cannot run an agent that uses tools; the trial is the
+  harness itself. It also has no token counts and records a missing
+  cost as 0.0, where this design needs it missing.
+- The judge's split, which is by turn.
+- `judge/metrics.py`, which gives point estimates only. The helpers
+  that feed the judge's report are not changed for this experiment,
+  because stored reports are reproduced byte for byte.
+- The labeling controller and its questions.
+
+### What is new
+
+A package of its own beside `judge/` and `admission/`, with a guide of
+its own. Nothing under `judge/` or `admission/` imports it. Its modules:
+
+- **Run files.** Files that are written once and hashed (the task
+  manifest, the memory set's manifest, the registration), and the
+  deviations, which only grow.
+- **Memory set.** Making it, hashing it, and making a trial home from
+  it.
+- **Tasks.** Reading a task, the task manifest, and the split.
+- **Trial runner.** One interface: a task, an arm, and the registered
+  settings go in, and a trial's record comes out. Behind it are the
+  clone, the trial home and its server, the limits, the import of the
+  transcript, and what recall did. The harness is reached through an
+  adapter for running it with no interface. Droid's is written from a
+  real run, never from documentation. The tests run a second one, a
+  scripted stand-in; no test calls a model.
+- **Schedule.** Pairs in an order drawn from the registered seed, the
+  order of the two arms drawn within each pair, and a run that can be
+  continued after an interruption.
+- **Grading.** A controller for the shared loop, and a trial as a
+  subject in the helper's protocol, on the Python and the Go side.
+- **Statistics.** Written against the standard library, with no new
+  dependency: the paired difference and its interval from a bootstrap
+  over whole task families, an exact paired test, the effective sample
+  size, quantiles, and ratios. Each is tested against a worked example
+  whose answer comes from outside the code.
+- **Report.** The local aggregate. It holds no task content, no
+  transcript text, and no memory text.
+
+### What needs the user's go-ahead
+
+Each of these waits for the user to say so, each time. None is covered
+by accepting this plan.
+
+| What | Why it waits |
+|---|---|
+| A count over the production home: active memories by scope and type, sessions captured, recalls and citations made | It reads a home in use. It says whether the ledger holds enough to measure, and so when the cutoff can be |
+| Making the memory set | It copies a home in use, whose server is stopped while its file is copied |
+| Writing tasks from work done after the cutoff | It reads sessions and private repositories |
+| The first run of the harness with no interface, on a made-up task with no memory from a home | A hosted model, on the user's account |
+| Calibration trials | Egress, when the model is hosted: tasks, repositories, and recalled memories. Cost |
+| The freeze | The registration is the user's to accept |
+| Held-out trials | Egress and cost, up to the registered stop |
+| Showing anything but the local aggregate report | Task content and transcripts are private |
+
+A run with a model on this machine sends nothing off it, and is still a
+run: it waits for the user like any other.
+
+### Stages
+
+Each stage leaves something that can be used without the next one. A
+stage's issues are in the tracker. A step that waits for a go-ahead is
+kept in its project's spec until it can start.
+
+1. **One trial** (MEM-17 to MEM-19). What a run of Droid with no
+   interface reports and reads is recorded from a real run. The runner
+   then takes one made-up task through both arms, the memory arm against
+   a throwaway home, and writes two trial records, with what recall did
+   counted in the memory arm's. It can be used to see, for one task,
+   what having the memory tools changes.
+2. **Memory set, tasks, and registration** (MEM-20 to MEM-23). A memory
+   set can be made from a home and hashed. Tasks can be described,
+   hashed, and split. Pairs are scheduled from a seed. A registration
+   can be written at a freeze, and the runner holds a run to it. It can
+   be used to run a calibration.
+3. **Grades and report** (MEM-24 to MEM-27). Checks are run on finished
+   trials, the evaluator grades blind, and the statistics and the
+   report exist, tried on made-up trials. It can be used to read a
+   calibration.
+4. **The run.** In order: the count over the production home, the
+   cutoff and the memory set, tasks from the work that follows,
+   calibration trials, the freeze, held-out trials, grading, and the
+   report. Every step waits for a go-ahead, so none is an issue yet.
+
+The count over the production home is worth making first, before stage
+1 is finished. If the production ledger holds too few active memories
+to measure anything, the cutoff has to wait, and that is cheaper to
+learn before the harness is built than after.
+
+Stage 1 does not wait for the checks of capture that are still open
+(MEM-14). Those concern a session in a terminal, and a trial has no
+interface.
+
+### What is not known yet
+
+Stage 1 starts by recording these from a real run. Factory's
+documentation speaks to the first three, and none of it has been
+checked here against a run.
+
+- What a run with no interface reports when it ends: the last reply,
+  the session's id, how long it took, and token counts.
+- How one run is given settings of its own, and whether those keep out
+  the user's hooks and MCP servers.
+- How one run is given an MCP server with an environment of its own.
+- Which limits a run accepts, and whether a seed or a temperature can
+  be fixed. The design pairs seeds only "where supported".
+- Whether the MCP server's instructions reach the model, or only the
+  tools' descriptions. The design counts both as part of what differs
+  between the arms.
+- Whether the citations in an imported transcript bind in a trial home.
+  Attribution needs the MCP server's name as capture recorded it.
+- How long a copy of the memory set takes, and how much disk the trial
+  homes of a run need.
+
 ## Later work, in order
 
-1. Verify and install Droid capture end to end. Add other adapters only from
-   real, consented fixtures.
-2. Build the local harness and run this registered usefulness experiment.
+1. Finish verifying Droid capture end to end (MEM-14). Add other adapters
+   only from real, consented fixtures.
+2. Build the harness in the stages under "Building it", whose first stage
+   does not wait for step 1, and run the registered usefulness experiment.
 3. Tune retrieval or expand graph use only for measured failure modes.
 4. Reconsider parametric consolidation only after retrieval shows value and
    withdrawal/backflow can be measured.
+
+## Runs
+
+None yet. A run is listed here with the SHA-256 of its registration when
+it is frozen, and with the date of its report when it ends.

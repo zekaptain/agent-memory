@@ -385,7 +385,7 @@ schema was written. The tests pin the ones the design depends on.
 See [logic-hardening-spec.md](logic-hardening-spec.md) for the approved
 transition rules and
 [memory-utility-evaluation-spec.md](memory-utility-evaluation-spec.md) for
-the design-only usefulness study.
+the usefulness experiment, which is designed and not built.
 
 - Migration 0002 separates correction proposal from durable acceptance,
   preserves queued identities through deduplication links, and records due

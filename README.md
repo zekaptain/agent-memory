@@ -728,5 +728,5 @@ Applied migrations are checksummed and must not be edited.
   admission review, and safeguards.
 - [Contract hardening](docs/logic-hardening-spec.md): lifecycle, coverage,
   attribution, preflight, and rollout policy.
-- [Memory usefulness evaluation](docs/memory-utility-evaluation-spec.md):
-  design only, with no harness or experiment run in this change.
+- [Usefulness experiment](docs/memory-utility-evaluation-spec.md): the
+  design and the plan of its build. Nothing is built or run yet.
