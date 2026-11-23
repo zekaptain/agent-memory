@@ -42,7 +42,9 @@ Parametric consolidation remains research until usefulness and
 withdrawal/backflow can be measured.
 
 Also agreed on 2026-11-13, from the measurements under "Growth" below:
-decide whether old events ever leave the ledger (see "Open decisions").
+decide whether old events ever leave the ledger. Decided on 2026-11-23:
+they stay (see "Events stay" under "Growth", and
+[ADR 0010](adr/0010-events-stay-and-a-human-may-blank-text.md)).
 The steps agreed before it are done. The binding check after a write no
 longer reads every event, the server keeps two Parquet snapshots where
 it kept 14, it has a memory limit, and a replay deletes the files
@@ -63,6 +65,7 @@ order:
    design says.
 3. MEM-2, then MEM-16: measure what matching text over events costs,
    and with that number decide whether old events leave the ledger.
+   Decided on 2026-11-23: they stay.
 
 Approved beside that line, to be taken up as it allows: MEM-13 (a
 memory with invisible characters or text that reads as an instruction
@@ -222,6 +225,58 @@ copies of the experiment home: 330,779 events of 2,335 sessions over
 194 days, and that ledger grown to 1, 3, and 10 million events by
 adding its sessions again under new ids. No ledger that large has come
 from real use.
+
+**Events stay.** Decided on 2026-11-23 from what follows, for MEM-16: no
+event leaves the ledger for an archive, and no text is taken out of it
+to save space
+([ADR 0010](adr/0010-events-stay-and-a-human-may-blank-text.md)).
+
+- What a hook or an agent waits for does not slow as the ledger grows.
+  At 10 million events a hook takes the 0.4 s it takes at 330,000, a
+  recall takes 24 to 35 ms, and a match of text over the newest 600,000
+  events, three months of the production home's capture, takes 0.1 to
+  0.3 s with no index (see "Matching text over events" below). The one
+  cost of a hook that grows with history is the placeholders that wait
+  for a reply, and the typed table under "Proposed directions" answers
+  that.
+- What reads the whole ledger takes seconds at 10 million events and
+  completes under the server's memory limit: a match of text over every
+  event 1.6 to 2.5 s, a snapshot 9 to 12 s, `mem audit check` 15 s.
+- So an archive would save disk and nothing else. It would cost the
+  join from a memory, a recall, or a reply to its events, because
+  events that had left would have to be looked for in a second place.
+
+What bounds a home instead:
+
+- The server keeps two snapshots, whatever the ledger's age, and a
+  replay deletes the spool files replayed more than 30 days ago.
+- The server's memory has a limit, and what waits on the ledger takes
+  the same at every size measured.
+- Nothing bounds the database and the blobs. They grow by about 5.6 KB
+  with each event, and the two snapshots by 2.1 KB more. At the
+  production home's 205,000 events a month that is 19 GB a year, if an
+  event there takes what one takes in the experiment home. The most
+  measured here, 10 million events, is four years of it.
+
+If disk is what runs short, three things make an event smaller without
+touching a row. They were measured on 2026-11-23 on the experiment
+home's 330,000 events, and none of them is approved work:
+
+- Blobs are kept as plain text: 12,329 files holding 0.62 GB, which
+  zlib takes to 0.26 GB. Kept compressed, the 1.9 KB of blobs for each
+  event would be about 0.8 KB.
+- The second snapshot is 1.07 KB for each event. `--export-keep 1`
+  drops it, and with it the copy that is read if the newest cannot be.
+- A tool call's input is stored twice (see "Known defects"). The
+  payloads of tool calls, which hold the second copy, are 141 MB of the
+  770 MB of text the events hold in the database, before DuckDB
+  compresses it.
+
+The decision is looked at again when a home in use nears 10 million
+events, or when something a hook or an agent waits for is measured to
+slow with the ledger's size. Text that must not be kept is a separate
+matter: a human may blank it, and its row stays, as the same record
+has it.
 
 **Disk.** A home takes about 7.7 KB for each event: 3.65 KB in the
 database, 1.9 KB in blobs, and 1.07 KB in each of the two Parquet
@@ -440,8 +495,16 @@ What the numbers favor, for a recall of events by text (MEM-3):
 - Quack shipped in 2.0.0. Its protocol and authorization hook may change;
   `mem smoke` and the server tests are the early warning.
 - History can only be corrected by appending. A wrong memory is superseded or
-  retired, never edited. Content redaction after the fact needs an explicit,
-  rare admin migration.
+  retired, never edited. Text that passed redaction and must not be kept
+  cannot be taken out yet. A human may blank it
+  ([ADR 0010](adr/0010-events-stay-and-a-human-may-blank-text.md)), but
+  nothing does, and it cannot be done by hand. On a throwaway home on
+  2026-11-23, with the guard against updates dropped, DuckDB changed an
+  event's text but refused to change its payload once another row referred
+  to the event. The text it changed was still in the database file after a
+  checkpoint, until later writes took the space (seen with compression off,
+  where text can be searched for). Until a blanking is built (see "Proposed
+  directions"), what is left is to rotate a secret or to delete the home.
 - The FTS index is maintained on every insert. Watch insert latency as
   `memories` grows; switch to periodic rebuilds if it degrades.
 - Tier B and C capture is lossy by design. Audit queries should filter or
@@ -809,6 +872,18 @@ observations across threads. This ledger is shared by design and its
 `agent_id` is self-reported, which is a further reason for per-harness
 tokens.
 
+Proposed on 2026-11-23, with the decision that events stay
+([ADR 0010](adr/0010-events-stay-and-a-human-may-blank-text.md)):
+
+- A human can blank the text of an event or a memory. A blanking writes
+  the database anew without the text, as a restore writes it from a
+  snapshot, so it waits for the verified restore in the audit's list
+  above, and is not an issue until that is built. Its design has to say
+  which text a blanking reaches beside an event's content, payload, and
+  blob and a memory's content (a session's title and directory, a
+  recall's query), and what it shows a human of the rows that refer to
+  a blanked one.
+
 ## Open decisions
 
 - Should `mem admit review` and `mem judge label` take their answers
@@ -825,10 +900,6 @@ tokens.
 - May a run be relabeled after a freeze? Should `--freeze` also ask for
   every judge's verdicts on the calibration items?
 - Do Phases 0.5, 3, and 5 stay on this roadmap?
-- Do old events ever leave the ledger for an archive? The ledger only
-  grows. Moving events out would be a new rule beside "append-only",
-  and would need a record under `docs/adr/`. MEM-16 holds the decision,
-  to be made with the question of blanking content, below.
 - What happens to `example-memory-db-schema.sql` and the prototype branch?
 - What would Phase 5 be for? Anthropic reports that a wiki beside a
   search tool met 61% of the graded criteria of 25 questions, against
@@ -838,8 +909,3 @@ tokens.
   rendering of active memories combines nothing: it would serve a
   person browsing, not recall. This bears on whether Phase 5 stays
   (above).
-- Should a human be able to blank the content of a memory or an event
-  while its row, its writer, and its time stay? Anthropic's memory
-  stores do so. Here that takes an admin migration (see "Risks and open
-  questions"), and a rule for it would stand beside "append-only" and
-  need a record under `docs/adr/`.
