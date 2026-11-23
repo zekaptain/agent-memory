@@ -14,7 +14,9 @@ modify its own table, and because an in-place update would have left
 
 - There is no `audit_log` table. The tables are the audit log, and
   `memory_history` is the chronological view.
-- Content cannot be removed after the fact without an admin migration
-  that drops the guards, so redaction has to happen before the write.
+- Content cannot be removed after the fact, so redaction has to happen
+  before the write. The one removal a human may make, and why dropping
+  the guards is not enough for it, is in
+  [ADR 0010](0010-events-stay-and-a-human-may-blank-text.md).
 - Status is computed on every read. Because nothing is overwritten,
   `why_answer` can report a memory's status at recall and its status now.
