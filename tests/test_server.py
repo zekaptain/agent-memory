@@ -7,8 +7,9 @@ import os
 import subprocess
 import sys
 import threading
+import time
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
 
@@ -497,6 +498,166 @@ def test_serve_forever_names_a_failed_maintenance_pass(served, monkeypatch):
         stop, on_error=lambda step, exc: errors.append((step, str(exc))), poll_seconds=0.005
     )
     assert errors == [("correction maintenance", "ledger busy")]
+
+
+# When the server exports
+
+STARTED = datetime(2026, 11, 22, 12, tzinfo=UTC)
+
+
+class WallClock:
+    """A wall clock a test owns. Every look at it finds a minute gone, or the hours the
+    machine slept through, and it stops the server once `hours` have passed."""
+
+    def __init__(
+        self,
+        stop: threading.Event,
+        *,
+        hours: float,
+        start: float = STARTED.timestamp(),
+        sleeps: dict[float, float] | None = None,
+    ) -> None:
+        self.start = self.now = start
+        self._stop = stop
+        self._end = start + hours * 3600
+        # How many hours the machine sleeps, by the hour after the start at which it does.
+        self._sleeps = dict(sleeps or {})
+
+    def __call__(self) -> float:
+        self.now += 60
+        for after in [a for a in self._sleeps if self.now >= self.start + a * 3600]:
+            self.now += self._sleeps.pop(after) * 3600
+        if self.now >= self._end:
+            self._stop.set()
+        return self.now
+
+
+def snapshot_taken(cfg: Config, at: datetime) -> Path:
+    """A snapshot directory with the name of one taken then."""
+    path = cfg.export_dir / at.strftime("%Y%m%dT%H%M%S%fZ")
+    path.mkdir(parents=True)
+    return path
+
+
+def exports_began(
+    cfg: Config, *, hours: float, sleeps: dict[float, float] | None = None, failures: int = 0
+) -> list[int]:
+    """The minutes after a server started at which each of its exports began. The server
+    has the interval it is given by default, 24 hours, and its first exports fail as many
+    times as `failures` says."""
+    stop = threading.Event()
+    clock = WallClock(stop, hours=hours, sleeps=sleeps)
+    began: list[int] = []
+
+    class Server(MemoryServer):
+        def export(self) -> Path:
+            began.append(round((clock.now - clock.start) / 60))
+            if len(began) <= failures:
+                raise OSError("disk full")
+            return Path("/snapshot")
+
+    Server(cfg).serve_forever(stop, poll_seconds=0, clock=clock)
+    return began
+
+
+def test_a_server_with_no_snapshot_exports_as_it_starts(cfg):
+    """The first export came a full interval after the server started, so a home had no
+    snapshot for a day, and none ever under a server that was restarted every day."""
+    assert exports_began(cfg, hours=30) == [2, 24 * 60 + 3]
+
+
+@pytest.mark.parametrize(
+    ("hours_ago", "minute"),
+    [(25, 2), (23, 60), (-72, 24 * 60 + 1)],
+    ids=["older than the interval", "an hour short of it", "named in the future"],
+)
+def test_a_server_exports_when_its_newest_snapshot_is_as_old_as_the_interval(
+    cfg, hours_ago, minute
+):
+    """The interval runs from the newest snapshot, not from when the server started. A
+    snapshot named while the clock was wrong puts an export off by one interval at most."""
+    snapshot_taken(cfg, STARTED - timedelta(hours=hours_ago))
+    assert exports_began(cfg, hours=25)[0] == minute
+
+
+def test_a_server_counts_the_hours_its_machine_slept(cfg):
+    """The interval was counted on a clock that stops while the machine sleeps: 83 hours
+    behind the wall clock on one laptop, 290 hours after it booted. Here the machine is
+    awake for an hour and asleep for 30, and the export is due when it wakes."""
+    snapshot_taken(cfg, STARTED)
+    assert exports_began(cfg, hours=32, sleeps={1: 30}) == [31 * 60]
+
+
+def test_a_server_tells_the_time_by_the_wall_clock(cfg):
+    """Left to itself the server reads the clock a snapshot is named by. By the monotonic
+    one, which counts from the boot, no snapshot is ever a day old."""
+    snapshot_taken(cfg, datetime.now(UTC) - timedelta(hours=25))
+    stop = threading.Event()
+    # Stops a server that never exports, so that this test fails and does not hang.
+    gave_up = threading.Timer(10, stop.set)
+    gave_up.start()
+    began: list[float] = []
+
+    class Server(MemoryServer):
+        def export(self) -> Path:
+            began.append(time.time())
+            stop.set()
+            return Path("/snapshot")
+
+    Server(cfg).serve_forever(stop, poll_seconds=0.005)
+    gave_up.cancel()
+    assert len(began) == 1
+
+
+def test_a_failed_export_is_tried_again_in_ten_minutes(cfg):
+    """It was tried again a whole interval later. Tried at every turn it would read every
+    table once a second for as long as the disk is full."""
+    assert db.EXPORT_RETRY_SECONDS == 600
+    assert exports_began(cfg, hours=2, failures=1) == [2, 13]
+
+
+def test_a_started_server_reads_the_time_of_a_snapshot_it_wrote(cfg):
+    server = MemoryServer(cfg)
+    server.start()
+    exported: list[Path] = []
+    try:
+        stop = threading.Event()
+        # Stops a server that never exports, so that this test fails and does not hang.
+        gave_up = threading.Timer(30, stop.set)
+        gave_up.start()
+
+        def exported_once(path: Path) -> None:
+            exported.append(path)
+            stop.set()
+
+        server.serve_forever(stop, on_export=exported_once, poll_seconds=0.005)
+        gave_up.cancel()
+        assert [p.name for p in exported] == [(cfg.export_dir / "latest").resolve().name]
+        taken = db.newest_snapshot_at(cfg.export_dir)
+        assert taken is not None
+        assert abs(taken.timestamp() - time.time()) < 60
+
+        for hours_later, more in ((0, 0), (23, 1)):
+            stop = threading.Event()
+            clock = WallClock(stop, hours=2, start=time.time() + hours_later * 3600)
+            server.serve_forever(stop, on_export=exported.append, poll_seconds=0, clock=clock)
+            assert len(exported) == 1 + more
+    finally:
+        server.stop()
+
+
+def test_the_newest_snapshot_is_told_by_the_names_of_the_directories(tmp_path):
+    out = tmp_path / "exports"
+    assert db.newest_snapshot_at(out) is None
+    earlier = snapshot_taken(Config(home=tmp_path, port=1), STARTED - timedelta(days=1))
+    out = earlier.parent
+    (out / f".tmp-{STARTED:%Y%m%dT%H%M%S%fZ}").mkdir()
+    (out / "latest").symlink_to(earlier.name)
+    # The pattern of a snapshot's name takes a month no calendar has.
+    (out / "20261399T000000000000Z").mkdir()
+    assert db.newest_snapshot_at(out) == STARTED - timedelta(days=1)
+    snapshot_taken(Config(home=tmp_path, port=1), STARTED)
+    assert db.newest_snapshot_at(out) == STARTED
 
 
 def test_export_retention(cfg, tmp_path):
