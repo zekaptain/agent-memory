@@ -26,6 +26,11 @@ document there says, on top of the root `AGENTS.md`.
   reader.
 - `docs/archive/`: superseded design text and experiment logs, kept for
   the record. Nothing there is a contract.
+- `docs/agents/`: what the agent skills read to find this repo's issue
+  tracker, triage labels, and domain docs. Written by
+  `/setup-matt-pocock-skills`; edit the files directly to change them.
+  `issue-writing.md` there is this repo's own: how issues and projects
+  are worded, which overrides a skill's template.
 
 ## Research edits
 
