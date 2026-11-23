@@ -141,3 +141,26 @@ do not fix goes into `docs/roadmap.md`.
 Existing commit messages use Conventional Commits, for example
 `fix(judge): ...` and `test(graph): ...`; explain the failure and why the
 change fixes it in the body when useful.
+
+## Agent skills
+
+### Issue tracker
+
+Issues for this repo live in Linear, in the team `agent-memory` (key
+`MEM`), through the connected Linear tools. See
+`docs/agents/issue-tracker.md`.
+
+### Issue writing
+
+Short issues that state a task, projects with a short spec, no user
+stories. See `docs/agents/issue-writing.md`.
+
+### Triage labels
+
+The five default triage labels, each named for its role. See
+`docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `GLOSSARY.md` at the root and `docs/adr/`. See
+`docs/agents/domain.md`.
