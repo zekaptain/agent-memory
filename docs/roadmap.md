@@ -492,13 +492,6 @@ Verified against the code in the audit of 2026-11 and still open.
   check` 1.3 and 8.5 GiB. The server's limit is not theirs: each client
   has a DuckDB of its own with DuckDB's default limit (`db.py`,
   `audit.py`).
-- The server's first automatic export comes a full interval after it
-  starts, 24 hours by default, and the interval is counted on a clock
-  that stops while the machine sleeps: on the development machine it was
-  4.3 hours behind the wall clock 78 hours after boot. A server that is
-  restarted every day never exports, and one on a laptop exports less
-  often than daily. With two snapshots kept, the newest is the copy to
-  fall back on, and it can be days old (`db.py`).
 - Nothing removes the logs a home gathers beside the database: launchd
   appends to `serve.log` and `admit.log` without end (`scripts/`).
 - A hook whose write is still going at its deadline puts its records in

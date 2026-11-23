@@ -21,6 +21,10 @@ attribution, the `mem audit check` preflight, or rollout policy.
   keeps the order rows were written in for every table but `events`,
   which cannot be copied in order within the server's memory limit. Do
   not make a view break a tie between two events by `rowid`.
+- The server exports when its newest snapshot is as old as the interval,
+  which it tells from the snapshot's name and the wall clock. Do not
+  count the interval from the server's start, or on `time.monotonic`,
+  which stops while the machine sleeps.
 - Quack in DuckDB 2.0.0 does not forward bound parameters. Preserve the
   client's parameterized local staging tables and streamed inserts.
   `VARIANT` values are encoded through JSON. Insert parents before children
