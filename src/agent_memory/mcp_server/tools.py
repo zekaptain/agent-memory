@@ -95,6 +95,7 @@ class MemoryTools:
         self._session_ready = False
         self._redactor: Redactor | None = None
         self._vocab: dict[str, set[str]] = {}
+        self._keeps_digits = False
 
     # Connection and session
 
@@ -192,6 +193,8 @@ class MemoryTools:
         rather than an error, so the agent can carry on without memory."""
         try:
             client = self._client_or_raise()
+            if isinstance(strategy, ranking.TextMatch):
+                strategy = replace(strategy, index_keeps_digits=self._index_keeps_digits(client))
             return run_recall(
                 client,
                 strategy,
@@ -200,6 +203,17 @@ class MemoryTools:
         except (AgentMemoryError, ConfigError, duckdb.Error) as exc:
             self._reset()
             return Recalled(strategy.name, reason=f"{type(exc).__name__}: {exc}")
+
+    def _index_keeps_digits(self, client: MemoryClient) -> bool:
+        """Whether the index the server reads keeps digits. A server started before the
+        migration existed goes on serving the index that drops them, and a recall is
+        recorded under the name of the index that answered it."""
+        if not self._keeps_digits:
+            _, applied = client.query(
+                f"SELECT 1 FROM schema_migrations WHERE version = {ranking.DIGITS_MIGRATION}"
+            )
+            self._keeps_digits = bool(applied)
+        return self._keeps_digits
 
     def remember(
         self,
