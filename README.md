@@ -298,6 +298,11 @@ If you changed the database home or port, include `AGENT_MEMORY_HOME` and
 | `graph` | Retrieve relations around an entity. |
 | `status` | Check the server connection, the spool, and rejected records. |
 
+`recall` matches whole words, and a word is a run of letters and digits:
+`0009` finds a memory about migration 0009, and `python` does not find
+`python3`. A home that has not had migration 0010 finds nothing by a
+number (see [Migration safety](#migration-safety)).
+
 Memories derived from tools start quarantined. Only a human approves one,
 with `mem review` (see
 [Memories awaiting approval](#memories-awaiting-approval)). The

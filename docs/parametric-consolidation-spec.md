@@ -34,7 +34,7 @@ scheduler, not a learning mechanism.
 - Online or per-turn weight updates from traffic. The review's security
   sections (10.1, 10.5) rule this out: no quarantine step, no deletion.
   Compilation runs offline, from approved memories only.
-- Replacing token-level recall. `fts_bm25_v1` stays the default; the compiled
+- Replacing token-level recall. `fts_bm25_v2` stays the default; the compiled
   path is an additional strategy with its own name, so `retrievals.strategy`
   distinguishes them in every audit.
 - Deleting content from the ledger. Retirement excludes a memory from the
@@ -237,7 +237,7 @@ pairs (`retention`), refusal rate on out-of-scope and invented questions
 ### Cost against the token path
 
 For the same probe questions, run the token path: `recall` with
-`fts_bm25_v1`, inject the returned memories, answer with the same base
+`fts_bm25_v2`, inject the returned memories, answer with the same base
 model. Record tokens per answer and wall-clock latency for both paths. The
 review's one strongly replicated claim is that memory systems save an order
 of magnitude in tokens versus full context; this measures whether a compiled
@@ -307,7 +307,7 @@ A later step, only after the evaluation has numbers worth acting on.
   `score_components`, so an audit can see that a compiled answer was served
   from an artifact that had retired members.
 - The MCP tool description tells the agent the compiled answer is a
-  synthesis and that `fts_bm25_v1` returns the underlying memories with
+  synthesis and that `fts_bm25_v2` returns the underlying memories with
   sources.
 
 ## CLI
