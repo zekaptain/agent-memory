@@ -511,6 +511,16 @@ Verified against the code in the audit of 2026-11 and still open.
 - A tool call's input is stored twice: in the text of the event, and as
   `tool_input` in its payload, which has no size limit. The largest
   payload measured was 713 KB (`adapters/droid.py`).
+- Neither home has had migration 0010, written on 2026-11-14, so a
+  recall there still finds nothing by a number and is recorded as
+  `fts_bm25_v1`. Applying it is a live rollout; see
+  [Migration safety](../README.md#migration-safety).
+- A recall reads a number with a point in it as two words: `3.12` is
+  `3` and `12`, so a query of `3.12` ranks a memory about 3.12 first
+  and also returns one about 3.13. A word that holds a digit is one
+  word, so `python` does not find `python3`
+  (`migrations/0010_recall_digits.sql`, `mcp_server/ranking.py`). See
+  "Recall by a number" in [phase-1-spec.md](phase-1-spec.md).
 
 Reported in the same audit and not yet checked against the code: the
 hand-maintained `ALL_TABLES` list; lockdown happening after the listener

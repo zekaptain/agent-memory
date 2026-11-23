@@ -99,7 +99,8 @@ harness has an adapter (see [roadmap.md](roadmap.md#phases)).
 `relate`, `graph`, and `status`. A recall writes a `memory_recall` event, a
 `retrievals` row, and one `retrieval_items` row per memory returned with its
 `status_at_recall`, and returns a `retrieval_id` for `cite`. Its strategy is
-`fts_bm25_v1` for a query, `recent_v1` for an empty query, and
+`fts_bm25_v2` for a query (`fts_bm25_v1` where the database has not had
+migration 0010), `recent_v1` for an empty query, and
 `graph_hop_v1` for a walk of relations with `graph`. `remember` and `review`
 write a `memory_write` event; `remember` dedupes on `(scope, content_hash)`
 with a `confirm` action. When the server is down, `recall` returns
@@ -208,7 +209,9 @@ Derived views:
   latest binding for each placeholder, and the context links resolved
   through it.
 
-Full-text search: an incremental FTS index on `memories(content, key)`.
+Full-text search: an incremental FTS index on `memories(content, key)`. A
+word is a run of letters and digits (0010). The index of 0001 dropped the
+digits, and a recall by words names which of the two it read.
 
 Relation graph (no schema change): a relation is a `fact` memory whose `key`
 is the normalized triple `subject|predicate|object` and whose `metadata.graph`
@@ -278,6 +281,7 @@ schema was written. The tests pin the ones the design depends on.
 | Bound parameters are not forwarded through the attached catalog either (`WHERE x = ?` fails). | Lookups by id use `sql_literal` over validated UUIDs; content never enters SQL text except the recall query, which is literal-quoted and tested against injection. |
 | Foreign keys (including self-references) work with the guards, and are checked before `AFTER` triggers. | FKs are on. Changing a referenced row fails with a foreign-key error before the guard fires; both reject it. |
 | Incremental FTS triggers coexist with the guards; a UUID key works. | FTS on `memories` with `incremental = 1`. |
+| The default `ignore` pattern of `create_fts_index` drops every character that is not a letter. `drop_fts_index` and `create_fts_index` run inside a transaction, on a guarded table that holds rows. | Migration 0010 builds the index again with a pattern that keeps digits, so a number is a word. |
 | `ALTER TABLE ... ADD COLUMN` works on guarded tables and keeps the guards. | Future migrations can add columns. |
 | `VARIANT` round-trips through Parquet and over Quack. | Payload and metadata columns are `VARIANT`. |
 | Quack does not forward bound parameters, and `RETURNING` does not work for Quack inserts. | The client stages rows in a local temp table with normal parameters, then runs `INSERT INTO mem.main.t SELECT ... FROM stage`, which Quack streams as data. Values never appear in SQL text. |

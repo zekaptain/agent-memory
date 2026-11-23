@@ -315,7 +315,7 @@ summary):
    `global` and 1.1 for any other scope. Keep the best `limit`; equal
    scores go newest first.
 4. In one transaction insert `events(kind='memory_recall')`, `retrievals`
-   (strategy `fts_bm25_v1`, `sql_used`, `params`, `candidates`, `returned`,
+   (strategy `fts_bm25_v2`, `sql_used`, `params`, `candidates`, `returned`,
    `latency_ms`, `request_event_id`) and one `retrieval_items` row per hit
    with `score_components` (`{"bm25", "importance", "confidence",
    "scope_boost"}`), `injected = true`, and `status_at_recall` from
@@ -324,8 +324,9 @@ summary):
    `retrieval_id` to `cite`.
 
 The statement itself is in `mcp_server/ranking.py`; see "Recall SQL" under
-"As built" and "One recall path and its strategies (2026-11-11)". The
-single SQL statement designed first is in
+"As built", "One recall path and its strategies (2026-11-11)", and
+"Recall by a number (2026-11-14)". The single SQL statement designed
+first is in
 [archive/phase-1-original-design.md](archive/phase-1-original-design.md#server).
 
 Empty-query recall (`query=""`) returns the newest active memories in scope
@@ -425,7 +426,7 @@ src/agent_memory/
     __main__.py    # python -m agent_memory.mcp_server
     tools.py       # recall/remember/cite/review/status
     recall.py      # run a strategy and record the retrieval (added later)
-    ranking.py     # SQL builders for fts_bm25_v1 and recent_v1
+    ranking.py     # SQL builders for fts_bm25_v2 and recent_v1
   graph/           # added after Phase 1 with the relation graph
     model.py       # relations as fact memories with normalized keys
     sql.py         # SQL builders for the graph
@@ -682,7 +683,8 @@ relations with no retrieval at all.
   degraded result, as before.
 - A strategy supplies its name, its SQL, the parameters and request payload
   to store, and how rows become items. There are four: `TextMatch`
-  (`fts_bm25_v1`) and `Recent` (`recent_v1`) in `mcp_server/ranking.py`,
+  (`fts_bm25_v1`, and `fts_bm25_v2` since "Recall by a number" below)
+  and `Recent` (`recent_v1`) in `mcp_server/ranking.py`,
   and `RelationWalk` (`graph_hop_v1`) and `RelationListing`
   (`graph_relations_v1`) in `graph/recall.py`. A new way of choosing
   memories is a new strategy, never a read beside `run_recall`.
@@ -1529,6 +1531,51 @@ Regressions are
 `tests/test_judge_pipeline.py`, and
 `test_a_notice_imported_as_a_message_keeps_that_event_beside_its_note`
 in `tests/test_capture_identity.py`.
+
+### Recall by a number (2026-11-14)
+
+A recall found nothing by a number. Migration 0001 built the index over
+`memories` with the defaults of DuckDB's `fts` extension, and the
+default `ignore` pattern drops every character that is not a letter, so
+`0008`, `9494`, and an issue number were no words at all. Through the
+`recall` tool on a throwaway home, a query of a number alone was a
+miss. In a longer query the number counted for nothing: `migration
+0009` ranked a memory about migration 0008 above the one about 0009,
+and `sha256` returned a memory about `sha1`.
+
+Migration `0010_recall_digits` drops the index and builds it again with
+an `ignore` pattern that keeps digits, over the memories already
+written. It writes no row of `memories`, and the append-only guards
+stay. Building the index over 50,000 memories took 0.18 s.
+
+- A word is a run of letters and digits. `9494` and `0008` find the
+  memories that hold them, and `migration 0009` ranks the memory about
+  0009 first.
+- A word that holds a digit is one word: `sha256` no longer finds
+  `sha1`, and `python` no longer finds `python3`, which `python3` does.
+- A point still divides words, in the index and in the query, so `3.12`
+  is `3` and `12`. A query of `3.12` ranks a memory about 3.12 first
+  and also returns one about 3.13.
+- A recall matches any word of the query, as before: `issue 9999`
+  still returns a memory about issue 1357, for the word `issue`.
+
+The strategy is named for the index it read. A recall by words is
+`fts_bm25_v2`, and `fts_bm25_v1` where the database has not had
+migration 0010. `mem serve` refuses to start while a migration is
+pending, but a server started by an older copy of `mem` goes on serving
+the old index to a newer `mem-mcp`. `MemoryTools` asks the server
+whether the migration is applied at each recall until it is, and not
+again after. Retrievals recorded before keep `fts_bm25_v1`, so
+`retrievals.strategy` says which index answered each recall.
+
+Neither the production home nor the experiment home has had the
+migration; see [roadmap.md](roadmap.md#known-defects).
+
+Regressions are `test_recall_finds_a_memory_by_a_number` and
+`test_a_server_without_the_rebuilt_index_is_named_by_its_old_strategy`
+in `tests/test_mcp.py`, and
+`test_rebuilt_index_finds_numbers_in_memories_old_and_new` in
+`tests/test_migrations.py`.
 
 ### A replay purges what it replayed long ago (2026-11-22)
 
