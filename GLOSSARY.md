@@ -7,8 +7,12 @@ A local memory ledger shared by the AI coding agents on one machine. It exists s
 ### Ledger and homes
 
 **Ledger**:
-The append-only record of everything captured and remembered, shared by every harness on the machine. Nothing in it is edited or deleted; current state is always derived from history.
+The append-only record of everything captured and remembered, shared by every harness on the machine. Nothing in it is deleted or moved out, and nothing is edited except by a blanking; current state is always derived from history.
 _Avoid_: Database, store, memory DB
+
+**Blanking**:
+The removal by a human of text that must not be kept, from an event or a memory already written. The row stays, and the ledger records who blanked it, when, and why.
+_Avoid_: Redaction (which happens before anything is persisted), deletion, erasure, purge
 
 **Home**:
 A directory that holds one ledger together with its token, spool, blobs, and exports.
