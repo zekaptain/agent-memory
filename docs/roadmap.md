@@ -330,6 +330,111 @@ is less than the limit, and 7.7 GiB while `mem export` read through it.
   60 to 106 s at 10 million, and its own process held 7.0 and 8.5 GiB.
   `mem audit check` held 1.3 and 8.5 GiB in its own.
 
+**Matching text over events.** Measured on 2026-11-22 and 23 for MEM-2,
+on the same machine, on copies of 330,000, 1 million, and 10 million
+events made as the ones above and brought to migration 0010. The server
+had its default memory limit, 10% (4.7 GiB), and 18 threads. User
+messages and replies are 8% of the events (26,000, 80,000, and 798,000)
+and hold 9% of the text. A scratch probe made every index and table on
+the copies, and nothing was added to the schema. A hook ran as Droid
+runs it, as a new `mem event` process, and a query went through the
+server three times, the median given. The terms were two single words,
+in 0.5% and 0.8% of the events, the two together, in 0.2%, and a word
+that is nowhere. Sizes are in GiB, as above.
+
+With no index, `content ILIKE` for a term that is found, returning the
+20 newest matches or counting them:
+
+| Events | The whole ledger | User messages and replies | Those among the newest 600,000 events | Those among the newest 200,000 |
+|--------|------------------|---------------------------|---------------------------------------|--------------------------------|
+| 330,000 | 0.23 to 0.26 s | 0.23 to 0.27 s | the whole ledger | 0.14 to 0.19 s |
+| 1 million | 0.27 to 0.30 s | 0.27 to 0.30 s | 0.12 to 0.29 s | 0.11 to 0.17 s |
+| 10 million | 1.6 to 2.5 s | 1.6 to 1.7 s | 0.13 to 0.31 s | 0.10 to 0.18 s |
+
+- Only a span of time shortens the read. Keeping to user messages and
+  replies saves nothing through 1 million events and little at 10
+  million. A span costs at 10 million events what it costs in a small
+  ledger, because DuckDB skips the row groups whose times lie outside
+  it: there the newest 200,000 events lay in 5 of 82. That needs events
+  to sit in the table in about the order of their times, as capture
+  writes them. The newest 200,000 events are a month of the production
+  home's capture, and the newest 600,000 are three.
+- A word that is nowhere took 0.2 s over the whole ledger through 1
+  million events and 1.3 s at 10 million, and 0.11 to 0.23 s in a span.
+- No query needed more than the limit. DuckDB counted 0.7 GiB at
+  330,000 events and 2.0 GiB at 1 million. At 10 million it stayed at
+  the limit and wrote nothing to its temporary directory, and the
+  process held 5.3 to 7.1 GiB.
+
+With an index over the text of every event that every write maintains,
+which is how the index over memories is kept. A cell with two times
+gives the time without the index, then with it:
+
+| Events | Build | Size | One query | One event written, in process | Prompt hook | `Stop` with one new turn | Eight hooks at once, the slowest |
+|--------|-------|------|-----------|-------------------------------|-------------|--------------------------|----------------------------------|
+| 330,000 | 14.5 s, 2.6 GiB | 0.17 GiB | 0.02 to 0.03 s | 0.05 s, then 0.11 s | 0.38 s, then 0.45 s | 0.44 s, then 0.57 to 0.60 s | 0.64 s, then 1.5 to 1.6 s, and 7 of 16 spooled |
+| 1 million | 17.7 s, at the limit | 0.50 GiB | 0.05 s | 0.06 s, then 0.19 to 0.20 s | 0.39 s, then 0.54 to 0.55 s | 0.46 s, then 0.75 to 0.78 s | 0.64 s, then 2.8 to 2.9 s, and 12 and 13 of 16 missed the deadline |
+| 10 million | 136 s, at the limit | 4.9 GiB | 0.30 to 0.34 s | 0.06 s, then 1.2 to 1.3 s | 0.40 s, then 1.65 to 1.68 s | 0.47 s, then 2.9 to 3.0 s | 0.64 s, then 3.1 to 3.2 s, and all 16 missed it |
+
+- Without an index, hooks took what they took before at every size,
+  and none missed its deadline.
+- What the index adds to one write grows with the ledger: 0.06 s, 0.14
+  s, and 1.2 s.
+- Writes at once conflict. Each changes rows of the index that every
+  other write changes, and DuckDB lets only one of them commit
+  ("Conflict on update!"). A hook's write is tried again three times
+  and then goes to the spool, as 7 of 16 did at 330,000 events. From 1
+  million events the hooks pass their 2 s first. After the eight at
+  once, five prompt hooks alone spooled too at 1 and at 10 million
+  events, and the server could not checkpoint as it stopped ("there are
+  other write transactions active"). Every hook still exited 0.
+- A build that needs more than the limit writes what does not fit to
+  the temporary directory, which was allowed 150 GB, and completes: 1.0
+  GiB at 1 million events and 42 GiB at 10 million.
+- A query through the index finds whole words by their stems and ranks
+  them, where `ILIKE` finds the text anywhere. For these terms the two
+  counted within 2% of each other.
+- Text of many different words changed none of these times.
+
+With an index over user messages and replies alone, in a table of their
+own beside `events`, which no write maintains:
+
+| Events | Copied and built with no server | Built in the server while hooks ran | The copy, and the index | One query |
+|--------|---------------------------------|-------------------------------------|-------------------------|-----------|
+| 330,000 | 3.2 s, 0.8 GiB | not measured | 0.06 and 0.02 GiB | 0.01 to 0.02 s |
+| 1 million | 9.4 s, 2.6 GiB | 11.7 s, 2.7 GiB | 0.18 and 0.04 GiB | 0.01 to 0.02 s |
+| 10 million | 21 s, at the limit, 0.6 GiB to the temporary directory | 27.9 s, at the limit, 0.8 GiB to the temporary directory | 1.82 and 0.39 GiB | 0.03 to 0.05 s |
+
+- No hook missed its deadline while the server built the index. At 1
+  million events a prompt hook took 0.43 s where it took 0.38 s before
+  the build, and the slowest of 48 released eight at once took 0.75 s.
+  At 10 million it took 0.54 s, and the slowest of 80 took 1.08 s.
+- The index holds the messages that were there when its build began: 69
+  and 114 arrived during the two builds.
+- Maintained by each write instead, the index made the insert of one
+  message take 16, 21, and 105 ms, where it takes 0.2 to 0.5 ms into a
+  table with no index. Of 40 inserts by eight writers at once, 34, 33,
+  and 32 failed with the same conflict, and none failed without the
+  index.
+
+What the numbers favor, for a recall of events by text (MEM-3):
+
+- No index to begin with. A match over the user messages and replies
+  of a span of time costs 0.1 to 0.3 s at every size. It adds nothing
+  to a write and nothing to the schema, and it sees an event as soon as
+  it is written. Over the whole ledger it costs 0.3 s through 1 million
+  events, which the production home reaches in about five months at
+  its pace, and 1.6 to 2.5 s at 10 million.
+- When that is too slow, or when matches are to be ranked: an index
+  over messages alone, in a table of its own, which the server builds
+  on a schedule, aside from every write, the way it writes a snapshot.
+  It answers in 0.01 to 0.05 s. It knows nothing written since its
+  build began, so a match that must be current also reads the events
+  since then with no index.
+- Never an index that the write of a hook maintains. It makes hooks
+  that run at once conflict at every size measured, and from 1 million
+  events they miss their deadline.
+
 ## Risks and open questions
 
 - Quack shipped in 2.0.0. Its protocol and authorization hook may change;
@@ -645,10 +750,12 @@ it names, or out of the tracker.
   factors. A change to the design only. Approved.
 - MEM-2. Measure what matching text over events costs, with an index
   and without one, at the sizes under "Growth" and under the server's
-  memory limit. Approved.
+  memory limit. Approved, and measured on 2026-11-23: see "Matching
+  text over events" under "Growth".
 - MEM-3. An agent can recall events by text, as a new strategy for the
-  recall path. Waiting for MEM-2, and for the usefulness experiment to
-  show where recall of memories fails.
+  recall path. Waiting for the usefulness experiment to show where
+  recall of memories fails. What MEM-2 measured favors a match with no
+  index, bounded to a span of time.
 - MEM-4. An agent can read on from a recalled event: the events around
   it, or a session's first and last messages. Waiting with MEM-3.
 - MEM-5. Report how many captured sessions make a recall at all, by
