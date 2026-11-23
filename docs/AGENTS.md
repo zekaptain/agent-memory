@@ -16,8 +16,8 @@ document there says, on top of the root `AGENTS.md`.
 - `docs/logic-hardening-spec.md`: lifecycle, coverage, attribution,
   `mem audit check` preflight, and rollout policy.
 - `docs/judge-how-to.md`: step-by-step experiment commands.
-- `docs/memory-utility-evaluation-spec.md`: design only for the memory
-  usefulness study; nothing is implemented from it.
+- `docs/memory-utility-evaluation-spec.md`: the design of the usefulness
+  experiment and the plan of its build; nothing is built from it yet.
 - `docs/parametric-consolidation-spec.md`: a draft research proposal, not
   implemented functionality or authorization to add its proposed migration.
 - `docs/agent-memory-literature-review.md` and `docs/paper/`: research

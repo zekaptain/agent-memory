@@ -21,7 +21,7 @@ As of 2026-11-22.
 | Phase 5: Markdown projection | Not started | below |
 | Lifecycle, coverage, and attribution hardening | Done (migrations 0002 to 0006, 0008 for a session's start, and 0009 for its title, caller, and harness version). The production home has applied every migration through 0010 since 2026-11-22, and the experiment home is at 0001. The migrations through 0008 ran on copies of both homes on 2026-11-11, and 0009 on a copy of the experiment home on 2026-11-13. | [logic-hardening-spec.md](logic-hardening-spec.md) |
 | Judge experiment | Built; four runs stored | [judge-experiment-spec.md](judge-experiment-spec.md), [run logs](archive/judge-experiments.md) |
-| Memory usefulness study | Design only | [memory-utility-evaluation-spec.md](memory-utility-evaluation-spec.md) |
+| Usefulness experiment | Designed, and its build planned in stages; nothing built | [memory-utility-evaluation-spec.md](memory-utility-evaluation-spec.md) |
 | Parametric consolidation | Research proposal | [parametric-consolidation-spec.md](parametric-consolidation-spec.md) |
 
 ## Next approved work
@@ -33,6 +33,10 @@ Factory app. On 2026-11-12 the first 120 sessions were captured through
 installed hooks, in the app, in a terminal, and with no interface, and
 each agreed with its transcript. Still to see: `/clear` and the end of a
 session in a terminal, and what Droid shows during a long first import.
+The build of the experiment is planned in stages under "Building it" in
+[memory-utility-evaluation-spec.md](memory-utility-evaluation-spec.md).
+Its first stage does not wait for what is still to see, which concerns a
+session in a terminal, where a trial runs with no interface.
 Retrieval tuning and wider graph use follow measured failures.
 Parametric consolidation remains research until usefulness and
 withdrawal/backflow can be measured.
@@ -51,10 +55,12 @@ order:
 
 1. MEM-14: the three checks of capture still to see, above. A person at
    a running Droid makes them.
-2. MEM-1, then MEM-15: the design of the usefulness study gains what the
-   peer benchmarks leave out, and its build is planned as issues.
-   Building starts when that plan is accepted, and the run needs the
-   user's go-ahead: the design says both need separate approval.
+2. MEM-1, then MEM-15: the design of the usefulness experiment gains
+   what the peer benchmarks leave out, and its build is planned in
+   stages, with the issues of each. Building starts when that plan is
+   accepted. A read of a home in use, a model that is not on this
+   machine, and every run then each need the user's go-ahead, as the
+   design says.
 3. MEM-2, then MEM-16: measure what matching text over events costs,
    and with that number decide whether old events leave the ledger.
 
@@ -632,11 +638,11 @@ identifier. They were triaged the same day, and each entry ends with
 what was decided: approved (see "Next approved work"), waiting for what
 it names, or out of the tracker.
 
-- MEM-1. The design of the usefulness study names a stratum of tasks
-  that hinge on an exact value or on a tool's output, counts a confident
-  wrong reply and "no recall made" on their own, and names the strength
-  of the model and the wording of the MCP instructions as factors. A
-  change to the design only. Approved.
+- MEM-1. The design of the usefulness experiment names a stratum of
+  tasks that hinge on an exact value or on a tool's output, counts a
+  confident wrong reply and "no recall made" on their own, and names
+  the strength of the model and the wording of the MCP instructions as
+  factors. A change to the design only. Approved.
 - MEM-2. Measure what matching text over events costs, with an index
   and without one, at the sizes under "Growth" and under the server's
   memory limit. Approved.
