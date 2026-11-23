@@ -293,10 +293,16 @@ def _rollback_quietly(con: duckdb.DuckDBPyConnection) -> None:
 # Export
 
 
+# A snapshot's directory is named for the moment it was taken, in UTC.
 _SNAPSHOT_DIR = re.compile(r"\d{8}T\d{6}\d{6}Z")
+_SNAPSHOT_STAMP = "%Y%m%dT%H%M%S%fZ"
 
 # How many times a client copies the tables before it gives up on a ledger that keeps growing.
 EXPORT_ATTEMPTS = 3
+# How long the server waits after an export that failed before it tries again, unless the
+# interval between exports is shorter. A full disk stays full for a while, and every try
+# reads every table.
+EXPORT_RETRY_SECONDS = 600.0
 # How many snapshots the server keeps. The tables only grow, so the newest snapshot holds all
 # that an older one does. The one before it stays for a reader that opened it as the latest,
 # and in case the newest cannot be read.
@@ -347,7 +353,7 @@ def _copy_tables(con: duckdb.DuckDBPyConnection, staging: Path, prefix: str = ""
 def _publish_snapshot(export_dir: Path, keep: int, copy: Callable[[Path], None]) -> Path:
     """Have `copy` fill a staging directory, then publish it as the newest snapshot. A copy
     that fails publishes nothing and leaves only the earlier snapshots behind."""
-    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+    stamp = datetime.now(UTC).strftime(_SNAPSHOT_STAMP)
     staging = export_dir / f".tmp-{stamp}"
     final = export_dir / stamp
     staging.mkdir(parents=True)
@@ -367,11 +373,24 @@ def _publish_snapshot(export_dir: Path, keep: int, copy: Callable[[Path], None])
     return final
 
 
+def _snapshots(export_dir: Path) -> list[Path]:
+    """The snapshot directories, oldest first."""
+    if not export_dir.is_dir():
+        return []
+    return sorted(p for p in export_dir.iterdir() if p.is_dir() and _SNAPSHOT_DIR.fullmatch(p.name))
+
+
+def newest_snapshot_at(export_dir: Path) -> datetime | None:
+    """When the newest snapshot was taken, which its name says. None when there is none."""
+    for snapshot in reversed(_snapshots(export_dir)):
+        with contextlib.suppress(ValueError):
+            return datetime.strptime(snapshot.name, _SNAPSHOT_STAMP).replace(tzinfo=UTC)
+    return None
+
+
 def prune_snapshots(export_dir: Path, keep: int) -> list[Path]:
     """Delete all but the newest `keep` snapshot directories. Returns what was removed."""
-    snapshots = sorted(
-        p for p in export_dir.iterdir() if p.is_dir() and _SNAPSHOT_DIR.fullmatch(p.name)
-    )
+    snapshots = _snapshots(export_dir)
     removed = []
     for old in snapshots[: max(0, len(snapshots) - keep)]:
         shutil.rmtree(old)
@@ -483,14 +502,22 @@ class MemoryServer:
         on_export: Callable[[Path], None] | None = None,
         on_error: Callable[[str, Exception], None] | None = None,
         poll_seconds: float = 1.0,
+        clock: Callable[[], float] = time.time,
     ) -> None:
         """Block until `stop` is set, applying due corrections and exporting on schedule.
 
+        An export is due when the newest snapshot is as old as the interval: at the first
+        turn on a home that has none or an old one, so a server that is restarted every
+        day still exports. `clock` is the wall clock. A monotonic clock stops while the
+        machine sleeps, and counted by it a laptop's server exported days apart.
+
         A failed step (a full disk, a busy ledger) is reported through on_error with the
-        step's name and tried again at its next turn. It must not take the server down.
+        step's name and tried again: maintenance at its next turn, an export after
+        EXPORT_RETRY_SECONDS or the interval, whichever is shorter. It must not take the
+        server down.
         """
         interval = self.export_interval_hours * 3600
-        next_export = time.monotonic() + interval if interval > 0 else None
+        export_at = self._first_export_at(interval, clock()) if interval > 0 else None
         from .lifecycle import maintain_corrections
 
         while not stop.wait(poll_seconds):
@@ -500,16 +527,25 @@ class MemoryServer:
                 except Exception as exc:
                     if on_error:
                         on_error("correction maintenance", exc)
-            if next_export is not None and time.monotonic() >= next_export:
-                next_export = time.monotonic() + interval
+            if export_at is not None and clock() >= export_at:
                 try:
                     path = self.export()
                 except Exception as exc:
+                    export_at = clock() + min(interval, EXPORT_RETRY_SECONDS)
                     if on_error:
                         on_error("export", exc)
                     continue
+                export_at = clock() + interval
                 if on_export:
                     on_export(path)
+
+    def _first_export_at(self, interval: float, now: float) -> float:
+        """When a server that starts now owes its first export. Never later than one
+        interval from now, so a snapshot named while the clock was wrong puts nothing off."""
+        newest = newest_snapshot_at(self.cfg.export_dir)
+        if newest is None:
+            return now
+        return min(newest.timestamp() + interval, now + interval)
 
     def stop(self) -> None:
         if self.con is None:

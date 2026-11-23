@@ -123,7 +123,9 @@ def serve(
     ctx: typer.Context,
     export_interval_hours: Annotated[
         float,
-        typer.Option(min=0, help="Write a Parquet snapshot this often; 0 disables."),
+        typer.Option(
+            min=0, help="Write a Parquet snapshot when the newest is this old; 0 disables."
+        ),
     ] = 24.0,
     export_keep: Annotated[
         int, typer.Option(min=0, help="Snapshots to keep; older ones are deleted. 0 keeps all.")
