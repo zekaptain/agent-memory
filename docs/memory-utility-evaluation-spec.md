@@ -422,9 +422,9 @@ The count over the production home is worth making first, before stage
 to measure anything, the cutoff has to wait, and that is cheaper to
 learn before the harness is built than after.
 
-Stage 1 does not wait for the checks of capture that are still open
-(MEM-14). Those concern a session in a terminal, and a trial has no
-interface.
+The checks of capture that were open when this plan was written
+(MEM-14) were made on 2026-11-23. They concern a session in a terminal,
+and a trial has no interface.
 
 ### What is not known yet
 
@@ -449,10 +449,10 @@ checked here against a run.
 
 ## Later work, in order
 
-1. Finish verifying Droid capture end to end (MEM-14). Add other adapters
-   only from real, consented fixtures.
-2. Build the harness in the stages under "Building it", whose first stage
-   does not wait for step 1, and run the registered usefulness experiment.
+1. Finish verifying Droid capture end to end (MEM-14). Done on
+   2026-11-23. Add other adapters only from real, consented fixtures.
+2. Build the harness in the stages under "Building it", and run the
+   registered usefulness experiment.
 3. Tune retrieval or expand graph use only for measured failure modes.
 4. Reconsider parametric consolidation only after retrieval shows value and
    withdrawal/backflow can be measured.

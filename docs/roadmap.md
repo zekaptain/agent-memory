@@ -7,7 +7,7 @@ still undecided. The design of what is built is in
 
 ## Status
 
-As of 2026-11-22.
+As of 2026-11-23.
 
 | Work | State | Where it is specified |
 |------|-------|-----------------------|
@@ -26,17 +26,19 @@ As of 2026-11-22.
 
 ## Next approved work
 
-The next approved work should finish verifying Droid capture end to end,
-then build and run the local usefulness experiment. Droid's hooks were
+The next approved work is to build and run the local usefulness
+experiment. Droid capture has been verified end to end. Its hooks were
 checked against real payloads on 2026-11-11, all of them recorded in the
 Factory app. On 2026-11-12 the first 120 sessions were captured through
 installed hooks, in the app, in a terminal, and with no interface, and
-each agreed with its transcript. Still to see: `/clear` and the end of a
-session in a terminal, and what Droid shows during a long first import.
+each agreed with its transcript. On 2026-11-23 a person at a running
+Droid saw what was left: `/clear` and the end of a session in a
+terminal, and what Droid shows during a long first import. What that
+found wrong is under "Known defects". The largest is that no hook runs
+to its end when Droid exits in a terminal, so nothing records the end
+of such a session.
 The build of the experiment is planned in stages under "Building it" in
 [memory-utility-evaluation-spec.md](memory-utility-evaluation-spec.md).
-Its first stage does not wait for what is still to see, which concerns a
-session in a terminal, where a trial runs with no interface.
 Retrieval tuning and wider graph use follow measured failures.
 Parametric consolidation remains research until usefulness and
 withdrawal/backflow can be measured.
@@ -55,8 +57,8 @@ On 2026-11-22 the approved work was put into issues (see
 was proposed that day was approved (see "Proposed directions"). In
 order:
 
-1. MEM-14: the three checks of capture still to see, above. A person at
-   a running Droid makes them.
+1. MEM-14: the three checks of capture that were still to see. A person
+   at a running Droid made them on 2026-11-23.
 2. MEM-1, then MEM-15: the design of the usefulness experiment gains
    what the peer benchmarks leave out, and its build is planned in
    stages, with the issues of each. Building starts when that plan is
@@ -69,10 +71,11 @@ order:
 
 Approved beside that line, to be taken up as it allows: MEM-13 (a
 memory with invisible characters or text that reads as an instruction
-starts quarantined, which closes a known defect), MEM-6 (what Droid
-does with the stdout of a `SessionStart` hook, also for a person), and
-MEM-9 (admission records whether a rule's exact values are in the lines
-it cites). MEM-5 is approved once the user agrees to a read of the
+starts quarantined, which closes a known defect) and MEM-9 (admission
+records whether a rule's exact values are in the lines it cites). MEM-6
+(what Droid does with the stdout of a `SessionStart` hook, also for a
+person) was checked with MEM-14 on 2026-11-23: Droid gives it to the
+agent. MEM-5 is approved once the user agrees to a read of the
 production home.
 
 ## Phases
@@ -183,9 +186,12 @@ run for a call made inside a Script. `Stop` runs after the reply is
 written and before the turn's outcome is. The `SessionStart` of a new
 session carries no `message_id`; a resume carries that of the session's
 last reply. `/clear` starts a new session, with a new id and its own
-transcript, and its `SessionStart` says `startup`. `SessionEnd` carries
+transcript. Its `SessionStart` said `startup` in the app on 2026-11-11.
+In a terminal on 2026-11-23 it said `clear` and named the session that
+was left, which raised `SessionEnd` twice. `SessionEnd` carries
 the `message_id` of the session's last message and runs 30 minutes
-after a session was last used, so a session can end more than once.
+after a session was last used in the app, so a session can end more
+than once.
 Droid writes an entry to the transcript for every hook
 command it runs. A session that was running when `hooks.json` changed
 ran the new hooks ten seconds later, where Droid's documentation says a
@@ -202,17 +208,28 @@ made names the Script's call. What Droid tells the user alone is in the
 transcript as a message with the role of user, and a tool result holds
 the text the agent was given beside the one the user was shown, where
 the two differ.
+A person at a terminal and at the app on 2026-11-23, with Droid 1.17.2
+and 1.18.0, added the end of a session in a terminal and the stdout of
+a `SessionStart` hook. When Droid exits in a terminal it raises
+`SessionEnd`, and every hook command fails within a third of a second.
+Plain text that a `SessionStart` hook prints on exit 0 is given to the
+agent: at a new session, after `/clear`, at a resume with the next
+prompt, and after a compaction. It is in the transcript as a message
+that only the agent saw, and 62 KB of it arrived whole. Droid runs an
+event from `settings.json` only when `hooks.json` in the same directory
+does not define it.
 See "What a Droid hook carries", "What Droid's turn and session hooks
 carry", "When a Droid session ends, and what its transcript says of
 hooks", "`mem hooks` writes capture into Droid's hooks file", "What
 Droid's `SubagentStop` hook carries", "What `/clear` starts in Droid",
-"What the first sessions captured through the hooks showed", and "A
-notice only the user saw, and the text of a tool result" in
+"What the first sessions captured through the hooks showed", "A notice
+only the user saw, and the text of a tool result", and "What a terminal
+and a `SessionStart` hook's stdout showed" in
 [phase-1-spec.md](phase-1-spec.md).
 
 | Harness | Events | Payload | Gaps for capture |
 |---------|--------|---------|------------------|
-| Droid (`~/.factory/hooks.json`) | `SessionStart` (`source`: startup, resume, clear, compact), `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PreCompact`, `Stop`, `SubagentStop`, `Notification`, `SessionEnd` | JSON on stdin: `session_id`, `transcript_path`, `cwd`, `permission_mode`, `hook_event_name`, `message_id`; tool hooks add `tool_name`, `tool_input`, `tool_response`; `SubagentStop` adds `task_name`, `task_result`. Default timeout 60 s. | No hook carries the assistant reply; read the transcript. `SessionStart` repeats per resume and compaction. |
+| Droid (`~/.factory/hooks.json`) | `SessionStart` (`source`: startup, resume, clear, compact), `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PreCompact`, `Stop`, `SubagentStop`, `Notification`, `SessionEnd` | JSON on stdin: `session_id`, `transcript_path`, `cwd`, `permission_mode`, `hook_event_name`, `message_id`; tool hooks add `tool_name`, `tool_input`, `tool_response`; `SubagentStop` adds `task_name`, `task_result`; a `SessionStart` after `/clear` in a terminal adds `previous_session_id`. Default timeout 60 s. | No hook carries the assistant reply; read the transcript. `SessionStart` repeats per resume and compaction. No hook command runs to its end when Droid exits in a terminal. |
 | Vibe (`~/.vibe/hooks.toml`) | `pre_tool`, `post_tool`, `post_agent` | JSON on stdin: `session_id`, `parent_session_id`, `transcript_path`, `cwd`, `hook_event_name`; tool hooks add `tool_name`, `tool_call_id`, `tool_input`, `tool_status`, `tool_output`, `tool_output_text`, `tool_error`. Default timeout 60 s. | No prompt, session, or compaction hooks; `post_agent` carries no text. Project-level hooks load only in trusted folders. Plugin-declared hooks do not run yet. |
 | omp (`~/.omp/agent/hooks/{pre,post}/*.ts`) | `session_start`, `session_switch`, `session_compact`, `session_shutdown`, `agent_start`, `agent_end`, `turn_start`, `turn_end`, `message_start`, `message_end`, `tool_call`, `tool_result`, `tool_execution_*`, `tool_approval_*`, `auto_compaction_*`, `session_stop` | Typed in-process payloads with full message text, tool inputs and results, compaction entries, `session_file`. | None material. Skip the high-volume `message_update` and `tool_execution_update`. |
 | Amp (`.amp/plugins/*.ts`) | `session.start`, `agent.start`, `tool.call`, `tool.result`, `agent.end` | In-process: thread id, prompt and message id on `agent.start`; `toolUseID`, `tool`, `input`, `status`, `output` on tool events; every `ThreadMessage` of the turn on `agent.end`. | No compaction or session-end event; `onDispose` runs on unload for about 3 s. |
@@ -558,13 +575,13 @@ Verified against the code in the audit of 2026-11 and still open.
 - A memory that admission wrote and a human approves or retires with
   `mem review` gives the fitted approver no example. Only
   `mem admit review` records one (`review.py`).
-- `/clear` has been recorded in the Factory app only. There it starts a
-  new session whose `SessionStart` says `startup`, which the hook and
-  the transcript's first entry record as one event. The one terminal
-  session captured so far started and resumed as a session in the app
-  does, and nobody typed `/clear` in it. A `SessionStart` that named a
-  new session and gave `clear` as its source, which Droid's
-  documentation lists, would be recorded twice (`adapters/droid.py`).
+- A session that `/clear` started in a terminal holds two
+  `session_start` events, the hook's and the transcript's, when a `mem`
+  from before 2026-11-23 captured it: the adapter keyed a
+  `SessionStart` whose source is `clear` on the time it ran. The two
+  sessions of that day's check hold both. `/clear` in the app was last
+  recorded on 2026-11-11, where it said `startup`. What it says there
+  now is not checked; either is recorded once (`adapters/droid.py`).
 - A Droid turn that never reaches `Stop` (a crash, a killed session) is
   in the ledger only after the session's next `Stop` or `SessionEnd`, or
   after someone imports its transcript. Droid writes a turn's outcome
@@ -573,17 +590,44 @@ Verified against the code in the audit of 2026-11 and still open.
   Until then, and for good if `SessionEnd` never runs, the judge reads
   that turn as cut off when the session ended (`closed_by` is
   `session_end`), not as completed. A session with no interface raises
-  `SessionEnd` as it finishes. Not checked: whether quitting Droid in a
-  terminal or closing the app does. Two of the 13 sessions a Task call
-  started had written 214 and 295 transcript lines and reached neither
-  hook within the hour.
+  `SessionEnd` as it finishes. Quitting Droid in a terminal raises it
+  and runs no hook to its end (see the next entry). Not checked:
+  closing the app. Two of the 13 sessions a Task call started had
+  written 214 and 295 transcript lines and reached neither hook within
+  the hour.
+- When Droid exits in a terminal, by `/quit` or by Ctrl+C pressed twice,
+  every command of its `SessionEnd` hook fails: exit code 1 within a
+  third of a second and no output, seven times of seven on 2026-11-23,
+  with Droid 1.17.2 and 1.18.0. `mem event` records nothing then. Such
+  a session has no `session_end`, and the outcome of its last turn
+  stays unread, as in the entry above, until the session is resumed and
+  reaches a `Stop`, or someone imports its transcript. Why the commands
+  fail is not known: a script that only appends a line to a file failed
+  the same way. A `SessionEnd` that Droid raises while it goes on
+  running, after `/clear` or a change of session, runs as it should.
+- Hooks that another tool declares in Droid's `settings.json` do not
+  run at the events where `hooks.json` holds mem's, and `mem hooks`
+  says nothing of it. Droid runs an event from `settings.json` only
+  when `hooks.json` in the same directory does not define it. In one
+  session a command declared in `settings.json` at six events ran at
+  each of 407 `PostToolUse` hooks, which `hooks.json` does not define,
+  and at none of 59 hooks of the other five. `mem hooks install`
+  refuses to create `hooks.json` while `settings.json` holds hooks, on
+  the older rule that Droid then reads none of them. It does not look
+  there once `hooks.json` exists, and `mem hooks status` never does.
+  The README states the older rule (`hooks.py`).
+- No session records Droid's version. `sessions.harness_version` is
+  empty for all 166 Droid sessions of the production home. No hook
+  payload carries the version, and the `version` in a transcript's
+  first entry, which an import takes for it, is the format's: 2 for a
+  session of 1.17.2 and for one of 1.18.0 (`adapters/droid.py`).
 - The first import of a long session runs inside its `Stop` hook and
-  takes seconds: 8.75 s for a transcript of 41.9 MB and 13.2 s for one
-  of 61.0 MB, and at that rate about 17 s for the largest local one,
-  79 MB. Each later `Stop` reads the whole file again to find its place,
-  1.0 s at 61 MB. Droid's hook timeout is 60 s. Not checked: what Droid
-  shows while a hook runs that long, and what a hook killed at the
-  timeout leaves behind.
+  takes seconds: 8.75 s for a transcript of 41.9 MB, 13.2 s for one of
+  61.0 MB, and 13.6 s for one of 79.3 MB in a running Droid on
+  2026-11-23, where the person could type meanwhile and Droid showed no
+  error. Each later `Stop` reads the whole file again to find its
+  place, 1.0 s at 61 MB. Droid's hook timeout is 60 s. Not checked:
+  what a hook killed at the timeout leaves behind.
 - Droid can raise `UserPromptSubmit` and `Stop` for one message every
   few seconds: 302 runs of each in half an hour of one terminal session.
   The ledger gains nothing twice, and each run is a process that takes
@@ -736,10 +780,10 @@ Proposed in the audit of 2026-11. None of these is approved but the two
 that "Next approved work" names: finishing capture, and the usefulness
 experiment.
 
-- Finish capture. Sessions were captured end to end through installed
-  hooks on 2026-11-12, one of them in a terminal. Left to see: `/clear`
-  and the end of a session in a terminal, and a long first import in a
-  running Droid.
+- Finish capture. Done. Sessions were captured end to end through
+  installed hooks on 2026-11-12, one of them in a terminal, and
+  `/clear` and the end of a session in a terminal and a long first
+  import in a running Droid were seen on 2026-11-23.
 - Give the judge a new provenance version that reads who saw a message
   from the event, and that knows a notice an earlier import wrote as a
   `user_msg`.
@@ -836,15 +880,21 @@ it names, or out of the tracker.
   once the user agrees to that read.
 - MEM-6. Check in a running Droid what the stdout of a `SessionStart`
   hook does: whether it reaches the agent, and at which kinds of start.
-  Approved, for a person at a running Droid.
+  Approved, and checked on 2026-11-23: Droid gives it to the agent at a
+  new session, after `/clear`, at a resume, and after a compaction, as
+  a message that only the agent sees and that an import records. See
+  "What a terminal and a `SessionStart` hook's stdout showed" in
+  [phase-1-spec.md](phase-1-spec.md).
 - MEM-7. `mem` prints a bounded block of active memories for a project
   and records the retrieval under a strategy of its own. Waiting for
   the number MEM-5 reports: if most sessions already make a recall,
   this is dropped.
 - MEM-8. A Droid session is given that block once when it starts, by a
   second hook command that a user opts in to; `mem event` still prints
-  nothing. Waiting for MEM-6 and MEM-7, and it needs a record under
-  `docs/adr/`.
+  nothing. Waiting for MEM-7, and it needs a record under `docs/adr/`.
+  MEM-6 found that such a block reaches the agent, that the hook runs
+  again at every resume and compaction, and that an import records the
+  block as text of the session.
 - MEM-9. Admission records, without a model, whether the exact values
   in a rule are in the lines its claims cite. It changes no action.
   Approved.
