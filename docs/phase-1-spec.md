@@ -1608,3 +1608,181 @@ Regressions are `test_a_replay_purges_the_files_replayed_long_ago`,
 `test_serve_purges_at_startup_the_files_replayed_long_ago` and
 `test_ingest_spool_purges_unless_told_another_age` in
 `tests/test_cli_capture.py`.
+
+### What a terminal and a `SessionStart` hook's stdout showed (2026-11-23)
+
+A person made the checks that 2026-11-12 left open, at a running Droid:
+five new sessions in a terminal, five in the Factory app, and one long
+session that the ledger did not hold, resumed in a terminal. They ran
+in three scratch folders. Two of the folders had a hooks file of their
+own, with a second command at `SessionStart`, `SessionEnd`, and in one
+folder `PreCompact`, beside the installed capture hook. That command
+was a script that appended its payload to a log and, at `SessionStart`,
+printed one line with a number drawn for that run. In one folder it
+printed 60 more lines after it, 62,161 bytes in all. The same script
+ran at `SessionStart` in the app session that read the results.
+
+What follows was read from that log (28 payloads: 19 `SessionStart`,
+7 `SessionEnd`, 2 `PreCompact`), from the transcripts of those
+sessions, from Droid's own log, and from the ledger of the production
+home through its server. Droid's log names the
+version of each process: 1.17.2 for the first one in the terminal and
+for the earliest resume in the app, and 1.18.0 for every other.
+
+**`/clear` in a terminal.** It was typed twice, once on each version,
+and went the same way both times.
+
+| hook | session | what the payload says |
+|---|---|---|
+| `SessionEnd` | the one left | `reason` `clear`, no `message_id` |
+| `SessionStart` | the new one | `source` `clear`, `previous_session_id`, no `message_id` |
+| `SessionEnd`, a second after the first | the one left | `reason` `other`, the `message_id` of its last message |
+
+- `/clear` started a session with a new id and its own transcript, as
+  it did in the app on 2026-11-11. Its `SessionStart` says `clear`,
+  where the app's said `startup` then, and names the session that was
+  left. Droid's documentation describes it so. The first entry of the
+  new transcript still names no other session.
+- The session that was left ended twice. Droid's log has the first
+  `SessionEnd` raised by the terminal's interface and the second by the
+  process that ran the session. `mem event` exited 0 at both, so the
+  ledger holds two `session_end` events for it, a second apart.
+- The adapter keyed only a `startup` on the session's id, and a `clear`
+  on the time its hook ran. So each new session held two
+  `session_start` events, the hook's and the transcript's first entry.
+  A `SessionStart` whose source is `clear` is now keyed on the session's
+  id too, and the hook and the import write one event. It is the hook's
+  when the hook runs first, as it did both times, and its payload keeps
+  `previous_session_id`: the one place where the ledger ties the new
+  session to the one that was left. The two sessions of this check keep
+  both events, because no event is rewritten.
+- `/clear` was not typed in the app.
+
+**The end of a session in a terminal.** Droid's process was ended seven
+times, with `/quit` or with Ctrl+C pressed twice. Each time Droid raised
+`SessionEnd`, four times with `reason` `other` and three times with
+`prompt_input_exit`. Of the five exits the person was asked to make,
+the four with `/quit` gave `other` and the one with Ctrl+C gave
+`prompt_input_exit`.
+
+- Every hook command failed at all seven: exit code 1 after 21 to 60 ms
+  (330 ms once), with nothing on stdout or stderr. That is `mem event`
+  and, in the folders that had it, the script, whose first act is to
+  append a line to its log; it appended none. Droid's log says
+  "SessionEnd hook failed", and the transcript gains a notice for the
+  user, "SessionEnd hook error: Hook exited with code 1", which Droid
+  shows when the session is resumed. It was so on both versions. Why
+  the commands fail was not established.
+- So nothing is recorded when Droid exits in a terminal: no
+  `session_end`, and no import. The outcome of the session's last turn
+  stays unread until the session is resumed and reaches a `Stop` or a
+  `SessionEnd`, or someone imports the transcript. Three of the
+  sessions were left so. The ledger holds no `session_end` with
+  `prompt_input_exit` from any session.
+- A session that ends while Droid's process goes on does get its
+  `SessionEnd`: after `/clear`, above, and once when the person changed
+  to another session in the same terminal (`other`, exit 0).
+- A session resumed in a terminal raises `SessionStart` with `source`
+  `resume` and a `message_id`, as in the app.
+
+**The end of a session in the app.** Each of the five sessions there
+raised `SessionEnd` with `reason` `other` 30 minutes after it was last
+used, and each is in the ledger as a `session_end`. Two of them had
+been opened and given no prompt. Those two have no transcript on disk,
+and their `SessionEnd` carries no `message_id`. One had been resumed in
+a terminal meanwhile, and still ended in the app 30 minutes after it
+was last used there.
+
+**A long first import in a running Droid.** A session whose transcript
+was 79.3 MB, and which the ledger did not hold, was resumed in a
+terminal with 1.18.0 and given one prompt.
+
+- `mem event` took 441 ms at `SessionStart` and 400 ms at
+  `UserPromptSubmit`. At the first `Stop` it took 13.6 s and exited 0.
+  That import read lines 1 to 11,667 and found none it could not parse,
+  and the session then held 15,710 events. For each kind the ledger
+  held as many events as those lines have entries, but for tool
+  results: 6,852 events for 6,854 entries, because two results repeat
+  the call id of another.
+- The person could type the whole time, and saw no error and no notice
+  of a timeout. Droid showed the hook's row with what `mem event` wrote
+  on stderr, "1 result(s) without a known call": one result in that
+  transcript names a call the transcript does not hold.
+- Droid's timeout for a hook is 60 s. What a hook killed at the timeout
+  leaves behind is still not checked.
+
+**The stdout of a `SessionStart` hook.** The script exited 0 and
+printed plain text.
+
+- Droid gives that text to the agent. It writes it to the transcript as
+  a message of its own, with the role of user and a `visibility` of
+  `llm_only`, and nothing in the text says a hook wrote it. At a new
+  session, after `/clear`, and at a resume, the message's id is
+  `hook-context-<id>-SessionStart`, with the id of the prompt that
+  comes next. It stands before Droid's own context message and that
+  prompt, and it is written when the prompt is accepted, not when the
+  hook ran. After a compaction its id is
+  `__internal__system-reminder__compact-session-start__<id>`, with the
+  compaction's id, and it follows the compaction's entry and two
+  messages that only the user sees.
+- Twelve runs left such a message with the run's number, and a reply of
+  the agent in that session gave the number back:
+
+  | start | in a terminal | in the app |
+  |---|---|---|
+  | `startup` | given | given |
+  | `clear` | given | not checked |
+  | `resume` | given, with the next prompt | given, with the next prompt |
+  | `compact`, after `/compress` | given | given |
+  | `compact`, after an automatic compaction | not checked | given, twice |
+
+- Seven runs printed a number that no agent was given. No prompt
+  followed any of them: two sessions in the app were opened and left,
+  and five resumes, four of them of one session in the app, were
+  followed by the session's end. What a hook prints waits for the next
+  prompt and is gone when the session ends before one. A later resume
+  of that session was given its own number only.
+- The 62,161 bytes arrived whole in a terminal and in the app. The
+  message holds 62,160, all but the last newline, and Droid added no
+  notice. Droid's documentation gives 1,000,000 characters as a limit
+  that the context of the hooks that ran shares; that was not checked.
+- The person sees the text too. In a terminal Droid shows a row for
+  each hook with its commands, their exit codes, and what they printed.
+- An import records the message as a `user_msg` whose payload says
+  `llm_only`, and stores the long one as a blob. A block of memories
+  given to a session this way would be in the ledger as text of that
+  session.
+- The script and the capture hook ran side by side, one from the hooks
+  file in the folder and one from the user's. `mem event` exited 0 and
+  printed nothing, as before.
+
+Not checked: a hook that prints JSON (`additionalContext`), exits with
+another code, or takes long; a session with no interface; `/clear` in
+the app; an automatic compaction in a terminal; a session left open in
+a terminal for 30 minutes.
+
+**Hooks that `settings.json` declares.** `mem hooks install` refuses to
+create `hooks.json` while the `settings.json` beside it holds hooks, on
+the rule that Droid reads those only while there is no `hooks.json`
+(see "`mem hooks` writes capture into Droid's hooks file" above).
+Droid's documentation now gives the rule per event: an event that
+`hooks.json` defines replaces the same event in `settings.json`, and
+the other events of `settings.json` run. The transcript of one app
+session bears that out. `hooks.json` already held mem's hooks when
+another tool declared one command in the user's `settings.json` at six
+events, five of which `hooks.json` defines. From 2026-11-22, when that
+command first appears, it ran at each of 407 `PostToolUse` hooks, the
+event that `hooks.json` does not define. It ran at none of the 59 hooks
+of the other five (`SessionStart` 23, `Stop` 16, `SessionEnd` 12,
+`UserPromptSubmit` 7, `Notification` 1); `mem event` ran at all 59.
+Nothing in `mem hooks` says so: `install` does not read `settings.json`
+once `hooks.json` exists, and `status` never does.
+
+**Droid's version.** No hook payload carries it. The first entry of a
+transcript has a `version`, which is 2 in a session of 1.17.2 and in
+one of 1.18.0: the format's number, not Droid's. The versions above
+come from Droid's log.
+
+What stays wrong is in [roadmap.md](roadmap.md#known-defects). The
+regression is `test_a_session_that_clear_started_has_one_start` in
+`tests/test_capture_identity.py`.
