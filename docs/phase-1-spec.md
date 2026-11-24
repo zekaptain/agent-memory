@@ -236,16 +236,17 @@ The stdin fields every Droid hook sends (`session_id`, `cwd`,
 `hook_event_name`, `transcript_path`) map to the `session` block.
 `capture.identity` owns the keys. Two are shared with transcript import:
 a prompt's message ID, and the session ID for the start of a new session
-(`SessionStart` with `source` `startup`). A hook-only event uses the
-event name plus the message ID when Droid sends one that places the event
-in the session (`SessionStart` with any other source, `SessionEnd`,
-`PreCompact`), and otherwise the time the hook ran. Such a `SessionStart`
-key also includes its source. `resume` is the only such source recorded.
+(`SessionStart` with `source` `startup` or `clear`). A hook-only event
+uses the event name plus the message ID when Droid sends one that places
+the event in the session (`SessionStart` with any other source,
+`SessionEnd`, `PreCompact`), and otherwise the time the hook ran. Such a
+`SessionStart` key also includes its source. `resume` and `compact` are
+the only such sources recorded.
 Mapping:
 
 | hook event | kind | notes |
 |---|---|---|
-| SessionStart | `session_start` | payload `source`: a `startup`, which `/clear` raises too, is the event the transcript's `session_start` entry records, and a `resume` is the hook's alone; the `sessions` row is created once |
+| SessionStart | `session_start` | payload `source`: a `startup` or a `clear`, the start of a new session, is the event the transcript's `session_start` entry records, and a `resume` or a `compact` is the hook's alone; the `sessions` row is created once |
 | SessionEnd | `session_end` | payload `reason` and the `message_id` of the session's last message. Droid ends a session left idle, so a session can end more than once. The transcript is imported at this hook event too |
 | UserPromptSubmit | `user_msg` | content = prompt |
 | PreToolUse | skipped by default | `--record-pre-tool` records a note, for debugging |

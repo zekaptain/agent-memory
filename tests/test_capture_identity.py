@@ -163,6 +163,39 @@ def test_a_session_start_is_one_event_when_a_hook_and_the_transcript_report_it(
     assert starts() == [(2,)]
 
 
+def test_a_session_that_clear_started_has_one_start(live_cfg, live_client, tmp_path, monkeypatch):
+    path = tmp_path / f"{tmp_path.name}.jsonl"
+    # What Droid in a terminal sent at the start of the session `/clear` began: the session
+    # that was cleared, and no message. The new transcript opens as any does, with an entry
+    # that has the session's id and no time.
+    entries = [
+        {"type": "session_start", "id": path.stem, "version": 2, "cwd": "/synthetic/identity"},
+        {
+            "type": "message",
+            "id": "prompt",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "message": {"role": "user", "content": "Synthetic prompt."},
+        },
+    ]
+    path.write_text("\n".join(json.dumps(entry) for entry in entries) + "\n")
+    payload = droid_hook(
+        path,
+        "SessionStart",
+        source="clear",
+        previous_session_id="synthetic-cleared-session",
+        CLAUDE_ENV_FILE="/synthetic/session-env.sh",
+    )
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(payload)))
+    assert run(live_cfg, "event", "--harness", "droid") == 0
+    assert run(live_cfg, "ingest", "--harness", "droid", "--transcript", str(path)) == 0
+    sid = ids.session_id("factory-droid", path.stem)
+    # One start: the hook's, which alone names the session that was cleared.
+    assert live_client.query(
+        "SELECT json_extract_string(payload::JSON, '$.previous_session_id') FROM events "
+        f"WHERE session_id = {sql_literal(sid)} AND kind = 'session_start'"
+    )[1] == [("synthetic-cleared-session",)]
+
+
 @pytest.mark.parametrize("import_first", [False, True])
 def test_own_mcp_session_binds_captured_reply_and_cleans_audit(
     live_cfg, live_client, tmp_path, monkeypatch, capsys, import_first

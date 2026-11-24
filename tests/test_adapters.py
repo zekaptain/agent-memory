@@ -527,6 +527,13 @@ def test_droid_startup_hook_is_the_start_the_transcript_records():
     (r,) = DroidAdapter().from_hook(hook("SessionStart", source="startup"))
     assert (r.kind, r.source_key) == ("session_start", "abc-123")
     assert r.payload == {"hook": "SessionStart", "source": "startup", "permission_mode": "default"}
+    # `/clear` starts a new session too, and in a terminal its start says so.
+    (cleared,) = DroidAdapter().from_hook(
+        hook("SessionStart", source="clear", previous_session_id="abc-122")
+    )
+    assert (cleared.kind, cleared.source_key) == ("session_start", "abc-123")
+    assert cleared.payload is not None
+    assert cleared.payload["previous_session_id"] == "abc-122"
     # A start that does not say what kind it is cannot be taken for the first.
     (unsaid,) = DroidAdapter().from_hook(hook("SessionStart", message_id="m0"))
     assert unsaid.source_key == "SessionStart:startup:m0"

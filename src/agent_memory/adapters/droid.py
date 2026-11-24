@@ -42,6 +42,10 @@ _HOOK_KINDS = {
 # one message can raise several notifications that each say something else.
 _KEYED_ON_MESSAGE = frozenset({"SessionStart", "SessionEnd", "PreCompact"})
 
+# What a `SessionStart` gives as its source when the session is new. `/clear` starts a new
+# session: Droid has said `clear` at its start in a terminal and `startup` in the Factory app.
+_NEW_SESSION = frozenset({"startup", "clear"})
+
 # The hooks at which the transcript holds what no hook carries: the reply and the tool
 # calls of a turn when it stops, and the outcome of the last turn when the session ends.
 _TRANSCRIPT_DUE = frozenset({"Stop", "SessionEnd"})
@@ -111,11 +115,10 @@ class DroidAdapter:
         source_key = identity.note_key(event, key_tail)
         if event == "SessionStart":
             # A new session's start is the transcript's first entry too, and Droid gives that
-            # entry the session's id. `/clear` starts a new session, so its start says
-            # `startup` as well. A start with any other source is the hook's alone.
+            # entry the session's id. A start with any other source is the hook's alone.
             source_key = (
                 identity.session_start_key(str(hsid))
-                if payload.get("source") == "startup"
+                if payload.get("source") in _NEW_SESSION
                 else identity.session_marker_key(
                     event, str(payload.get("source") or "startup"), key_tail
                 )
