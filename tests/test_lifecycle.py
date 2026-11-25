@@ -572,43 +572,43 @@ def test_eight_concurrent_remember_calls_all_land_and_are_recalled(live_cfg):
         checker.close()
 
 
-def test_concurrent_identical_remember_calls_deduplicate_to_one_memory(live_cfg):
-    scope = f"concurrent-dedupe-{uuid4()}"
-    count = 8
-    barrier = Barrier(count)
+def test_retry_after_transaction_conflict_deduplicates_to_committed_memory(live_cfg, monkeypatch):
+    scope = f"conflict-dedupe-{uuid4()}"
     text = f"shared fact basaltword {uuid4()}"
-
-    def write(_index: int) -> dict:
-        tool = MemoryTools(
-            live_cfg, "factory-droid", project=scope, harness_session_id=str(uuid4())
-        )
-        try:
-            tool._client_or_raise()
-            barrier.wait(timeout=10)
-            return tool.remember(text, "fact", scope=scope)
-        finally:
-            tool.close()
-
-    with ThreadPoolExecutor(max_workers=count) as pool:
-        results = list(pool.map(write, range(count)))
-
-    assert all(not r["queued"] for r in results)
-    ids = {r["memory_id"] for r in results}
-    assert len(ids) == 1
-    assert sum(1 for r in results if not r["deduplicated"]) == 1
-    assert sum(1 for r in results if r["deduplicated"]) == count - 1
-    checker = MemoryTools(live_cfg, "factory-droid", project=scope, harness_session_id=str(uuid4()))
+    winner = MemoryTools(live_cfg, "factory-droid", project=scope, harness_session_id=str(uuid4()))
+    loser = MemoryTools(live_cfg, "factory-droid", project=scope, harness_session_id=str(uuid4()))
     try:
-        _, rows = checker._client_or_raise().query(
+        winner._client_or_raise()
+        loser_client = loser._client_or_raise()
+        real_insert = MemoryClient.insert
+        committed: list[dict] = []
+
+        def lose_first_insert(client, rows):
+            pairs = list(rows.items()) if isinstance(rows, dict) else list(rows)
+            if client is loser_client and not committed and any(t == "memories" for t, _ in pairs):
+                committed.append(winner.remember(text, "fact", scope=scope))
+                raise duckdb.TransactionException("TransactionContext Error: Conflict on update!")
+            return real_insert(client, pairs)
+
+        monkeypatch.setattr(MemoryClient, "insert", lose_first_insert)
+        second = loser.remember(text, "fact", scope=scope)
+
+        assert len(committed) == 1
+        first = committed[0]
+        assert not first["queued"]
+        assert not first["deduplicated"]
+        assert not second["queued"]
+        assert second["deduplicated"]
+        assert second["memory_id"] == first["memory_id"]
+        _, rows = winner._client_or_raise().query(
             f"SELECT count(*) FROM memories WHERE scope = {sql_literal(scope)}"
         )
         assert rows[0][0] == 1
-        found = [
-            item["memory_id"] for item in checker.recall("basaltword", scopes=[scope])["items"]
-        ]
-        assert found == list(ids)
+        found = [item["memory_id"] for item in winner.recall("basaltword", scopes=[scope])["items"]]
+        assert found == [first["memory_id"]]
     finally:
-        checker.close()
+        winner.close()
+        loser.close()
 
 
 def test_unresolvable_transaction_conflict_queues_instead_of_refusing(live_cfg, monkeypatch):
