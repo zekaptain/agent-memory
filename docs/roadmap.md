@@ -800,20 +800,6 @@ Verified against the code in the audit of 2026-11 and still open.
   word, so `python` does not find `python3`
   (`migrations/0010_recall_digits.sql`, `mcp_server/ranking.py`). See
   "Recall by a number" in [phase-1-spec.md](phase-1-spec.md).
-- Memories written in the same moment conflict, and all but one are
-  refused. The index over the text of memories is maintained by every
-  write, and two writes in flight change the same rows of it. On a
-  throwaway home, of 2, 4, and 8 `remember` calls released together,
-  one was written each time, in ten rounds of each, and every other got
-  "memory write conflict or validation failure" as a tool error. With
-  the index dropped all were written. A refused write is not queued, so
-  the memory is lost unless the agent calls again. One write takes
-  about 30 ms, so this takes two writers inside the same 30 ms. Not
-  checked: the other writers of memories, which are admission, a replay
-  of queued writes, `relate`, and an entity merge
-  (`mcp_server/tools.py`, `lifecycle.py`,
-  `migrations/0010_recall_digits.sql`). See "Matching text over events"
-  under "Growth".
 
 Reported in the same audit and not yet checked against the code: the
 hand-maintained `ALL_TABLES` list; lockdown happening after the listener

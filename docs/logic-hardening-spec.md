@@ -85,6 +85,35 @@ The commands, the replay rule, and the limits of a rule that the tools
 keep and the server does not are in "Only a human approves a memory" in
 [phase-1-spec.md](phase-1-spec.md).
 
+### Concurrent memory writes, as built (2026-11-24)
+
+Every insert into `memories` updates the incremental full-text index
+(`fts_main_memories`), so two transactions that insert memories at the
+same time collide on shared index rows and DuckDB rejects the loser
+with a `TransactionException`. Previously `is_validation_error`
+included `TransactionException`, so `remember`, `relate`, and
+`merge_entity` raised a tool error instead of retrying or queueing,
+`admit` crashed, and replay's three immediate retries were exhausted
+when more than four writers collided at once.
+
+- `is_validation_error` no longer includes `TransactionException`,
+  which is write contention rather than a schema, constraint, or
+  lifecycle failure.
+- `db.retrying` retries `TransactionException` up to 16 times with
+  capped randomized backoff (from 15 ms up to 250 ms) and duplicate-key
+  `ConstraintException` up to 3 times. Each attempt re-reads the ledger
+  and rebuilds `LifecyclePlan`, so concurrent identical writes
+  deduplicate to one memory and concurrent competing corrections still
+  settle to one winner and a stale-correction error.
+- Every memory writer shares `db.retrying`: MCP `remember`, `relate`,
+  and `review`, `graph.apply_merge` (`merge_entity`), admission
+  (`admit` and `review_memory`), capture/replay (`Writer.write` and
+  `LedgerSession.open`), and `maintain_corrections`.
+- If a commit conflict still outlasts all retries in `remember`,
+  `relate`, or `review`, the write is queued to the spool rather than
+  refused, so no memory is lost. The incremental full-text index stays
+  enabled so a recall right after a write finds the memory.
+
 ## Coverage comes from observations
 
 Append-only `capture_observations` describe source mode, adapter and policy
