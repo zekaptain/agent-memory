@@ -1010,3 +1010,438 @@ def test_concurrent_admission_and_remember_all_land(admission_live):
             assert written["memory_id"] in found
     finally:
         checker.close()
+
+
+def _capture_turns(cfg, turns: list[tuple[str, str]], *, session: str = "exact-session") -> None:
+    stamp = datetime.now(UTC) - timedelta(minutes=2)
+    records = []
+    for i, (user_text, assistant_text) in enumerate(turns):
+        for seq, (kind, content) in enumerate(
+            [
+                ("user_msg", user_text),
+                ("assistant_msg", assistant_text),
+                ("outcome", "completed"),
+            ]
+        ):
+            records.append(
+                Record(
+                    agent_id="factory-droid",
+                    harness_session_id=session,
+                    kind=kind,
+                    source_key=f"{i}-{kind}",
+                    content=content,
+                    ts=stamp + timedelta(seconds=i * 3 + seq),
+                    seq=i * 3 + seq,
+                    session=SessionInfo(project="exact-project", started_at=stamp),
+                )
+            )
+    with MemoryClient.from_config(cfg) as client:
+        Writer(client, cfg.blob_dir, make_redactor(cfg)).write(records)
+
+
+def _install_rule_drafter(monkeypatch, rules_by_marker: dict[str, Lesson]) -> None:
+    class RuleDrafter:
+        def draft(self, item_id, state):
+            for marker, lesson in rules_by_marker.items():
+                if marker in state:
+                    return Draft.from_lesson(
+                        item_id,
+                        lesson,
+                        drafter="ollama:synthetic",
+                        model_snapshot="test",
+                        latency_ms=1,
+                    )
+            raise AssertionError(f"unexpected state: {state!r}")
+
+    monkeypatch.setattr(run, "make_drafter", lambda spec: RuleDrafter())
+
+
+@pytest.mark.parametrize("mode", ["shadow", "auto"])
+def test_exact_values_stored_on_lesson_and_memory_without_changing_action(
+    admission_live, models, monkeypatch, capsys, mode
+):
+    cfg = admission_live
+    store = install_model(cfg)
+    if mode == "auto":
+        monkeypatch.setattr(run.approver, "can_auto", lambda model, min_writes=20: True)
+        store.write_state(mode="auto", approver_version="synthetic-v1", min_writes=20)
+    _capture_turns(
+        cfg,
+        [
+            ("MARKER_PASS check port 9494.", "Server binds 127.0.0.1:9494 in config.py."),
+            ("MARKER_FAIL check port 9494.", "Server binds 127.0.0.1:9494 in config.py."),
+        ],
+    )
+    _install_rule_drafter(
+        monkeypatch,
+        {
+            "MARKER_PASS": Lesson(
+                rule="Bind 127.0.0.1:9494 in config.py.",
+                kind="environment",
+                claims=[Claim(text="The server binds 127.0.0.1:9494.", cited=(2,))],
+            ),
+            "MARKER_FAIL": Lesson(
+                rule="Bind 127.0.0.1:8888 in missing_module.py.",
+                kind="environment",
+                claims=[Claim(text="The server binds a port.", cited=(2,))],
+            ),
+        },
+    )
+    args = ["--home", str(cfg.home), "--port", str(cfg.port), "admit"]
+    assert main([*args, "run", "--day", "2026-11-10", "--drafter", "ollama:synthetic"]) == 0
+    out = capsys.readouterr().out
+    assert "1 of 2 lesson(s) failed exact-value check." in out
+
+    # Actions are unchanged in both shadow and auto modes.
+    expected_status = "active" if mode == "auto" else "quarantined"
+    statuses = [r[0] for r in query(cfg, "SELECT status FROM memory_status")]
+    assert statuses == [expected_status, expected_status]
+    if mode == "auto":
+        actions = query(cfg, "SELECT action, actor FROM memory_actions")
+        assert actions == [("approve", "admission"), ("approve", "admission")]
+
+    # Stored with the lesson in drafts.jsonl.
+    day = store.day("2026-11-10")
+    drafts = RunStore.read_jsonl(day.drafts_path)
+    by_rule = {row["rule"]: row["exact_values"] for row in drafts}
+    assert by_rule["Bind 127.0.0.1:9494 in config.py."]["ok"] is True
+    assert by_rule["Bind 127.0.0.1:9494 in config.py."]["missing"] == []
+    failed = by_rule["Bind 127.0.0.1:8888 in missing_module.py."]
+    assert failed["ok"] is False
+    assert failed["missing"] == ["127.0.0.1:8888", "missing_module.py"]
+
+    # Readable from the memories the lessons became, and kept out of decision events.
+    memories = {
+        content: json.loads(meta)
+        for content, meta in query(cfg, "SELECT content, metadata::JSON::VARCHAR FROM memories")
+    }
+    assert memories["Bind 127.0.0.1:9494 in config.py."]["lesson"]["exact_values"]["ok"] is True
+    mem_failed = memories["Bind 127.0.0.1:8888 in missing_module.py."]["lesson"]["exact_values"]
+    assert mem_failed["ok"] is False
+    assert mem_failed["missing"] == ["127.0.0.1:8888", "missing_module.py"]
+    for (payload,) in query(cfg, "SELECT payload::JSON::VARCHAR FROM events WHERE kind='decision'"):
+        assert "missing_module.py" not in payload
+        assert "exact_values" not in payload
+
+    # Day report records how many lessons carried values missing from their cited evidence.
+    assert main([*args, "report", "--day", "2026-11-10"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert len(report["days"]) == 1
+    assert report["days"][0]["lessons"] == 2
+    assert report["days"][0]["exact_values"] == {
+        "checked": 2,
+        "passed": 1,
+        "failed": 1,
+        "redacted_cited": 0,
+        "missing_rate": 0.5,
+    }
+
+
+def test_exact_values_hidden_in_blind_admission_review(admission_live, models, monkeypatch):
+    cfg = admission_live
+    install_model(cfg)
+    _capture_turns(
+        cfg,
+        [("MARKER_BLIND check config.", "Server uses port 9494.")],
+    )
+    _install_rule_drafter(
+        monkeypatch,
+        {
+            "MARKER_BLIND": Lesson(
+                rule="Run cargo on port 8888 via src/phantom.py.",
+                kind="environment",
+                claims=[Claim(text="The server uses a port.", cited=(2,))],
+            ),
+        },
+    )
+    run.run_day(cfg, day="2026-11-10", drafter="ollama:synthetic")
+    controller = ReviewController(cfg, "2026-11-10")
+    for answer in ("n", "continue"):
+        screen = controller.screen()
+        blob = " ".join(
+            [
+                screen.subject,
+                screen.metadata,
+                screen.evidence,
+                screen.projection,
+                screen.question,
+                screen.notice,
+                screen.guide,
+                *(d.lesson + " " + d.cited_evidence for d in screen.drafts),
+            ]
+        ).lower()
+        assert "exact_values" not in blob
+        assert "exact-value" not in blob
+        assert "missing:" not in blob
+        assert "redacted_cited" not in blob
+        assert "failed check" not in blob
+        controller.apply(Action("answer", answer))
+
+    # PlainFrontend renders no exact-value check output either.
+    buf = io.StringIO()
+    plain_controller = ReviewController(cfg, "2026-11-10")
+    frontend = PlainFrontend(io.StringIO("q\n"), buf)
+    while not plain_controller.done:
+        plain_controller.apply(frontend.exchange(plain_controller.screen()))
+    rendered = buf.getvalue().lower()
+    assert "exact_values" not in rendered
+    assert "exact-value" not in rendered
+    assert "redacted_cited" not in rendered
+
+
+def test_exact_values_report_retirement_rate_over_examples_and_imports(
+    admission_live, models, monkeypatch, capsys, tmp_path
+):
+    from agent_memory.admission.examples import import_labels
+    from tests.test_judge import synthetic_run
+
+    cfg = admission_live
+    install_model(cfg)
+    _capture_turns(
+        cfg,
+        [
+            ("M_FAIL_1 check config.", "Port is 9494."),
+            ("M_FAIL_2 check config.", "Port is 9494."),
+            ("M_FAIL_3 check config.", "Port is 9494."),
+            ("M_PASS_1 check config.", "Port is 9494."),
+            ("M_PASS_2 check config.", "Port is 9494."),
+        ],
+    )
+    _install_rule_drafter(
+        monkeypatch,
+        {
+            "M_FAIL_1": Lesson(
+                rule="Use port 8001 in app_one.py.",
+                kind="environment",
+                claims=[Claim(text="Port is configured.", cited=(2,))],
+            ),
+            "M_FAIL_2": Lesson(
+                rule="Use port 8002 in app_two.py.",
+                kind="environment",
+                claims=[Claim(text="Port is configured.", cited=(2,))],
+            ),
+            "M_FAIL_3": Lesson(
+                rule="Use port 8003 in app_three.py.",
+                kind="environment",
+                claims=[Claim(text="Port is configured.", cited=(2,))],
+            ),
+            "M_PASS_1": Lesson(
+                rule="Use port 9494 for local server one.",
+                kind="environment",
+                claims=[Claim(text="Port is 9494.", cited=(2,))],
+            ),
+            "M_PASS_2": Lesson(
+                rule="Keep port 9494 for local server two.",
+                kind="environment",
+                claims=[Claim(text="Port is 9494.", cited=(2,))],
+            ),
+        },
+    )
+    run.run_day(cfg, day="2026-11-10", drafter="ollama:synthetic")
+
+    # Rate all 5 lessons: 2 of 3 failing lessons retired, 1 approved; 0 of 2 passing retired.
+    decisions = {
+        "app_one.py": "n",
+        "app_two.py": "n",
+        "app_three.py": "y",
+        "local server one": "y",
+        "local server two": "y",
+    }
+    controller = ReviewController(cfg, "2026-11-10")
+    while not controller.done:
+        lesson_text = controller.screen().drafts[0].lesson
+        choice = next(v for key, v in decisions.items() if key in lesson_text)
+        for action in (choice, "continue", "save"):
+            controller.apply(Action("answer", action))
+
+    args = ["--home", str(cfg.home), "--port", str(cfg.port), "admit"]
+    assert main([*args, "report"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["totals"]["lessons"] == 5
+    assert report["totals"]["exact_values"]["failed"] == 3
+    assert report["examples"]["total"] == 5
+    assert report["examples"]["checked"] == 5
+    assert report["examples"]["unchecked"] == 0
+    assert report["examples"]["failed"] == {
+        "n": 3,
+        "retired": 2,
+        "approved": 1,
+        "retired_rate": pytest.approx(2 / 3),
+    }
+    assert report["examples"]["passed"] == {
+        "n": 2,
+        "retired": 0,
+        "approved": 2,
+        "retired_rate": 0.0,
+    }
+
+    # Revising an answer updates the rate without double counting; Unclear withdraws it.
+    controller = ReviewController(cfg, "2026-11-10", again=True)
+    while not controller.done:
+        lesson_text = controller.screen().drafts[0].lesson
+        if "app_three.py" in lesson_text:
+            for action in ("u", "continue", "save"):
+                controller.apply(Action("answer", action))
+        else:
+            controller.apply(Action("skip"))
+    assert main([*args, "report"]) == 0
+    updated = json.loads(capsys.readouterr().out)
+    assert updated["examples"]["failed"] == {
+        "n": 2,
+        "retired": 2,
+        "approved": 0,
+        "retired_rate": 1.0,
+    }
+
+    # Structured frozen v4 imports also carry exact_values and deduplicate across backends.
+    exp = synthetic_run(tmp_path / "exp-run", n=1)
+    iid = exp.items()[0]["item_id"]
+    exp.write_projection(iid, "Coding-agent turn.\n[1] ASSISTANT (final): Uses port 9494.\n")
+    structured = Draft.from_lesson(
+        iid,
+        Lesson(
+            rule="Uses port 7777.",
+            kind="environment",
+            claims=[Claim(text="Uses a port.", cited=(1,))],
+        ),
+        drafter="ollama:m",
+        model_snapshot="m",
+        latency_ms=1.0,
+    ).to_dict()
+    exp.write_jsonl(exp.drafts_path, [structured])
+    from agent_memory.judge.drafter import draft_hash
+
+    dhash = draft_hash(structured["lesson"])
+    labels = exp.read_jsonl(exp.labels_path)
+    labels[0]["drafts"]["ollama:m"]["draft_hash"] = dhash
+    labels[0]["drafts"]["ollama:m"]["store_exact"] = False
+    exp.write_jsonl(exp.labels_path, labels)
+    for backend in ("llm:ref", "rules"):
+        verdicts = exp.read_jsonl(exp.verdicts_path(backend))
+        verdicts[0]["draft_hash"] = dhash
+        exp.write_jsonl(exp.verdicts_path(backend), verdicts)
+    exp.update_run(
+        frozen={
+            "frozen_at": "2026-01-01T00:00:00+00:00",
+            "backends": {
+                "llm:ref": {"thresholds": dict(DEFAULT_THRESHOLDS)},
+                "rules": {"thresholds": dict(DEFAULT_THRESHOLDS)},
+            },
+        }
+    )
+    import_labels(cfg, exp.root, backend="llm:ref", embedder="ollama:synthetic")
+    import_labels(cfg, exp.root, backend="rules", embedder="ollama:synthetic")
+    assert main([*args, "report"]) == 0
+    combined = json.loads(capsys.readouterr().out)
+    # Counted once despite two imported backends: 2 review fails + 1 imported fail = 3.
+    assert combined["examples"]["failed"] == {
+        "n": 3,
+        "retired": 3,
+        "approved": 0,
+        "retired_rate": 1.0,
+    }
+
+
+def test_exact_values_redaction_marker_in_cited_lines_end_to_end(
+    admission_live, models, monkeypatch, capsys
+):
+    cfg = admission_live
+    store = install_model(cfg)
+    _capture_turns(
+        cfg,
+        [
+            (
+                "MARKER_REDACT configure auth.",
+                "Export api_key=synthetic_unredacted_token_123456 before running pytest.",
+            ),
+        ],
+    )
+    _install_rule_drafter(
+        monkeypatch,
+        {
+            "MARKER_REDACT": Lesson(
+                rule="Set api_key=placeholder_val before running pytest.",
+                kind="environment",
+                claims=[Claim(text="Export api_key before running pytest.", cited=(2,))],
+            ),
+        },
+    )
+    args = ["--home", str(cfg.home), "--port", str(cfg.port), "admit"]
+    assert main([*args, "run", "--day", "2026-11-10", "--drafter", "ollama:synthetic"]) == 0
+    assert "0 of 1 lesson(s) failed exact-value check." in capsys.readouterr().out
+
+    day = store.day("2026-11-10")
+    draft = RunStore.read_jsonl(day.drafts_path)[0]
+    assert draft["exact_values"]["redacted_cited"] is True
+    assert draft["exact_values"]["missing"] == []
+    assert draft["exact_values"]["ok"] is True
+
+    meta = json.loads(query(cfg, "SELECT metadata::JSON::VARCHAR FROM memories")[0][0])
+    assert meta["lesson"]["exact_values"]["redacted_cited"] is True
+    assert meta["lesson"]["exact_values"]["ok"] is True
+
+    assert main([*args, "report", "--day", "2026-11-10"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["days"][0]["exact_values"] == {
+        "checked": 1,
+        "passed": 1,
+        "failed": 0,
+        "redacted_cited": 1,
+        "missing_rate": 0.0,
+    }
+
+
+def test_exact_values_report_backfills_legacy_rows_and_preserves_examples_hash(
+    admission_live, models, monkeypatch, capsys
+):
+    from agent_memory.admission import approver
+
+    cfg = admission_live
+    store = install_model(cfg)
+    _capture_turns(cfg, [("M_LEGACY check port.", "Port is 9494.")])
+    _install_rule_drafter(
+        monkeypatch,
+        {
+            "M_LEGACY": Lesson(
+                rule="Use port 8123 in legacy_app.py.",
+                kind="environment",
+                claims=[Claim(text="Port is configured.", cited=(2,))],
+            ),
+        },
+    )
+    run.run_day(cfg, day="2026-11-10", drafter="ollama:synthetic")
+    controller = ReviewController(cfg, "2026-11-10")
+    for action in ("n", "continue", "save"):
+        controller.apply(Action("answer", action))
+
+    # exact_values must not alter approver.examples_hash.
+    examples = store.read_examples()
+    stripped_examples = [{k: v for k, v in row.items() if k != "exact_values"} for row in examples]
+    assert approver.examples_hash(examples) == approver.examples_hash(stripped_examples)
+
+    # Strip exact_values from drafts.jsonl and examples.jsonl to simulate pre-MEM-9 data.
+    day = store.day("2026-11-10")
+    stripped_drafts = [
+        {k: v for k, v in row.items() if k != "exact_values"}
+        for row in RunStore.read_jsonl(day.drafts_path)
+    ]
+    write_jsonl(day.drafts_path, stripped_drafts)
+    write_jsonl(store.examples_path, stripped_examples)
+
+    args = ["--home", str(cfg.home), "--port", str(cfg.port), "admit"]
+    assert main([*args, "report", "--day", "2026-11-10"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["days"][0]["exact_values"]["failed"] == 1
+    assert report["examples"]["failed"] == {
+        "n": 1,
+        "retired": 1,
+        "approved": 0,
+        "retired_rate": 1.0,
+    }
+    # Read-only: report does not rewrite drafts.jsonl or examples.jsonl.
+    assert "exact_values" not in RunStore.read_jsonl(day.drafts_path)[0]
+    assert "exact_values" not in store.read_examples()[0]
+
+    # Missing day fails cleanly.
+    assert main([*args, "report", "--day", "2026-01-01"]) == 1
+    assert "no admission day 2026-01-01" in capsys.readouterr().err

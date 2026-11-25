@@ -18,6 +18,7 @@ from ..judge.store import JudgeError, RunStore, read_json
 from ..judge.verdict import Verdict, derive_action
 from . import ADMISSION_VERSION, AdmissionError
 from .embed import DEFAULT_EMBEDDER, lesson_fields, make_embedder, validate_vector
+from .exact_values import check_draft
 from .store import AdmissionStore, latest_examples, write_jsonl
 
 GATES = ("grounded", "faithful", "rule_supported", "generalizable", "enforced")
@@ -254,6 +255,13 @@ def import_labels(cfg: Config, source: Path, *, backend: str, embedder: str) -> 
         example["rule_supported"] = entry.get("rule_supported")
         example["frozen_run"] = str(run["run_id"])
         example["frozen_at"] = frozen.get("frozen_at")
+        if lesson_from_row(draft) is not None:
+            try:
+                projection = judged.read_projection(item["item_id"])
+            except JudgeError:
+                projection = None
+            if projection is not None:
+                example["exact_values"] = check_draft(draft, projection)
         example, _ = redactor.value(example)
         if by_id.get(example["id"]) != example:
             imported.append(example)

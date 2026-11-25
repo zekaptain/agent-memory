@@ -23,7 +23,9 @@ from ..judge.triggers import candidates_from_turns, fetch_turn_events, segment_t
 from ..judge.verdict import JUDGE_AGENT, ask_turn, judge
 from . import approver, ledger
 from .embed import make_embedder
+from .exact_values import check_draft
 from .examples import example_for
+from .report import day_report
 from .store import AdmissionStore, write_jsonl
 
 DEFAULT_DRAFTER = "ollama:gemma4:26b"
@@ -131,9 +133,17 @@ def _process(cfg: Config, store: AdmissionStore, day: RunStore, log: Log) -> int
                 partial(drafter.draft, iid, drafter_rendering(projection)), "Admission drafting"
             ).to_dict()
             draft, _ = make_redactor(cfg).value(draft)
+            if not draft["declined"] and draft.get("rule"):
+                draft["exact_values"] = check_draft(draft, projection)
             write_jsonl(day.drafts_path, [draft], append=True)
             drafts[iid] = draft
         draft = drafts[iid]
+        if (
+            not draft["declined"]
+            and draft.get("rule")
+            and not isinstance(draft.get("exact_values"), dict)
+        ):
+            draft = {**draft, "exact_values": check_draft(draft, projection)}
         if iid not in verdicts:
             turn = _model_call(
                 partial(ask_turn, backend, item, projection), "Admission turn judging"
@@ -265,4 +275,11 @@ def run_day(
     _discover(cfg, store, target, cutoff)
     count += _process(cfg, store, target, log)
     store.write_state(watermark=cutoff)
-    return {"day": day, "processed": count, "mode": target.read_run()["mode"]}
+    summary = day_report(target)
+    return {
+        "day": day,
+        "processed": count,
+        "mode": target.read_run()["mode"],
+        "lessons": summary["lessons"],
+        "exact_values_failed": summary["exact_values"]["failed"],
+    }

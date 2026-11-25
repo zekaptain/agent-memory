@@ -88,7 +88,10 @@ def admit(
     with MemoryClient.from_config(cfg) as client:
         session.open(client, redactor)
         content, _ = redactor.text(draft["rule"])
-        lesson, _ = redactor.value({"kind": draft["kind"], "claims": draft["claims"]})
+        lesson_meta: dict[str, Any] = {"kind": draft["kind"], "claims": draft["claims"]}
+        if isinstance(draft.get("exact_values"), dict):
+            lesson_meta["exact_values"] = draft["exact_values"]
+        lesson, _ = redactor.value(lesson_meta)
         clean_metadata, _ = redactor.value(metadata)
         cited = {n for claim in draft["claims"] for n in claim["cited"]}
         sources = {item["turn_event_id"]}

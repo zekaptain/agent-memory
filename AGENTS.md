@@ -103,7 +103,7 @@ All runtime paths below are under `src/agent_memory/`.
 | `mcp_server/` | Stdio tools, the recorded recall path and its query strategies, writes, review actions, citations | `test_mcp` |
 | `graph/` | Relation metadata, traversal SQL, graph recall strategies, entity merges, entity resolution | `test_graph` |
 | `judge/` | Import, callers and authors, candidates, projection, draft, decide, label (including the Go helper in `label_ui/`), report | `test_judge`, `test_judge_pipeline`, `test_judge_verdict`, `test_judge_unanswered`, `test_judge_core_regressions`, `test_judge_store`, `test_judge_admission`, `test_label_ui` |
-| `admission/` | Production lesson admission, fitting, and admission review | `test_admission`, `test_admission_fit` |
+| `admission/` | Production lesson admission, fitting, exact-value checks, reports, and admission review | `test_admission`, `test_admission_fit`, `test_admission_exact_values` |
 | `cli.py`, `smoke.py` | Typer entry point and end-to-end check | `test_cli`, `test_cli_capture` |
 
 Test names in the table refer to `tests/<name>.py`. The Go helper's own
