@@ -181,14 +181,20 @@ mem --home "$HOME/.agent-memory" --port 9494 hooks install --keep-raw
 - The file is rewritten as indented JSON. Its hooks and their order are
   kept; its line layout is not.
 - `mem hooks status` shows each hook event as installed, missing, or
-  different from what `install` would write. It exits 1 unless all are
+  different from what `install` would write, and names any event at
+  which `settings.json` beside `hooks.json` declares hooks that
+  `hooks.json` hides. It exits 1 unless all capture events are
   installed. `mem hooks uninstall` takes mem's hooks out again.
 - `--file PATH` names another hooks file, such as a project's
   `.factory/hooks.json`. `--mem PATH` names the `mem` a hook runs.
-- `install` changes nothing in a file that is not in Droid's format. It
-  also refuses to create `hooks.json` while `settings.json` beside it
-  holds hooks, because Droid reads those only when there is no
-  `hooks.json`.
+- `install` changes nothing in a file that is not in Droid's format.
+  Droid runs a hook event from `settings.json` only when `hooks.json`
+  beside it does not define that event. `install` refuses, naming the
+  events, whenever writing capture would hide a hook in `settings.json`
+  that runs now, whether or not `hooks.json` exists yet, and does not
+  refuse over hooks at events capture does not use. Neither command
+  changes `settings.json`. `install` also refuses to create `hooks.json`
+  while the earlier `hooks/hooks.json` exists.
 - A Droid session that is already running may use the change at once or
   keep the hooks it started with. `/hooks` in Droid shows the hooks a
   session runs.

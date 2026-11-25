@@ -656,17 +656,6 @@ Verified against the code in the audit of 2026-11 and still open.
   fail is not known: a script that only appends a line to a file failed
   the same way. A `SessionEnd` that Droid raises while it goes on
   running, after `/clear` or a change of session, runs as it should.
-- Hooks that another tool declares in Droid's `settings.json` do not
-  run at the events where `hooks.json` holds mem's, and `mem hooks`
-  says nothing of it. Droid runs an event from `settings.json` only
-  when `hooks.json` in the same directory does not define it. In one
-  session a command declared in `settings.json` at six events ran at
-  each of 407 `PostToolUse` hooks, which `hooks.json` does not define,
-  and at none of 59 hooks of the other five. `mem hooks install`
-  refuses to create `hooks.json` while `settings.json` holds hooks, on
-  the older rule that Droid then reads none of them. It does not look
-  there once `hooks.json` exists, and `mem hooks status` never does.
-  The README states the older rule (`hooks.py`).
 - No session records Droid's version. `sessions.harness_version` is
   empty for all 166 Droid sessions of the production home. No hook
   payload carries the version, and the `version` in a transcript's

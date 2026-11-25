@@ -2325,3 +2325,27 @@ lines to one `mem records` child process per omp process.
   live DuckDB/Quack server (including replay idempotency and, when `omp`
   is present locally, real `omp --mode rpc` discovery without calling a
   model).
+
+### Per-event `settings.json` check in `mem hooks` (2026-11-25)
+
+`mem hooks` now implements Droid's per-event override rule (verified on
+2026-11-23; MEM-29): Droid runs a hook event from `settings.json` only
+when `hooks.json` in the same directory does not define that event.
+
+- `mem hooks install` reads `settings.json` beside the target hooks file
+  whether or not `hooks.json` exists yet. It refuses and names the
+  events whenever writing capture would newly define an event at which
+  `settings.json` declares hooks (meaning those hooks run now and would
+  stop running). Hooks in `settings.json` at events capture does not use
+  do not block `install`. If `hooks.json` already defined an event that
+  hides a `settings.json` hook, re-running `install` warns on stderr
+  without refusing. If `settings.json` is not plain JSON and mentions
+  `"hooks"`, `install` refuses whenever it would add a new event to
+  `hooks.json`. Creating `hooks.json` when the earlier
+  `hooks/hooks.json` exists is still refused.
+- `mem hooks status` reads `settings.json` beside an existing
+  `hooks.json` and names every event at which `settings.json` declares
+  hooks that `hooks.json` hides (or notes when `settings.json` mentions
+  hooks but is not JSON).
+- Neither command modifies `settings.json`, and neither prints any
+  command from `settings.json`.
