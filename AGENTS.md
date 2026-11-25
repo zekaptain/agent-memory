@@ -13,9 +13,9 @@ Start with `README.md` for usage, `docs/architecture.md` for the design,
 Storage and capture (Phases 0 and 1), the relation graph, the judge
 experiment, production admission, and the lifecycle, coverage, and
 attribution hardening are implemented. Do not confuse planned harness
-integrations with shipped adapters: `adapters/` implements Droid only, the
-one harness checked against real payloads; the wider harness roster
-includes MCP-only use and future hook work.
+integrations with shipped adapters: `adapters/` implements Droid only. omp
+is the second harness: its payloads are recorded and its adapter is not
+built. The wider harness roster includes MCP-only use and future hook work.
 
 ## Guides for each part
 
