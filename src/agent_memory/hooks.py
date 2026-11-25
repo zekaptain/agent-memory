@@ -11,6 +11,7 @@ import stat
 import sys
 import tempfile
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -169,24 +170,74 @@ def _read(path: Path) -> Hooks | None:
     return hooks
 
 
-def _hidden_by(path: Path) -> Path | None:
-    """The file whose hooks a new hooks file would switch off. Droid reads the hooks in
-    settings.json, and those in the place it kept them before, only while there is no
-    hooks.json."""
+@dataclass(frozen=True)
+class _SettingsHooks:
+    """Hook events declared in `settings.json` beside `hooks.json`, without its commands."""
+
+    path: Path
+    events: tuple[str, ...] = ()
+    unreadable_reason: str | None = None
+
+
+def _declares_hooks(groups: Any) -> bool:
+    """Whether a hook-event value declares at least one hook."""
+    if not isinstance(groups, list):
+        return bool(groups)
+    for group in groups:
+        if isinstance(group, dict) and "hooks" in group:
+            entries = group["hooks"]
+            if isinstance(entries, list):
+                if entries:
+                    return True
+            elif entries:
+                return True
+        elif group:
+            return True
+    return False
+
+
+def _defined_events(hooks: Hooks) -> set[str]:
+    """Hook events at which `hooks` declares at least one hook."""
+    return {event for event, groups in hooks.items() if _declares_hooks(groups)}
+
+
+def _legacy_hidden_by(path: Path) -> Path | None:
+    """The earlier `hooks/hooks.json`, which Droid reads only while there is no `hooks.json`."""
     legacy = path.parent / "hooks" / "hooks.json"
-    if legacy.exists():
-        return legacy
+    return legacy if legacy.exists() else None
+
+
+def _read_settings_hooks(path: Path) -> _SettingsHooks:
+    """Hook events declared in `settings.json` beside `path`, without reading its commands.
+    Droid runs a hook event from `settings.json` only when `hooks.json` beside it does not
+    define that event."""
     settings = path.with_name("settings.json")
     try:
         text = settings.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        return None
+    except FileNotFoundError:
+        return _SettingsHooks(path=settings)
+    except (OSError, UnicodeDecodeError) as exc:
+        return _SettingsHooks(path=settings, unreadable_reason=f"cannot be read ({exc})")
     try:
         declared = json.loads(text)
     except json.JSONDecodeError:
         # Not plain JSON, so it cannot be read here: a mention of hooks is taken for some.
-        return settings if '"hooks"' in text else None
-    return settings if isinstance(declared, dict) and declared.get("hooks") else None
+        if '"hooks"' in text:
+            return _SettingsHooks(path=settings, unreadable_reason="mentions hooks but is not JSON")
+        return _SettingsHooks(path=settings)
+    if not isinstance(declared, dict) or not declared.get("hooks"):
+        return _SettingsHooks(path=settings)
+    raw_hooks = declared["hooks"]
+    if not isinstance(raw_hooks, dict):
+        return _SettingsHooks(
+            path=settings, unreadable_reason="declares hooks in an unrecognised shape"
+        )
+    events = tuple(
+        event
+        for event, groups in raw_hooks.items()
+        if isinstance(event, str) and _declares_hooks(groups)
+    )
+    return _SettingsHooks(path=settings, events=events)
 
 
 def _write(path: Path, hooks: Hooks) -> None:
@@ -284,14 +335,39 @@ def install(
                 f"{path.parent} does not exist. Droid reads ~/.factory/hooks.json, and "
                 "a project's .factory/hooks.json; name one of them with --file"
             )
-        hidden = _hidden_by(path)
-        if hidden:
+        legacy = _legacy_hidden_by(path)
+        if legacy:
             raise HooksError(
-                f"{hidden} holds hooks that Droid reads only while there is no {path.name} "
+                f"{legacy} holds hooks that Droid reads only while there is no {path.name} "
                 f"beside it, so writing {path} would switch them off. Save them from Droid's "
                 "/hooks screen first, which moves them, then run this again"
             )
     after = _with_mems(before or {}, command, events)
+    settings_hooks = _read_settings_hooks(path)
+    before_defined = _defined_events(before or {})
+    after_defined = _defined_events(after)
+    added_events = [
+        event for event in after if event in after_defined and event not in before_defined
+    ]
+    if settings_hooks.unreadable_reason is not None:
+        if added_events:
+            raise HooksError(
+                f"{settings_hooks.path} {settings_hooks.unreadable_reason}, so writing {path} "
+                "could hide hooks it declares; nothing was changed"
+            )
+    else:
+        newly_hidden = [
+            event
+            for event in settings_hooks.events
+            if event in after_defined and event not in before_defined
+        ]
+        if newly_hidden:
+            noun = "that event" if len(newly_hidden) == 1 else "those events"
+            raise HooksError(
+                f"{settings_hooks.path} declares hooks at {', '.join(newly_hidden)}, "
+                f"which Droid stops running once {path.name} defines {noun}. "
+                f"Move them into {path.name} first, then run this again"
+            )
     if after == before:
         print(f"{_counted(len(events))} already in {path}; nothing to change")
     else:
@@ -305,6 +381,26 @@ def install(
     if after != before:
         print(RUNNING_SESSIONS)
     _warn_also(after)
+    if settings_hooks.unreadable_reason is not None:
+        _warn(
+            f"{settings_hooks.path} {settings_hooks.unreadable_reason}; "
+            f"could not check which events {path.name} hides"
+        )
+    else:
+        already_hidden = [
+            event
+            for event in settings_hooks.events
+            if event in after_defined and event in before_defined
+        ]
+        if already_hidden:
+            noun, pron = (
+                ("that event", "it") if len(already_hidden) == 1 else ("those events", "them")
+            )
+            _warn(
+                f"{path.name} hides hooks declared in {settings_hooks.path} at "
+                f"{', '.join(already_hidden)} (Droid does not run {noun} from settings.json "
+                f"while {path.name} defines {pron})"
+            )
     if not cfg.db_path.exists():
         _warn(
             f"{cfg.home} holds no ledger yet. A hook keeps what it records in the spool "
@@ -387,6 +483,21 @@ def status(ctx: typer.Context, file: FILE = None, mem: MEM = None) -> None:
     for event, commands in also.items():
         for command in commands:
             print(f"a {event} hook also runs mem event, inside a longer command: {command}")
+    if hooks is not None:
+        settings_hooks = _read_settings_hooks(path)
+        if settings_hooks.unreadable_reason is not None:
+            print(
+                f"{settings_hooks.path} {settings_hooks.unreadable_reason}; "
+                f"could not check which events {path.name} hides"
+            )
+        else:
+            defined = _defined_events(hooks)
+            hidden = [event for event in settings_hooks.events if event in defined]
+            if hidden:
+                print(
+                    f"{path.name} hides hooks declared in {settings_hooks.path} at: "
+                    f"{', '.join(hidden)}"
+                )
     if any(state != "installed" for state in states.values()):
         print(f"`mem hooks install` writes: {shlex.join(words)}")
         raise typer.Exit(1)

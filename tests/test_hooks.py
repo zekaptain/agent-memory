@@ -282,19 +282,177 @@ def test_install_leaves_a_file_it_cannot_understand_alone(mem, hooks_file, conte
 
 
 def test_install_refuses_where_it_would_hide_hooks_or_has_nowhere_to_write(mem, hooks_file):
-    # Droid reads the hooks in settings.json only while there is no hooks.json.
+    # Droid runs a hook event from settings.json only when hooks.json does not define it.
     settings = hooks_file.with_name("settings.json")
     settings.write_text(json.dumps({"hooks": theirs()}))
+    settings_before = settings.read_bytes()
     code, _, err = mem("hooks", "install", "--file", str(hooks_file))
     assert code == 1
     assert "settings.json" in err
+    assert "SessionStart" in err
+    assert "PreToolUse" not in err
+    assert "UserPromptSubmit" not in err
+    assert "/usr/local/bin/probe.py" not in err
+    assert "/usr/local/bin/audit.sh" not in err
     assert not hooks_file.exists()
+    assert settings.read_bytes() == settings_before
     settings.write_text(json.dumps({"model": "some-model"}))
     assert mem("hooks", "install", "--file", str(hooks_file))[0] == 0
     nowhere = hooks_file.parent / "absent" / "hooks.json"
     code, _, err = mem("hooks", "install", "--file", str(nowhere))
     assert code == 1
     assert "does not exist" in err
+
+
+def test_install_allows_settings_hooks_at_events_capture_does_not_use(mem, hooks_file):
+    settings = hooks_file.with_name("settings.json")
+    secret_cmd = "/usr/local/bin/other-tool --secret-flag"
+    settings.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "PostToolUse": [hook(secret_cmd)],
+                    "PreToolUse": [hook("/usr/local/bin/pre-tool.sh")],
+                    "Stop": [],
+                }
+            }
+        )
+    )
+    settings_before = settings.read_bytes()
+
+    code, out, err = mem("hooks", "install", "--file", str(hooks_file))
+    assert code == 0, err
+    assert "settings.json" not in out
+    assert "settings.json" not in err
+    assert secret_cmd not in out
+    assert secret_cmd not in err
+    assert settings.read_bytes() == settings_before
+
+    code, out, _ = mem("hooks", "status", "--file", str(hooks_file))
+    assert code == 0
+    assert "hides" not in out
+    assert secret_cmd not in out
+    assert settings.read_bytes() == settings_before
+
+    # Asking for --record-pre-tool would now hide settings.json's PreToolUse hook.
+    hooks_before = hooks_file.read_bytes()
+    code, _, err = mem("hooks", "install", "--record-pre-tool", "--file", str(hooks_file))
+    assert code == 1
+    assert "settings.json" in err
+    assert "PreToolUse" in err
+    assert "PostToolUse" not in err
+    assert "/usr/local/bin/pre-tool.sh" not in err
+    assert hooks_file.read_bytes() == hooks_before
+    assert settings.read_bytes() == settings_before
+
+
+def test_install_refuses_when_existing_hooks_json_would_newly_hide_settings_hooks(mem, hooks_file):
+    # hooks.json already exists with PostToolUse only, so Stop and SessionStart in settings.json
+    # still run now. Installing capture would define them and switch them off.
+    hooks_file.write_text(json.dumps({"PostToolUse": [hook("/usr/local/bin/in-hooks.sh")]}))
+    hooks_before = hooks_file.read_bytes()
+    settings = hooks_file.with_name("settings.json")
+    settings.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "PostToolUse": [hook("/usr/local/bin/already-hidden.sh")],
+                    "SessionStart": [hook("/usr/local/bin/other-start.sh")],
+                    "Stop": [hook("/usr/local/bin/other-stop.sh")],
+                    "SubagentStop": [hook("/usr/local/bin/other-subagent.sh")],
+                }
+            }
+        )
+    )
+    settings_before = settings.read_bytes()
+
+    code, _, err = mem("hooks", "install", "--file", str(hooks_file))
+    assert code == 1
+    assert "settings.json" in err
+    assert "SessionStart" in err
+    assert "Stop" in err
+    assert "PostToolUse" not in err
+    assert "SubagentStop" not in err
+    for cmd in ("already-hidden.sh", "other-start.sh", "other-stop.sh", "other-subagent.sh"):
+        assert cmd not in err
+    assert hooks_file.read_bytes() == hooks_before
+    assert settings.read_bytes() == settings_before
+
+
+def test_install_warns_without_refusing_when_settings_hooks_were_already_hidden(mem, hooks_file):
+    # hooks.json already defines capture's events; another tool later wrote settings.json.
+    assert mem("hooks", "install", "--file", str(hooks_file))[0] == 0
+    settings = hooks_file.with_name("settings.json")
+    settings.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "SessionStart": [hook("/usr/local/bin/tool-start.sh")],
+                    "Stop": [hook("/usr/local/bin/tool-stop.sh")],
+                    "PostToolUse": [hook("/usr/local/bin/tool-post.sh")],
+                }
+            }
+        )
+    )
+    settings_before = settings.read_bytes()
+
+    code, out, err = mem("hooks", "install", "--keep-raw", "--file", str(hooks_file))
+    assert code == 0, err
+    assert "SessionStart, Stop" in err
+    assert "PostToolUse" not in err
+    for cmd in ("tool-start.sh", "tool-stop.sh", "tool-post.sh"):
+        assert cmd not in out
+        assert cmd not in err
+    assert settings.read_bytes() == settings_before
+
+
+def test_status_names_settings_hooks_hidden_by_hooks_json(mem, hooks_file):
+    settings = hooks_file.with_name("settings.json")
+    settings_payload = {
+        "hooks": {
+            "SessionStart": [hook("/usr/local/bin/tool-cmd --a")],
+            "SessionEnd": [hook("/usr/local/bin/tool-cmd --b")],
+            "UserPromptSubmit": [hook("/usr/local/bin/tool-cmd --c")],
+            "Notification": [hook("/usr/local/bin/tool-cmd --d")],
+            "Stop": [hook("/usr/local/bin/tool-cmd --e")],
+            "PostToolUse": [hook("/usr/local/bin/tool-cmd --f")],
+            "PreToolUse": [hook("/usr/local/bin/tool-cmd --g")],
+            "PreCompact": [],
+        }
+    }
+    settings.write_text(json.dumps(settings_payload))
+    settings_before = settings.read_bytes()
+
+    # Without hooks.json, nothing is hidden.
+    code, out, _ = mem("hooks", "status", "--file", str(hooks_file))
+    assert code == 1
+    assert "hides" not in out
+    assert "/usr/local/bin/tool-cmd" not in out
+
+    # Write hooks.json holding mem's capture events plus another tool's PreToolUse.
+    hooks_data = {event: [hook(capture(mem))] for event in EVENTS}
+    hooks_data["PreToolUse"] = [hook("/usr/local/bin/in-hooks-pre.sh")]
+    hooks_file.write_text(json.dumps(hooks_data))
+
+    code, out, _ = mem("hooks", "status", "--file", str(hooks_file))
+    assert code == 0
+    hidden_lines = [line for line in out.splitlines() if "hides hooks" in line]
+    assert len(hidden_lines) == 1
+    hidden_line = hidden_lines[0]
+    for event in ("SessionStart", "SessionEnd", "UserPromptSubmit", "Notification", "Stop"):
+        assert event in hidden_line
+    assert "PreToolUse" in hidden_line
+    assert "PostToolUse" not in hidden_line
+    assert "PreCompact" not in hidden_line
+    assert "/usr/local/bin/tool-cmd" not in out
+    assert settings.read_bytes() == settings_before
+
+    # Non-JSON settings.json that mentions hooks is reported without failing status.
+    settings.write_text('{\n  // comment\n  "hooks": {"Stop": []}\n}\n')
+    code, out, _ = mem("hooks", "status", "--file", str(hooks_file))
+    assert code == 0
+    assert "settings.json" in out
+    assert "not JSON" in out
 
 
 def test_install_does_not_hide_hooks_it_cannot_read(mem, hooks_file):
