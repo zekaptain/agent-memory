@@ -18,7 +18,7 @@ from agent_memory.smoke import free_port
 from tests.test_cli import Mem
 
 THIS_MEM = Path(sys.executable).parent / "mem"
-TS_RUNTIME = shutil.which("bun") or shutil.which("node")
+BUN_BIN = shutil.which("bun")
 OMP_BIN = shutil.which("omp")
 
 
@@ -41,12 +41,12 @@ def omp_extensions(tmp_path) -> Path:
 def _run_ts_file(
     tmp_path: Path, name: str, script: str, env: dict[str, str] | None = None
 ) -> subprocess.CompletedProcess[str]:
-    assert TS_RUNTIME is not None
+    assert BUN_BIN is not None
     driver = tmp_path / name
     driver.write_text(script, encoding="utf-8")
     run_env = {**os.environ, **(env or {})}
     return subprocess.run(
-        [TS_RUNTIME, str(driver)],
+        [BUN_BIN, str(driver)],
         capture_output=True,
         text=True,
         env=run_env,
@@ -225,7 +225,7 @@ def test_install_warnings_and_mem_validation(mem, omp_extensions, down_cfg, monk
 # --- End-to-end: installed TypeScript extension -> `mem records` -> real DuckDB ledger ---
 
 
-@pytest.mark.skipif(TS_RUNTIME is None, reason="bun or node is required to run the TS extension")
+@pytest.mark.skipif(BUN_BIN is None, reason="bun is required to run the omp extension")
 def test_extension_to_ledger_full_session_and_replay_idempotency(
     live_cfg, tmp_path, omp_extensions, capsys
 ):
@@ -444,7 +444,7 @@ await new Promise((r) => setTimeout(r, 120));
         assert counts == [(1, 10)]
 
 
-@pytest.mark.skipif(TS_RUNTIME is None, reason="bun or node is required to run the TS extension")
+@pytest.mark.skipif(BUN_BIN is None, reason="bun is required to run the omp extension")
 def test_extension_to_ledger_session_transitions_and_subagents(
     live_cfg, tmp_path, omp_extensions, capsys
 ):

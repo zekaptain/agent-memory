@@ -2320,9 +2320,8 @@ lines to one `mem records` child process per omp process.
   extension in omp's folders untouched. The wheel packages the three
   runtime `.ts` files under `agent_memory/adapters/omp/`.
 - **Tests.** `src/agent_memory/adapters/omp/omp.test.ts` runs in CI via
-  `bun test` (and also passes under `node --test`).
-  `tests/test_omp_extension.py` tests `mem extension` and drives the
-  installed TypeScript extension through `mem records` into a live
-  DuckDB/Quack server (including replay idempotency and, when `omp` is
-  present locally, real `omp --mode rpc` discovery without calling a
+  `bun test`. `tests/test_omp_extension.py` tests `mem extension` and
+  drives the installed TypeScript extension through `mem records` into a
+  live DuckDB/Quack server (including replay idempotency and, when `omp`
+  is present locally, real `omp --mode rpc` discovery without calling a
   model).

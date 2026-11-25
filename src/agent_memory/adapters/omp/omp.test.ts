@@ -1,4 +1,4 @@
-import { describe, it } from "node:test";
+import { describe, it } from "bun:test";
 import assert from "node:assert/strict";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -755,7 +755,7 @@ describe("RecordSink & extension runtime — non-blocking and single-report fail
         (msg) => errors.push(msg),
       );
 
-      // Write enough to exceed both Node's and Bun's pipe buffer (~448 KiB on macOS).
+      // Write enough to exceed the OS pipe buffer (~448 KiB on macOS).
       const bigContent = "x".repeat(64 * 1024);
       const t0 = Date.now();
       for (let i = 0; i < 20; i += 1) {
