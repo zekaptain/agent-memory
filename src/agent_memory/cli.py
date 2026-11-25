@@ -35,6 +35,7 @@ from .db import (
     migrate,
     open_direct,
 )
+from .extension import extension_app
 from .graph.cli import graph_app
 from .hooks import hooks_app, runs_event
 from .judge.cli import judge_app
@@ -568,6 +569,7 @@ app.add_typer(graph_app, name="graph")
 app.add_typer(admit_app, name="admit")
 app.add_typer(review_app, name="review")
 app.add_typer(hooks_app, name="hooks")
+app.add_typer(extension_app, name="extension")
 
 
 @spool_app.command("status")

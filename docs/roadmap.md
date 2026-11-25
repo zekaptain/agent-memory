@@ -7,7 +7,7 @@ still undecided. The design of what is built is in
 
 ## Status
 
-As of 2026-11-24.
+As of 2026-11-25.
 
 | Work | State | Where it is specified |
 |------|-------|-----------------------|
@@ -15,7 +15,7 @@ As of 2026-11-24.
 | Phase 0.5: trial of ai-memory | Not started | below |
 | Phase 1a: capture path | Done | [phase-1-spec.md](phase-1-spec.md) |
 | Phase 1b: in-session tools | Done | [phase-1-spec.md](phase-1-spec.md) |
-| Phase 2: harness adapters | Droid hooks and transcript import are built and checked against real payloads. Vibe, omp, and Amp have no adapter; one for Vibe, written from its documentation, was removed on 2026-11-11. `mem hooks install` writes Droid's hooks, and sessions in a running Droid have been captured through them since 2026-11-12. omp is the second harness: what it hands an extension was recorded on 2026-11-24, and its adapter is approved and not built. | below |
+| Phase 2: harness adapters | Droid hooks and transcript import are built and checked against real payloads, and `mem hooks install` writes Droid's hooks. omp capture is built as a TypeScript extension (`src/agent_memory/adapters/omp/`) feeding `mem records`, managed by `mem extension install`. Vibe and Amp have no adapter; one for Vibe, written from its documentation, was removed on 2026-11-11. | below |
 | Phase 3: audit tooling | Not started. `mem audit check` exists, but as a preflight for migrations, not as the commands below. | below |
 | Phase 4: memory quality | Partly built: the relation graph's first step and lesson admission (migration 0007). | below, [admission-spec.md](admission-spec.md) |
 | Phase 5: Markdown projection | Not started | below |
@@ -88,10 +88,10 @@ In order:
    [phase-1-spec.md](phase-1-spec.md).
 2. MEM-38: `mem` takes capture records from a harness extension on its
    stdin, through the redaction, ids, spool, and delivery every record
-   goes through. What a record looks like on that path is written into
-   [phase-1-spec.md](phase-1-spec.md) before the extension is.
-3. MEM-37: the extension, which `mem` can install, report on, and
-   remove.
+   goes through. Done on 2026-11-24 (`mem records`).
+3. MEM-37: the omp TypeScript extension, which `mem extension` can
+   install, report on, and remove. Built on 2026-11-25; see "omp
+   capture extension" in [phase-1-spec.md](phase-1-spec.md).
 
 This is built beside the usefulness experiment, whose first run waits
 for the user's go-ahead.
@@ -137,11 +137,12 @@ harness exposes (see "Verified harness behavior" below):
   DuckDB client inside the extension would load a native library into
   omp's process and make a second writer of the ledger's rules. omp
   hands an extension every message, tool call, and compaction, with
-  the gaps the table below lists. Not built: MEM-38 is the `mem` side
-  and MEM-37 the extension. Amp has a plugin interface of the same
-  kind, by its documentation: every message of a turn, and no
-  compaction or session-end signal. Nothing of Amp is recorded or
-  planned.
+  the gaps the table below lists. Both halves are built: `mem records`
+  (MEM-38) takes the stream on stdin, and the TypeScript extension and
+  `mem extension` installer (MEM-37) feed it. Amp has a plugin
+  interface of the same kind, by its documentation: every message of a
+  turn, and no compaction or session-end signal. Nothing of Amp is
+  recorded or planned.
 
 Junie through MCP alone, marked partial. Redaction and `capture_error`
 events live in `mem event` and `mem ingest`, so all adapters get them.

@@ -2243,3 +2243,86 @@ names seven that changed what an extension is given.
 - A recall the agent makes through `mem-mcp` is tied to its omp session
   by the tool call's hook events, which name the tool and carry its
   result, and not by the server's environment.
+
+### omp capture extension (2026-11-25)
+
+The omp capture extension is built under
+`src/agent_memory/adapters/omp/` (`index.ts`, `mapper.ts`, `sink.ts`)
+with zero external runtime dependencies, running in omp's embedded Bun
+runtime (MEM-37). It maps the verified omp 19.1.1 hook events to schema
+v1 capture records for `agent_id = "oh-my-pi"` and writes them as JSON
+lines to one `mem records` child process per omp process.
+
+- **Event mapping and source keys.**
+  - `session_start` records a `session_start` event. A fresh session
+    (no conversation history in `sessionManager.getEntries()`) is keyed
+    on the session id; a resumed session (`omp -c` / `omp -r`, whose
+    entries already hold messages, compactions, custom messages, or a
+    `session_exit`) is keyed on `session_start:resume:<leafId>` under
+    the same `harness_session_id`.
+  - `session_switch` (`new`, `fork`, `resume`), `session_branch`
+    (`fork`, `branch`), and `session_clear` follow omp's
+    `getSessionId()`. A new, forked, or branched session starts under
+    its new session id with `previous_session_id` /
+    `parent_session_file` / `branch_entry_id` metadata; copied entries
+    from a fork or branch are not re-emitted. A `resume` switch returns
+    to the earlier session id without creating a new session row.
+  - `message_end` with `role: "user"` records `user_msg`, keyed on its
+    8-hex transcript entry id from `getEntries()` / `getLeafId()`.
+    `custom` messages (such as `async-result`) are not mapped as user
+    messages.
+  - `tool_call` records `tool_call`, keyed on `toolCallId`.
+    `message_end` with `role: "toolResult"` records `tool_result` (which
+    fires for normal, error, blocked, aborted, and MCP results, unlike
+    `tool_result`), keyed on `toolCallId` with `parent_key = toolCallId`
+    and `parent_kind = "tool_call"`, carrying `mcp_server` and
+    `mcp_tool_name` when present in `details`.
+  - `turn_end` records `assistant_msg` when the assistant message has
+    text, keyed on its transcript entry id (which is present in
+    `getEntries()` by `turn_end`, unlike at `message_end`). Thinking
+    blocks are omitted by default, and pure tool-call or empty aborted
+    steps do not emit empty replies.
+  - `session_compact` records `compaction`, keyed on
+    `compactionEntry.id`, with summary text and token counts.
+  - A turn's `outcome` is keyed on `turn:<promptEntryId>` and emitted
+    once: at `session_stop` for completed main turns, at `agent_end`
+    (when neither `willContinue` nor `awaitingAsyncWork` is set) for
+    spawned sessions and `--max-time` stops, or at `session_shutdown`
+    when a turn is still open (as on `SIGINT`, `SIGTERM`, or `SIGHUP`).
+  - `session_shutdown` records `session_end` keyed on
+    `session_end:<leafId>`.
+- **Spawned sessions.** omp invokes the extension's default export once
+  per session in the same module. State is keyed by `harness_session_id`
+  in a shared process-wide runtime. `before_subagent_spawn` links a
+  spawned session's `spawnKey` (falling back to `agent.parentId`) to
+  its caller's `harness_session_id` in `session.metadata.calling_session_id`
+  and `session_start`'s payload (so `session_summary.calling_session_id`
+  populates directly), and every spawned-session event carries
+  `payload.subagent`. Stdin to `mem records` stays open until every
+  session instance in the process has shut down.
+- **Non-blocking delivery and failure handling.** Every hook handler
+  returns synchronously (`undefined`) without waiting for `mem` or the
+  ledger. The `mem records` child is unref'd so a slow or hung `mem`
+  never blocks omp from exiting. In-flight write bytes are tracked via
+  write callbacks (Bun 1.4.x leaves `writableLength` at 0 under
+  backpressure); if `mem` is missing, dies, or stalls, capture pauses
+  for that process and the failure is reported once (through
+  `ctx.ui.notify` when `hasUI` is true, else stderr). On final
+  `session_shutdown`, stdin closes after a 50 ms debounced window so
+  signal-tail events arriving right after `session_shutdown` are still
+  written.
+- **Installer (`mem extension`).** `mem extension install`, `status`,
+  and `uninstall` manage `<dir>/agent-memory/` (default
+  `~/.omp/agent/extensions/agent-memory/`, containing `index.ts`,
+  `mapper.ts`, `sink.ts`, and `config.json` with mode `0600`). They
+  refuse to overwrite or remove a directory not owned by `agent-memory`
+  or containing unrecognized files, and leave every other file and
+  extension in omp's folders untouched. The wheel packages the three
+  runtime `.ts` files under `agent_memory/adapters/omp/`.
+- **Tests.** `src/agent_memory/adapters/omp/omp.test.ts` runs in CI via
+  `bun test` (and also passes under `node --test`).
+  `tests/test_omp_extension.py` tests `mem extension` and drives the
+  installed TypeScript extension through `mem records` into a live
+  DuckDB/Quack server (including replay idempotency and, when `omp` is
+  present locally, real `omp --mode rpc` discovery without calling a
+  model).

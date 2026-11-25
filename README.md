@@ -9,8 +9,9 @@ The ledger keeps a history instead of overwriting records. Use it to find:
 - Where that information came from.
 - Which memories the agent declared it used in its reply.
 
-Storage, capture, a hook installer for Factory Droid, MCP tools, the
-relation graph, judge experiments, and admission are implemented.
+Storage, capture, a hook installer for Factory Droid, a capture
+extension for oh-my-pi (omp), MCP tools, the relation graph, judge
+experiments, and admission are implemented.
 
 Start with the [quick start](#quick-start), then
 [wire capture into Droid's hooks](#wire-capture-into-hooks),
@@ -125,8 +126,8 @@ Add `--help` to any command to see its options, for example
 | Harness | Capture available now |
 |---|---|
 | Factory Droid | Hooks, written by `mem hooks install`, and transcript import. |
-| oh-my-pi and Amp | MCP tools only; no capture adapter yet. |
-| JetBrains Junie | MCP tools only, recorded as partial capture. |
+| oh-my-pi (omp) | TypeScript extension, installed by `mem extension install`, feeding `mem records`. |
+| Amp and JetBrains Junie | MCP tools only, recorded as partial capture. |
 
 ### Import a Droid session
 
@@ -219,15 +220,34 @@ problems on stderr. It exits 0 once every record is kept somewhere and 1
 when nothing could be kept. It never exits 2, which a harness reads as an
 instruction to block the agent.
 
-### Capture from an extension
+### Capture from an extension (oh-my-pi)
 
-A harness such as oh-my-pi runs no hook commands. It loads an extension
-into its own process. `mem records` is the command such an extension
-keeps running: it takes capture records on stdin, one JSON object per
-line, and delivers them while stdin stays open, with the same redaction,
-ids, and spool as every other capture. It prints nothing on stdout. No
-extension uses it yet. The record format and the command's behavior are
-in the [capture spec](docs/phase-1-spec.md).
+oh-my-pi (omp) runs no hook commands. It loads TypeScript extensions
+into its own process. `mem extension install` copies mem's capture
+extension into `~/.omp/agent/extensions/agent-memory/` and configures it
+for the `mem` binary, home, and port in use:
+
+```sh
+mem extension install
+mem extension status
+```
+
+- Every other extension and file in `~/.omp/agent/extensions/` stays as
+  it is. `mem extension` refuses to overwrite or remove a directory that
+  it did not install or that holds extra user files.
+- `--dir PATH` names another extensions directory, such as a project's
+  `.omp/extensions`. `--mem PATH` names the `mem` command the extension
+  runs.
+- `mem extension status` exits 0 when the installed extension matches
+  this version of `agent-memory` and the active home, port, and `mem`
+  path, and 1 otherwise. `mem extension uninstall` removes it again.
+
+The extension keeps one `mem records` child process running for the omp
+process, writing capture records as JSON lines without waiting for the
+ledger. `mem records` prints nothing on stdout and handles redaction,
+deterministic ids, and spooling. If `mem` is missing, slow, or stops,
+omp keeps working and the failure is reported once. The record format
+and event mapping are in the [capture spec](docs/phase-1-spec.md).
 
 ### Recover queued records
 
