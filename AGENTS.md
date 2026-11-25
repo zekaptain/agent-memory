@@ -13,9 +13,10 @@ Start with `README.md` for usage, `docs/architecture.md` for the design,
 Storage and capture (Phases 0 and 1), the relation graph, the judge
 experiment, production admission, and the lifecycle, coverage, and
 attribution hardening are implemented. Do not confuse planned harness
-integrations with shipped adapters: `adapters/` implements Droid only. omp
-is the second harness: its payloads are recorded and its adapter is not
-built. The wider harness roster includes MCP-only use and future hook work.
+integrations with shipped adapters: `adapters/` implements Factory Droid
+(hooks + transcript) and omp (`adapters/omp/` TypeScript extension
+feeding `mem records`). The wider harness roster includes MCP-only use
+and future hook work.
 
 ## Guides for each part
 
@@ -28,7 +29,7 @@ that. Read the guide yourself in these cases:
 | Before you | Read |
 | --- | --- |
 | change code under `src/agent_memory/` | `src/agent_memory/AGENTS.md`: schema, export, Quack, redaction, the rows every writer shares, approval, recall, relations, model calls |
-| change `adapters/` or `hooks.py`, or what a Droid hook records | `src/agent_memory/adapters/AGENTS.md` |
+| change `adapters/`, `hooks.py`, or `extension.py`, or what Droid or omp records | `src/agent_memory/adapters/AGENTS.md` |
 | change `capture/`, `mem event`, `mem records`, `mem ingest`, or the spool | `src/agent_memory/capture/AGENTS.md` |
 | add an MCP tool or change a tool's inputs | `src/agent_memory/mcp_server/AGENTS.md` |
 | change `judge/` or its Go labeling helper, or run a `mem judge` command | `src/agent_memory/judge/AGENTS.md` |
@@ -61,11 +62,13 @@ uv run mem smoke
 ```
 
 The Go labeling helper has checks of its own, listed in
-`src/agent_memory/judge/AGENTS.md`. CI (`.github/workflows/ci.yml`) runs
-both lists on every pull request and on every push to `main`: Ruff and
-Pyrefly once, the tests and `mem smoke` on Linux and on macOS with the
-Python that `.python-version` names, and the Go checks once. When a command
-in either list changes, change it there too.
+`src/agent_memory/judge/AGENTS.md`, and the omp TypeScript extension has
+its own tests (`bun test src/agent_memory/adapters/omp/omp.test.ts`). CI
+(`.github/workflows/ci.yml`) runs all three lists on every pull request
+and on every push to `main`: Ruff and Pyrefly once, the tests and
+`mem smoke` on Linux and on macOS with the Python that `.python-version`
+names, the Go checks once, and the omp extension tests once. When a
+command in any list changes, change it there too.
 
 Use `uv run ruff format <changed-files>` to format only files you touched.
 Ruff targets Python 3.12 with a 100-character line limit. Follow the existing
@@ -93,7 +96,7 @@ All runtime paths below are under `src/agent_memory/`.
 | `lifecycle.py` | Shared append-only memory writes, correction proposals, bounded due work | `test_lifecycle` |
 | `audit.py` | Read-only `mem audit check` diagnostics, legacy replacement reconstruction | `test_audit_check` |
 | `review.py` | `mem review`: the memories awaiting approval, and a human's approval or retirement of one | `test_review` |
-| `hooks.py` | `mem hooks`: mem's capture command in Droid's hooks file, written, checked, and taken out, with every other hook left as it is | `test_hooks` |
+| `hooks.py`, `extension.py` | `mem hooks`: mem's capture command in Droid's hooks file; `mem extension`: mem's capture extension in omp's extensions directory, installed, checked, and removed with everything else left alone | `test_hooks`, `test_omp_extension` |
 | `endpoints.py` | The HTTP transport to model servers and the opt-in check for sending data off-machine | `test_endpoints` |
 | `model_call.py` | A model call that must return a JSON object: its attempts, the three model servers, latency and cost over every attempt | `test_model_call` |
 | `adapters/`, `capture/` | Harness input to records, records taken from an extension, redaction, blobs, idempotent writes, spool/replay, capture identity, the session and event rows every writer shares, observed coverage, attribution | `test_adapters`, `test_capture`, `test_writer`, `test_spool`, `test_record_stream`, `test_capture_identity`, `test_ledger_session`, `test_observed_capture`, `test_answer_bindings`, `test_audit_persistence` |
@@ -104,7 +107,8 @@ All runtime paths below are under `src/agent_memory/`.
 | `cli.py`, `smoke.py` | Typer entry point and end-to-end check | `test_cli`, `test_cli_capture` |
 
 Test names in the table refer to `tests/<name>.py`. The Go helper's own
-tests sit beside its sources in `judge/label_ui/`.
+tests sit beside its sources in `judge/label_ui/`, and the omp
+extension's tests sit beside its sources in `adapters/omp/`.
 Entry points are `mem` (`agent_memory.cli:main`) and `mem-mcp`
 (`agent_memory.mcp_server:main`).
 

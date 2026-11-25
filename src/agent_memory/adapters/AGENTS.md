@@ -1,8 +1,9 @@
-# Working on harness adapters and `mem hooks`
+# Working on harness adapters, `mem hooks`, and `mem extension`
 
-This guide applies to changes under `adapters/` and to `hooks.py`, on top
-of the root `AGENTS.md` and `src/agent_memory/AGENTS.md`. How records
-reach the ledger is in `src/agent_memory/capture/AGENTS.md`. The spec is
+This guide applies to changes under `adapters/`, `hooks.py`, and
+`extension.py`, on top of the root `AGENTS.md` and
+`src/agent_memory/AGENTS.md`. How records reach the ledger is in
+`src/agent_memory/capture/AGENTS.md`. The spec is
 `docs/phase-1-spec.md`. Paths here are relative to `src/agent_memory/`
 unless they start with `docs/` or `tests/`.
 
@@ -41,3 +42,17 @@ unless they start with `docs/` or `tests/`.
   command. The file is written in one step, and one that is not in
   Droid's format is refused. Test `mem hooks` with `--file` in a
   temporary directory, never against `~/.factory/hooks.json`.
+- For omp (`adapters/omp/`), the TypeScript extension runs inside omp's
+  embedded Bun runtime with zero external npm dependencies and cannot
+  import `@oh-my-pi/*` at runtime. Keep redaction, ids, spool, and
+  delivery in `mem records`, never duplicated in TypeScript. Every hook
+  handler must return synchronously without waiting for `mem` or the
+  ledger; keep the `mem records` child unref'd, track in-flight pipe
+  bytes through write callbacks (Bun leaves `writableLength` at 0), and
+  report a missing, dead, or stalled `mem` once.
+- `mem extension` owns only `<dir>/agent-memory/` (marked by
+  `managed_by: "agent-memory"` in `config.json`), refuses foreign
+  directories or unexpected user files, and leaves every other file in
+  omp's folders untouched. Test `mem extension` with `--dir` in a
+  temporary directory, never against `~/.omp/`. Run the extension's
+  tests with `bun test src/agent_memory/adapters/omp/omp.test.ts`.
