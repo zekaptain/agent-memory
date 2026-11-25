@@ -23,14 +23,15 @@ experiment](judge-experiment-spec.md), and [admission](admission-spec.md).
 |------------------|------|-----------------------|-------------------------------------------------------------|
 | Factory Droid    | A    | `hooks.json` + MCP    | Prompts, notifications, and session boundaries from hooks in real time; replies, tool calls, and compactions from the transcript file hooks point at, imported by the same hook command when a turn or the session ends. |
 | Mistral Vibe     | A    | `hooks.toml` + MCP    | Tool hooks in real time; prompts and replies from the transcript file. No session or compaction hooks. |
-| oh-my-pi (omp)   | A    | TypeScript hooks + MCP | Complete: every message, turn, tool, and compaction event, in process. |
+| oh-my-pi (omp)   | A    | TypeScript extension + MCP | Planned. An extension is handed every message, tool call, and compaction in omp's process, as recorded on 2026-11-24. A session stopped by a signal or a time limit raises no stop event. |
 | Amp              | B    | plugin API + MCP      | Complete per turn (`agent.end` carries every message); no compaction or session-end events. Threads also live server-side. |
 | JetBrains Junie  | C    | MCP only              | Only what the agent logs through MCP tools. Sessions are `capture_completeness = 'partial'`. |
 
 The tier is stored on `agents` and describes capability, not observed
 coverage. Only the Droid adapter is shipped (hook payloads and transcript
-import), and it is the only one checked against real payloads; the rest of
-the table describes planned integrations.
+import). omp's payloads were recorded on 2026-11-24 and its adapter is
+not built. The rest of the table describes integrations known from
+documentation alone.
 `capture_observations` supplies bounded coverage evidence.
 `session_summary` keeps recorded completeness separate from observed coverage.
 Any registered agent can use the `mem-mcp` tools today. The adapters still

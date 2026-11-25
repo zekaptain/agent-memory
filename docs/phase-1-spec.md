@@ -35,8 +35,7 @@ the same redaction, blob handling, id derivation, insert, and spool code.
 - `mem ingest --harness <id> --transcript <path>`: converts a transcript
   file into capture records. For a session that no hook captured.
 - `mem ingest --spool`: reads capture records already written to `spool/`
-  (by `mem event` during an outage, or by in-process extensions for omp and
-  Amp) and writes them to the ledger.
+  (by `mem event` during an outage) and writes them to the ledger.
 
 Both commands exit 0 whenever every record was kept somewhere: in the
 ledger, in the spool, or under `spool/failed/` for a record the ledger
@@ -214,8 +213,9 @@ Layout: `spool/<agent_id>/<harness_session_id>.jsonl`, appended with
   a reimported transcript, is kept there once.
 - `mem spool retry` moves every kept line back to the spool. Nothing
   retries a rejected record on its own.
-- `mem ingest --spool` is also what omp and Amp extensions call at turn end
-  (Phase 2); in Phase 1 the spool is tested with hand-written records.
+- In Phase 1 the spool is tested with hand-written records. No extension
+  writes to it: the one planned for omp hands its records to a `mem`
+  process (see "Phase 2" in [roadmap.md](roadmap.md#phases)).
 - `mem serve` runs `mem ingest --spool` logic once at startup, so an outage
   drains itself as soon as the server is back.
 
@@ -258,8 +258,11 @@ synthetic tests.
 **Vibe**: no adapter. One written from Vibe's documentation was removed;
 see "The Vibe adapter is removed" under "As built".
 
-**omp, Amp**: no transcript adapter; their extensions write capture records
-directly (Phase 2). `mem ingest --spool` is the whole integration.
+**omp**: no adapter yet. An extension is planned, written from what omp
+was recorded handing one; see "What omp hands an extension" under "As
+built".
+
+**Amp**: none.
 
 **Junie**: none.
 
@@ -1923,3 +1926,320 @@ Tests: `tests/test_record_stream.py`. They run the command as a process
 written to through a pipe where the timing matters: delivery while the
 input is open, a server that comes back between a tool call and its
 result, and the signals.
+### What omp hands an extension (2026-11-24)
+
+omp (oh-my-pi) runs no hook commands. It loads TypeScript modules,
+which it calls extensions, into its own process, and an extension
+registers a function for each hook event it wants to be called at. No
+adapter for omp exists, and what this document and the roadmap said of
+omp until now came from its documentation. An adapter is written from
+recorded payloads. So omp 19.1.1 was run 22 times with no interface on
+macOS: 19 times in print mode (`-p`), once with `--mode json`, and
+twice with `--mode rpc`, where a script wrote commands to omp's stdin.
+
+Each run had a scratch folder of its own and a scratch home directory,
+so omp read and wrote nothing of a person's configuration or sessions.
+The model was a local one, `gemma4:26b` served by Ollama, and every
+prompt was written for the run. One extension, loaded for these runs
+only (`-e <path>`), registered a function for each of 52 hook-event
+names taken from omp's source. At every call it appended a line to a
+log: the payload, and what the function's second argument, which omp
+calls the context, said of the session. omp accepted all 52 names and
+raised 29 of them. No ledger took part.
+
+What follows was read from those logs, from the transcripts omp wrote,
+and from omp's stderr. A statement that rests on omp's source and not
+on a run says so. An event is one in the ledger, as everywhere in this
+document, and what omp calls an event is a hook event here.
+
+**The hook events of one prompt.** In print mode a prompt that needed
+no tool raised these, in this order, and omp then exited with code 0:
+
+| hook event | payload, beside `type` |
+|---|---|
+| `session_start` | nothing |
+| `before_agent_start` | `reason` (`prompt`), `prompt`, `images`, `systemPrompt` |
+| `agent_start` | nothing |
+| `context` | the messages the model is about to be given |
+| `turn_start` | `turnIndex`, `timestamp` |
+| `message_start` | `message`: the prompt, with the role `user` |
+| `before_provider_request` | `payload`: the request |
+| `message_end` | `message`: the prompt again |
+| `after_provider_response` | `status`, `headers`, `requestId`, `metadata` |
+| `message_start`, `message_update` many times, `assistant_message`, `message_end` | `message`: the reply, with the role `assistant` |
+| `turn_end` | `turnIndex`, `message`, `toolResults` |
+| `session_stop` | `session_id`, `session_file`, `turn_id`, `messages`, `last_assistant_message`, `stop_hook_active`, `signal` |
+| `agent_end` | `messages` |
+| `session_shutdown` | nothing |
+
+A reply that asks for a tool goes on differently after
+`assistant_message`:
+
+| hook event | payload, beside `type` |
+|---|---|
+| `tool_call` | `toolName`, `toolCallId`, `input` |
+| `message_end` | `message`: the reply, whose `stopReason` is `toolUse` |
+| `tool_execution_start` | `toolCallId`, `toolName`, `args`, `intent` |
+| `tool_execution_update`, any number of times | `toolCallId`, `toolName`, `args`, `partialResult` |
+| `tool_result` | `toolName`, `toolCallId`, `input`, `content`, `details`, `isError` |
+| `tool_execution_end` | `toolCallId`, `toolName`, `result`, `isError` |
+| `message_start`, `message_end` | `message`: the result, with the role `toolResult` |
+| `turn_end` | as above, with the results in `toolResults` |
+
+`context` and `turn_start` follow, with the next `turnIndex`, and the
+model is called again.
+
+- What omp calls a turn is one call of the model and the results of
+  the tools it asked for. `turnIndex` starts at 0 with every prompt. A
+  turn as this ledger means it runs from `before_agent_start` to
+  `session_stop`, whose `turn_id` is the last `turnIndex`.
+- In RPC mode `input` (`text`, `images`, and a `source` of `rpc`) comes
+  before `before_agent_start`. Print mode did not raise it.
+- `--mode json` raised what print mode raised.
+
+**What identifies a thing.**
+
+- A message carries no id, whatever its role:
+
+  | role | fields |
+  |---|---|
+  | `user` | `content`, `attribution`, `timestamp` |
+  | `assistant` | `content`, `responseId`, `stopReason`, `usage`, `model`, `provider`, `api`, `timestamp`, `duration`, and nine more |
+  | `toolResult` | `toolCallId`, `toolName`, `content`, `details`, `isError`, `timestamp`, `providerMetadata` |
+  | `custom` | `customType`, `content`, `details`, `display`, `attribution`, `timestamp` |
+
+- A tool call has an id, which read `call_<8 characters>|fc_<number>_0`
+  with this model server. The same id is in `tool_call`, in the three
+  `tool_execution` hook events, in `tool_result`, in the reply's
+  content (a block with `type` `toolCall`, `id`, `name`, and
+  `arguments`), and in the `toolResult` message.
+- An entry of the transcript has an id of eight hexadecimal digits and
+  a `parentId`. No payload carries either. The context's
+  `sessionManager` gives them: `getSessionId()`, `getSessionFile()`,
+  `getEntries()`, and `getLeafId()` answered at every hook event. A
+  prompt's entry is the last one from its `message_start` on, and a
+  tool result's from its `message_start` on. A reply's entry is there
+  at `tool_execution_start` when the reply asked for a tool, and at
+  `turn_end` when it did not; at the reply's own `message_end` it is
+  not there yet.
+- Only `session_stop` and `session.compacting` name the session in
+  their payload. At every other hook event the session's id comes from
+  the context.
+- The context also holds `cwd`, `mode` (`print`, `json`, or `rpc`),
+  `hasUI` (false in every run), `model` (`provider` and `id`), and
+  `agent`, which is `{kind: main, id: Main, name: main, depth: 0}` in
+  the session a person started.
+- A session's id is a UUID that begins with the time. Two sessions made
+  within a second share their first eight characters and more.
+
+**A session's id.**
+
+| what was done | hook events | the session after it |
+|---|---|---|
+| `-c`: go on with the folder's last session | `session_start` | the same id and file |
+| `-r <id>`, also from another folder | `session_start` | the same id and file |
+| a compaction | see below | the same id and file |
+| RPC `new_session` | `session_before_switch`, `session_switch`, with `reason` `new` | a new id, a file of two entries |
+| RPC `fork` | the same two, with `reason` `fork` | a new id |
+| RPC `fork` at an entry | `session_before_branch`, `session_branch`, with `reason` `fork` | a new id |
+| RPC `branch` at an entry | the same two, with `reason` `branch` | a new id |
+| RPC `switch_session` to an earlier file | `session_before_switch`, `session_switch`, with `reason` `resume` | the earlier id and file |
+
+- `session_start` was raised once in each process, when omp had loaded
+  the extension, and never after a switch or a branch. Its payload is
+  empty. Nothing in it says that a session was resumed: a new session
+  has two entries then, and the two resumed ones had 16 and 10.
+- The hook event before a change runs with the session that is left in
+  the context, and the one after it with the new session.
+  `session_switch` and `session_branch` carry `previousSessionFile`.
+  `session_before_switch` carries `targetSessionFile` when a session is
+  resumed, and `session_before_branch` carries `entryId`.
+- A fork and a branch copy. The new transcript begins with the entries
+  of the one it came from, under the same entry ids: all of them after
+  a fork, and those before the prompt after a branch at a prompt. Its
+  first line names what it came from (`parentSession`: a file, or after
+  a fork with no entry a session id).
+- omp refused a branch at an entry that is no prompt ("Invalid entry ID
+  for branching").
+- `/clear` sent as a prompt in RPC mode reached the model as text. No
+  RPC command clears a session, and `session_clear` was not raised.
+
+**A compaction.** RPC `compact` on a session of three prompts did
+nothing until `compaction.keepRecentTokens` was set to 20 in the
+scratch configuration. Then omp raised `session_before_compact`
+(`preparation`, `branchEntries`, `customInstructions`, `signal`) and
+`session.compacting` (`sessionId`, `messages`), each twice, and
+`session_compact` once. That one carries `fromExtension` and
+`compactionEntry`: `id`, `parentId`, `timestamp`, `summary`,
+`shortSummary`, `firstKeptEntryId`, `tokensBefore`, `tokensAfter`,
+`method`, and six more. The entry is in the transcript under that id,
+with the type `compaction`. The session kept its id and file, and the
+next `context` began with a message whose role is `compactionSummary`.
+
+**A spawned session.** omp's `task` tool starts one.
+
+- It runs in omp's own process. omp calls the extension's entry
+  function again for each spawned session, in the module it has already
+  loaded: what the module holds is shared by every session of the
+  process, and a function is told which session it serves only by its
+  context.
+- The spawned session has an id of its own and a transcript beside its
+  caller's, at `<the caller's file without .jsonl>/<agent id>.jsonl`,
+  whose first line names the caller's file (`parentSession`). Its
+  context's `agent` reads `{kind: sub, id: <the name the calling agent
+  gave the task>, name: task, depth: 1, parentId: Main}`. One spawned
+  session started another, whose id is `<caller's id>.<name>` at depth
+  2.
+- `before_subagent_spawn` (`agent`, `invocationKind`, `modelRole`,
+  `patterns`, `spawnKey`) is raised in the caller's session, before the
+  entry function runs again.
+- The `task` call returns at once, and the caller's `agent_end` then
+  carries `willContinue` and `awaitingAsyncWork`, both true. Print mode
+  exited at that point: the spawned session had raised `session_start`
+  and `before_agent_start` and was given `session_shutdown`, its model
+  was never called, and the caller raised no `session_stop`.
+- With `--wait-async` the spawned session ran to its end. The caller
+  then got a message with the role `custom` (`customType`
+  `async-result`), raised `agent_start` to `agent_end` a second time,
+  and raised `session_stop` before that second `agent_end`.
+  `session_shutdown` was raised for each of the three sessions, the
+  spawned ones first.
+- A spawned session raised no `session_stop`. Its work on a prompt ends
+  at `agent_end`.
+
+**A tool of an MCP server.** A server declared in `.omp/mcp.json` of
+the working folder gave omp one tool, which the agent called.
+
+- The call and its result are hook events like any other tool's. The
+  tool's name is `mcp__<server>_<tool>`, and `details` of the result
+  holds `serverName`, `mcpToolName`, `rawContent`, and `provider`.
+- omp tells the server nothing of the session. The server's process has
+  omp's environment and working directory, and neither there, nor in
+  `initialize`, nor in the `_meta` of a `tools/call` (a `progressToken`
+  alone) is a session id. omp's source sets `PI_SESSION_ID` for its
+  `bash` tool only. So `AGENT_MEMORY_SESSION` cannot name the omp
+  session that a `mem-mcp` process serves.
+- omp started the server twice. The first process got `server/discover`
+  and `initialize` and then the end of its stdin; the second served the
+  session.
+
+**How a session with no interface ends.** In each row but the first two
+the agent was in a `bash` call of `sleep 30` when it was stopped.
+
+| what ended it | hook events from then on | `session_stop` | exit code |
+|---|---|---|---|
+| print mode, the reply given | `session_stop`, `agent_end`, `session_shutdown` | raised | 0 |
+| RPC mode, stdin closed | `session_shutdown` | raised at the end of each prompt before | 0 |
+| `--max-time 4` | `tool_result` with "Command aborted", `turn_end`, `agent_end`, `session_shutdown` | not raised | 0, with nothing on stdout |
+| SIGINT, SIGTERM, or SIGHUP | `session_shutdown` first, then `tool_result` with "Command aborted", `turn_end`, a reply with `stopReason` `aborted`, `turn_end` | not raised, and no `agent_end` | 130, 143, 129 |
+| SIGKILL | none | not raised | not recorded |
+
+- After a signal `session_shutdown` is the first hook event and not
+  the last: ten more came within 6 ms of it, and omp exited about 1.3
+  s after the signal. On SIGTERM and SIGHUP omp printed on stderr how
+  to resume the session, with its id.
+- `session_shutdown` was raised in every run but the one that was
+  killed. `session_stop` was raised only where a prompt ran to its
+  reply and no spawned session was still at work.
+
+**A function that throws or takes long.**
+
+- A function that threw at `turn_start` cost the session nothing. omp
+  printed "Extension error (<path>): <message>" on stderr, went on,
+  and exited 0.
+- A function at `session_shutdown` has 2 s. Work it started ran at 0.5
+  and at 1.5 s and not at 3.5 s; omp printed "handler timed out after
+  2000ms" and exited 0.
+- A function at `tool_call` that slept 35 s was cut off after 30 s, and
+  omp then failed the tool call: the tool did not run, the agent got
+  "Extension <path> timed out after 30000ms" as an error result, and
+  no `tool_result` was raised. So omp waits for a function at
+  `tool_call`, and one that is slow there holds up the agent and then
+  breaks the call.
+- A function at `tool_call` that returns `{block: true, reason}`
+  refuses the call, and the agent gets the reason as an error result.
+  The recording extension kept every tool inside the scratch folder
+  that way.
+
+**A child process kept for the session.** The extension started a child
+process when it was loaded (`/bin/sh -c cat`, writing to a file), wrote
+it a line at every hook event, and closed its stdin at
+`session_shutdown`. All 39 lines of that session arrived, and the child
+exited with code 0 a millisecond after its stdin closed, well inside
+the 2 s.
+
+**What an extension can reach.**
+
+- omp hands the entry function one object. Among its functions are
+  `on`, `exec`, `appendEntry`, `registerTool`, `registerCommand`,
+  `registerFlag`, `sendMessage`, `sendUserMessage`, and
+  `setSessionName`. Its `pi` property holds omp's own module, whose
+  `VERSION` read `19.1.1`: omp's version, which no payload carries.
+- An extension loaded by path could not import
+  `@oh-my-pi/pi-coding-agent` or `@oh-my-pi/pi-utils` ("Cannot find
+  package"), so it has omp's types only when it is built, not when it
+  runs.
+- The extension runs in the Bun that omp's binary embeds, 1.4.4, with
+  Node's `fs` and `child_process`.
+- From omp's source, not seen in a run: omp finds extensions in
+  `.omp/extensions/` of the working folder and in
+  `~/.omp/agent/extensions/`. What a function returns at
+  `before_agent_start` can add a message and replace the system prompt,
+  and what it returns at `context` replaces the messages. What it
+  returns at `session_start` and `turn_start` is not used.
+
+**The transcript.** omp writes a session to
+`~/.omp/agent/sessions/--<the folder's path with dashes>--/<time>_<id>.jsonl`.
+Its format is version 3. A first line holds the title when there is
+one, the next the session (`version`, `id`, `timestamp`, `cwd`, and
+`parentSession` where it has one), and every later line is an entry
+with `id` and `parentId`. The types seen were `model_change`,
+`thinking_level_change`, `service_tier_change`, `session_init`,
+`custom`, `custom_message`, `message`, `model_usage`, and
+`compaction`. No extension is needed to read it, and nothing here
+reads it.
+
+**Never raised in these runs:** `resources_discover`, `session_clear`,
+`session_before_shutdown`, `session_before_tree`, `session_tree`,
+`auto_compaction_start`, `auto_compaction_end`, `auto_retry_start`,
+`auto_retry_end`, `retry_fallback_applied`, `retry_fallback_succeeded`,
+`ttsr_triggered`, `todo_reminder`, `goal_updated`,
+`credential_disabled`, `tool_approval_requested`,
+`tool_approval_resolved`, `plan_review_requested`,
+`plan_review_resolved`, `mode_changed`, `user_bash`, `user_python`, and
+`mcp_notification`.
+
+Not checked: omp in a terminal, where a person types, and with it
+`/clear`, the session tree, a tool that waits for approval (every run
+had `--auto-approve`), and a second prompt typed while the first runs;
+an automatic compaction; a retry; a model that is not on this machine,
+and the ids its provider gives a tool call and a reply; an extension
+that omp finds in a folder and is not given by `-e`; a child process
+kept through a session of hours; whether a function can read a
+transcript's first line; Linux; any other version of omp. Between
+17.0.0 and 19.1.1 omp had about 180 releases, of which its changelog
+names seven that changed what an extension is given.
+
+**What an adapter for omp has to allow for.** None of this is built.
+
+- A source key cannot be a message's id. A tool call and its result
+  have the call's id. A prompt, a reply, and a compaction have the id
+  of their transcript entry, which the context gives and the payload
+  does not, and a reply's entry is not there at its own `message_end`.
+- The outcome of a turn is at `session_stop` only where the prompt ran
+  to its reply. After a signal or a time limit, and in a spawned
+  session, a turn has to be closed from `agent_end` or
+  `session_shutdown`, and after a signal `session_shutdown` comes
+  before the last events of the turn.
+- A session that goes on, a new one, a fork, and a branch are told
+  apart by `session_switch` and `session_branch`, and by the session's
+  id in the context, not by `session_start`. A fork's copied entries
+  are in the session they came from already.
+- No function may wait for the ledger. At `tool_call` a wait holds up
+  the agent, and 30 s of it fail the call; at `session_shutdown` 2 s
+  are all there is.
+- One process holds several sessions, so what the extension keeps
+  between hook events is kept by session id.
+- A recall the agent makes through `mem-mcp` is tied to its omp session
+  by the tool call's hook events, which name the tool and carry its
+  result, and not by the server's environment.

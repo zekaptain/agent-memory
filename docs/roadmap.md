@@ -7,7 +7,7 @@ still undecided. The design of what is built is in
 
 ## Status
 
-As of 2026-11-23.
+As of 2026-11-24.
 
 | Work | State | Where it is specified |
 |------|-------|-----------------------|
@@ -15,7 +15,7 @@ As of 2026-11-23.
 | Phase 0.5: trial of ai-memory | Not started | below |
 | Phase 1a: capture path | Done | [phase-1-spec.md](phase-1-spec.md) |
 | Phase 1b: in-session tools | Done | [phase-1-spec.md](phase-1-spec.md) |
-| Phase 2: harness adapters | Droid hooks and transcript import are built and checked against real payloads. Vibe, omp, and Amp have no adapter; one for Vibe, written from its documentation, was removed on 2026-11-11. `mem hooks install` writes Droid's hooks, and sessions in a running Droid have been captured through them since 2026-11-12. | below |
+| Phase 2: harness adapters | Droid hooks and transcript import are built and checked against real payloads. Vibe, omp, and Amp have no adapter; one for Vibe, written from its documentation, was removed on 2026-11-11. `mem hooks install` writes Droid's hooks, and sessions in a running Droid have been captured through them since 2026-11-12. omp is the second harness: what it hands an extension was recorded on 2026-11-24, and its adapter is approved and not built. | below |
 | Phase 3: audit tooling | Not started. `mem audit check` exists, but as a preflight for migrations, not as the commands below. | below |
 | Phase 4: memory quality | Partly built: the relation graph's first step and lesson admission (migration 0007). | below, [admission-spec.md](admission-spec.md) |
 | Phase 5: Markdown projection | Not started | below |
@@ -78,6 +78,24 @@ person) was checked with MEM-14 on 2026-11-23: Droid gives it to the
 agent. MEM-5 is approved once the user agrees to a read of the
 production home.
 
+Approved on 2026-11-24: capture of omp sessions, through a TypeScript
+extension that hands capture records to `mem` (see "Phase 2" below).
+The user chose omp that day as the harness capture is to serve best.
+In order:
+
+1. MEM-36: record what omp hands an extension across a session. Done
+   on 2026-11-24; see "What omp hands an extension" in
+   [phase-1-spec.md](phase-1-spec.md).
+2. MEM-38: `mem` takes capture records from a harness extension on its
+   stdin, through the redaction, ids, spool, and delivery every record
+   goes through. What a record looks like on that path is written into
+   [phase-1-spec.md](phase-1-spec.md) before the extension is.
+3. MEM-37: the extension, which `mem` can install, report on, and
+   remove.
+
+This is built beside the usefulness experiment, whose first run waits
+for the user's go-ahead.
+
 ## Phases
 
 The phases that are done are described in
@@ -106,26 +124,41 @@ harness exposes (see "Verified harness behavior" below):
   from the transcript. Only the Droid half is built.
   What is said of Vibe here and in the table below comes from its
   documentation, not from a payload it sent.
-- *In-process extension + spool* (omp, Amp). A TypeScript module subscribes to
-  the lifecycle events, appends JSONL to `spool/`, and runs `mem ingest` at
-  turn end and shutdown. Writing a file keeps the agent loop unblocked and
-  survives a server outage. omp delivers everything including compaction;
-  Amp delivers every message per turn but no compaction or session-end
-  signal, so Amp sessions stay `partial` until that gap is closed or shown
-  not to matter.
+- *In-process extension* (omp). A TypeScript module registers a function
+  at the harness's hook events and turns what it is handed into capture
+  records. It writes them as JSON lines to one `mem` process, which it
+  starts and keeps for as long as omp runs, and it never waits for an
+  answer: omp fails a tool call whose function takes 30 s, and gives a
+  function two seconds when it shuts down. Redaction, ids, the spool,
+  and delivery stay in `mem`, so the extension needs no library and
+  holds no rule of the ledger. Decided on 2026-11-24 over two other
+  shapes. An extension that appends to `spool/` itself would have to
+  redact, and to know a spool file's format, in a second language. A
+  DuckDB client inside the extension would load a native library into
+  omp's process and make a second writer of the ledger's rules. omp
+  hands an extension every message, tool call, and compaction, with
+  the gaps the table below lists. Not built: MEM-38 is the `mem` side
+  and MEM-37 the extension. Amp has a plugin interface of the same
+  kind, by its documentation: every message of a turn, and no
+  compaction or session-end signal. Nothing of Amp is recorded or
+  planned.
 
 Junie through MCP alone, marked partial. Redaction and `capture_error`
 events live in `mem event` and `mem ingest`, so all adapters get them.
 
-*One harness with an adapter.* Decided on 2026-11-11: Droid is the one
-harness with an adapter until another harness is in daily use. A second
-adapter is written from payloads and transcripts recorded from that
-harness, as Droid's was corrected from its own.
+*Which harnesses have an adapter.* Decided on 2026-11-11: Droid is the
+one harness with an adapter until another harness is in daily use. A
+second adapter is written from payloads and transcripts recorded from
+that harness, as Droid's was corrected from its own. Decided by the
+user on 2026-11-24: the second harness is omp, and omp is the harness
+capture is to serve best. Droid stays supported as it is, with what
+"Known defects" says of it. omp's payloads were recorded that day (see
+"Verified harness behavior").
 
-The next candidate is the runtime of OpenRouter's Ori, which was looked
-at as a way to capture several harnesses at once (Ori 0.15.6, its help
-and its local stores; no session was run). Ori uses "harness" for two
-things:
+Until then the next candidate was the runtime of OpenRouter's Ori, which
+was looked at as a way to capture several harnesses at once (Ori 0.15.6,
+its help and its local stores; no session was run). Ori uses "harness"
+for two things:
 
 - A *launcher* (`ori droid`, `ori pi`, and 15 more) starts the harness's
   own CLI with OpenRouter models and credentials and passes its
@@ -227,11 +260,28 @@ only the user saw, and the text of a tool result", and "What a terminal
 and a `SessionStart` hook's stdout showed" in
 [phase-1-spec.md](phase-1-spec.md).
 
+omp was checked against real payloads on 2026-11-24: version 19.1.1, in
+22 runs with no interface and a local model, recorded by an extension.
+An extension is handed every prompt, reply, tool call, tool result, and
+compaction in omp's own process. No message carries an id. A tool call
+does, and so does a transcript entry, which the extension reads from
+the session and not from the payload. `session_start` is raised once in
+a process and says nothing of a resume. A new session, a fork, and a
+branch in a running omp raise `session_switch` or `session_branch`.
+`session_stop` closes a prompt that ran to its reply. It is not raised
+after a signal or a time limit, nor in a spawned session, which runs in
+its caller's process with an id and a transcript of its own. omp waits
+for a function at `tool_call`, and fails the call when the function
+takes 30 s. It tells an MCP server nothing of the session that calls
+it. Not checked: omp in a terminal, an automatic compaction, and a
+model that is not on this machine. See "What omp hands an extension" in
+[phase-1-spec.md](phase-1-spec.md).
+
 | Harness | Events | Payload | Gaps for capture |
 |---------|--------|---------|------------------|
 | Droid (`~/.factory/hooks.json`) | `SessionStart` (`source`: startup, resume, clear, compact), `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PreCompact`, `Stop`, `SubagentStop`, `Notification`, `SessionEnd` | JSON on stdin: `session_id`, `transcript_path`, `cwd`, `permission_mode`, `hook_event_name`, `message_id`; tool hooks add `tool_name`, `tool_input`, `tool_response`; `SubagentStop` adds `task_name`, `task_result`; a `SessionStart` after `/clear` in a terminal adds `previous_session_id`. Default timeout 60 s. | No hook carries the assistant reply; read the transcript. `SessionStart` repeats per resume and compaction. No hook command runs to its end when Droid exits in a terminal. |
 | Vibe (`~/.vibe/hooks.toml`) | `pre_tool`, `post_tool`, `post_agent` | JSON on stdin: `session_id`, `parent_session_id`, `transcript_path`, `cwd`, `hook_event_name`; tool hooks add `tool_name`, `tool_call_id`, `tool_input`, `tool_status`, `tool_output`, `tool_output_text`, `tool_error`. Default timeout 60 s. | No prompt, session, or compaction hooks; `post_agent` carries no text. Project-level hooks load only in trusted folders. Plugin-declared hooks do not run yet. |
-| omp (`~/.omp/agent/hooks/{pre,post}/*.ts`) | `session_start`, `session_switch`, `session_compact`, `session_shutdown`, `agent_start`, `agent_end`, `turn_start`, `turn_end`, `message_start`, `message_end`, `tool_call`, `tool_result`, `tool_execution_*`, `tool_approval_*`, `auto_compaction_*`, `session_stop` | Typed in-process payloads with full message text, tool inputs and results, compaction entries, `session_file`. | None material. Skip the high-volume `message_update` and `tool_execution_update`. |
+| omp (an extension: a TypeScript module given with `-e`, or found in `~/.omp/agent/extensions/` or `.omp/extensions/` by omp's source) | Raised on 2026-11-24: `session_start`, `session_before_switch`, `session_switch`, `session_before_branch`, `session_branch`, `session_before_compact`, `session.compacting`, `session_compact`, `session_stop`, `session_shutdown`, `input`, `before_agent_start`, `agent_start`, `agent_end`, `context`, `turn_start`, `turn_end`, `message_start`, `message_update`, `message_end`, `assistant_message`, `before_provider_request`, `after_provider_response`, `tool_call`, `tool_result`, `tool_execution_start`, `tool_execution_update`, `tool_execution_end`, `before_subagent_spawn`. Registered and not raised: 23 more, among them `session_clear`, `auto_compaction_*`, and `tool_approval_*`. | In process, as values: whole messages, tool inputs and results, the compaction's entry; the session's id, file, and entries from the function's context. A function has 30 s, and 2 s at `session_shutdown`. | No message carries an id. `session_start` once in a process, and none after a switch or a branch. No `session_stop` after a signal or a time limit, or in a spawned session. A slow function at `tool_call` fails the call. An MCP server is told nothing of the session. Not checked in a terminal. |
 | Amp (`.amp/plugins/*.ts`) | `session.start`, `agent.start`, `tool.call`, `tool.result`, `agent.end` | In-process: thread id, prompt and message id on `agent.start`; `toolUseID`, `tool`, `input`, `status`, `output` on tool events; every `ThreadMessage` of the turn on `agent.end`. | No compaction or session-end event; `onDispose` runs on unload for about 3 s. |
 | Junie | none | MCP tools only | Everything except what the agent chooses to log. |
 
@@ -796,8 +846,9 @@ experiment.
   `user_msg`.
 - Keep `mem event` from loading what capture does not use, which would
   about halve a hook's start-up.
-- An adapter for Ori's runtime, as the second harness (see "One harness
-  with an adapter" under Phase 2).
+- An adapter for Ori's runtime. It was the candidate for the second
+  harness until the user chose omp on 2026-11-24 (see "Which harnesses
+  have an adapter" under Phase 2).
 - Build `mem why` and `mem session` (Phase 3) as recorded reads, each a
   new strategy for the recall path.
 - Run the memory usefulness experiment.
@@ -941,6 +992,34 @@ Proposed on 2026-11-23, with the decision that events stay
   recall's query), and what it shows a human of the rows that refer to
   a blanked one.
 
+Proposed on 2026-11-24, with the choice of omp. None is approved:
+
+- A runtime in TypeScript: the ledger's server, capture, and recall
+  written again for omp and DuckDB 2.0, in place of the Python package
+  or beside it (MEM-33, MEM-34, and MEM-35, with MEM-32 as the check
+  that comes before them). It was planned before the extension was
+  chosen, and is kept to return to once omp capture works. To settle
+  before any of it is approved: which process owns the database file,
+  where today `mem serve` does and every client goes through Quack and
+  its authorization hook; what becomes of admission, the judge, and
+  Droid capture, which are Python; an estimate made from the code; and
+  a record under `docs/adr/`, because it is hard to reverse. Checked
+  on 2026-11-24: DuckDB's Node client 2.0.1 loads under Bun 1.4.5 and
+  Node 25.9.0, installs `fts` and `quack`, and reads a `VARIANT`. Not
+  checked: the client inside omp's binary, a TypeScript client of a
+  running `mem serve`, and a 2.0.1 client on a file that 2.0.0 wrote.
+- Memories in the context of an omp session when it starts. By omp's
+  source, what a function returns at `before_agent_start` can add a
+  message; that was not seen in a run. It waits with MEM-7 for the
+  number MEM-5 reports.
+- Memory tools that the extension registers in omp, where `mem-mcp`
+  serves omp today. A tool in omp's process knows the session that
+  calls it, which omp tells no MCP server.
+- The judge and admission reading omp sessions: an author for each
+  message, the outcome of a turn, and the evidence attribution needs.
+- An import of omp's transcripts, for the sessions from before the
+  extension was installed. MEM-37 captures from then on.
+
 ## Open decisions
 
 - Should `mem admit review` and `mem judge label` take their answers
@@ -956,6 +1035,9 @@ Proposed on 2026-11-23, with the decision that events stay
   wanted?
 - May a run be relabeled after a freeze? Should `--freeze` also ask for
   every judge's verdicts on the calibration items?
+- Does the usefulness experiment run in Droid, in omp, or in both? The
+  plan of its build starts with Droid run with no interface, and omp
+  is now the harness capture is to serve best.
 - Do Phases 0.5, 3, and 5 stay on this roadmap?
 - What happens to `example-memory-db-schema.sql` and the prototype branch?
 - What would Phase 5 be for? Anthropic reports that a wiki beside a
