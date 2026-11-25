@@ -9,9 +9,13 @@ from uuid import uuid4
 import duckdb
 import pytest
 
+from agent_memory import db
 from agent_memory.capture.pipeline import deliver, replay_spool
+from agent_memory.capture.record import Record, SessionInfo, now
+from agent_memory.capture.redact import Redactor
 from agent_memory.capture.spool import Spool
-from agent_memory.db import AgentMemoryError, MemoryClient, MemoryServer
+from agent_memory.capture.writer import Writer
+from agent_memory.db import AgentMemoryError, MemoryClient, MemoryServer, sql_literal
 from agent_memory.lifecycle import maintain_corrections
 from agent_memory.mcp_server.tools import MemoryTools, ToolError
 from agent_memory.review import reviewer
@@ -258,13 +262,15 @@ def test_concurrent_acceptance_has_one_winner(tools, live_cfg, monkeypatch):
     old = tools.remember("original", "fact")["memory_id"]
     barrier = Barrier(2)
     insert = MemoryClient.insert
+    held: set[int] = set()
 
     def synchronized(client, rows):
         pairs = list(rows.items()) if isinstance(rows, dict) else list(rows)
-        if any(
+        if id(client) not in held and any(
             table == "memories" and any(r.get("supersedes") == old for r in rs)
             for table, rs in pairs
         ):
+            held.add(id(client))
             barrier.wait(timeout=10)
         return insert(client, pairs)
 
@@ -527,3 +533,239 @@ def test_replay_dependencies_across_interleaved_session_files(down_cfg):
         first.close()
         second.close()
         server.stop()
+
+
+def test_eight_concurrent_remember_calls_all_land_and_are_recalled(live_cfg):
+    scope = f"concurrent-remember-{uuid4()}"
+    count = 8
+    barrier = Barrier(count)
+
+    def write(index: int) -> tuple[dict, list[str]]:
+        tool = MemoryTools(
+            live_cfg, "factory-droid", project=scope, harness_session_id=str(uuid4())
+        )
+        try:
+            tool._client_or_raise()
+            token = f"quartztoken{index}z"
+            barrier.wait(timeout=10)
+            written = tool.remember(f"note {token} from agent {index}", "fact", scope=scope)
+            # Recall immediately after the write must find the memory when written directly.
+            found = [item["memory_id"] for item in tool.recall(token, scopes=[scope])["items"]]
+            return written, found
+        finally:
+            tool.close()
+
+    with ThreadPoolExecutor(max_workers=count) as pool:
+        results = list(pool.map(write, range(count)))
+
+    assert all(not r["queued"] for r, _ in results)
+    for written, found in results:
+        assert written["memory_id"] in found
+
+    checker = MemoryTools(live_cfg, "factory-droid", project=scope, harness_session_id=str(uuid4()))
+    try:
+        _, rows = checker._client_or_raise().query(
+            f"SELECT count(*) FROM memories WHERE scope = {sql_literal(scope)}"
+        )
+        assert rows[0][0] == count
+    finally:
+        checker.close()
+
+
+def test_retry_after_transaction_conflict_deduplicates_to_committed_memory(live_cfg, monkeypatch):
+    scope = f"conflict-dedupe-{uuid4()}"
+    text = f"shared fact basaltword {uuid4()}"
+    winner = MemoryTools(live_cfg, "factory-droid", project=scope, harness_session_id=str(uuid4()))
+    loser = MemoryTools(live_cfg, "factory-droid", project=scope, harness_session_id=str(uuid4()))
+    try:
+        winner._client_or_raise()
+        loser_client = loser._client_or_raise()
+        real_insert = MemoryClient.insert
+        committed: list[dict] = []
+
+        def lose_first_insert(client, rows):
+            pairs = list(rows.items()) if isinstance(rows, dict) else list(rows)
+            if client is loser_client and not committed and any(t == "memories" for t, _ in pairs):
+                committed.append(winner.remember(text, "fact", scope=scope))
+                raise duckdb.TransactionException("TransactionContext Error: Conflict on update!")
+            return real_insert(client, pairs)
+
+        monkeypatch.setattr(MemoryClient, "insert", lose_first_insert)
+        second = loser.remember(text, "fact", scope=scope)
+
+        assert len(committed) == 1
+        first = committed[0]
+        assert not first["queued"]
+        assert not first["deduplicated"]
+        assert not second["queued"]
+        assert second["deduplicated"]
+        assert second["memory_id"] == first["memory_id"]
+        _, rows = winner._client_or_raise().query(
+            f"SELECT count(*) FROM memories WHERE scope = {sql_literal(scope)}"
+        )
+        assert rows[0][0] == 1
+        found = [item["memory_id"] for item in winner.recall("basaltword", scopes=[scope])["items"]]
+        assert found == [first["memory_id"]]
+    finally:
+        winner.close()
+        loser.close()
+
+
+def test_unresolvable_transaction_conflict_queues_instead_of_refusing(live_cfg, monkeypatch):
+    scope = f"conflict-queue-{uuid4()}"
+    tool = MemoryTools(live_cfg, "factory-droid", project=scope, harness_session_id=str(uuid4()))
+    try:
+        tool._client_or_raise()
+        monkeypatch.setattr(db, "CONFLICT_RETRIES", 0)
+
+        def always_conflict(_client, _rows):
+            raise duckdb.TransactionException("TransactionContext Error: Conflict on update!")
+
+        with monkeypatch.context() as mp:
+            mp.setattr(MemoryClient, "insert", always_conflict)
+            rem = tool.remember("queued under contention feldspar", "fact", scope=scope)
+            rel = tool.relate("alpha-svc", "calls", "beta-svc", scope=scope)
+
+        assert rem["queued"] is True
+        assert rel["queued"] is True
+        replayed = replay_spool(live_cfg)
+        assert replayed.failed_lines == 0
+        assert rem["memory_id"] in {
+            item["memory_id"] for item in tool.recall("feldspar", scopes=[scope])["items"]
+        }
+        assert rel["memory_id"] in {
+            item["memory_id"] for item in tool.graph("alpha-svc", scopes=[scope])["items"]
+        }
+    finally:
+        tool.close()
+
+
+def test_eight_concurrent_relate_calls_all_land_and_are_recalled(live_cfg):
+    scope = f"concurrent-relate-{uuid4()}"
+    count = 8
+    barrier = Barrier(count)
+
+    def write(index: int) -> dict:
+        tool = MemoryTools(
+            live_cfg, "factory-droid", project=scope, harness_session_id=str(uuid4())
+        )
+        try:
+            tool._client_or_raise()
+            barrier.wait(timeout=10)
+            return tool.relate(f"worker{index}", "reads", f"bucket{index}", scope=scope)
+        finally:
+            tool.close()
+
+    with ThreadPoolExecutor(max_workers=count) as pool:
+        results = list(pool.map(write, range(count)))
+
+    assert all(not r["queued"] for r in results)
+    checker = MemoryTools(live_cfg, "factory-droid", project=scope, harness_session_id=str(uuid4()))
+    try:
+        for index, written in enumerate(results):
+            found = [
+                item["memory_id"]
+                for item in checker.recall(f"bucket{index}", scopes=[scope])["items"]
+            ]
+            assert written["memory_id"] in found
+            assert checker.graph(f"worker{index}", scopes=[scope])["items"]
+    finally:
+        checker.close()
+
+
+def test_concurrent_queued_memory_replays_all_land(live_cfg):
+    scope = f"concurrent-replay-{uuid4()}"
+    count = 8
+    barrier = Barrier(count)
+
+    def write(index: int):
+        with MemoryClient.from_config(live_cfg) as client:
+            token = f"replaytoken{index}q"
+            record = Record(
+                agent_id="factory-droid",
+                harness_session_id=f"{scope}-{index}",
+                kind="memory_write",
+                ts=now(),
+                source_key=f"queued-{index}",
+                content=f"queued lesson {token}",
+                session=SessionInfo(project=scope),
+                memory={
+                    "content": f"queued lesson {token}",
+                    "type": "fact",
+                    "scope": scope,
+                    "key": None,
+                    "confidence": 0.7,
+                    "importance": 0.5,
+                    "trust_level": "agent",
+                    "supersedes": None,
+                    "metadata": None,
+                },
+            )
+            barrier.wait(timeout=10)
+            return Writer(client, live_cfg.blob_dir, Redactor()).write([record]), token
+
+    with ThreadPoolExecutor(max_workers=count) as pool:
+        results = list(pool.map(write, range(count)))
+
+    assert all(wr.memories == 1 and not wr.rejected for wr, _ in results)
+    checker = MemoryTools(live_cfg, "factory-droid", project=scope, harness_session_id=str(uuid4()))
+    try:
+        for _, token in results:
+            assert checker.recall(token, scopes=[scope])["items"]
+    finally:
+        checker.close()
+
+
+def test_concurrent_entity_merges_and_remembers_all_land(live_cfg):
+    scope = f"concurrent-merge-{uuid4()}"
+    merges = 4
+    remembers = 4
+    setup = MemoryTools(live_cfg, "factory-droid", project=scope, harness_session_id=str(uuid4()))
+    try:
+        for index in range(merges):
+            setup.relate(f"alias{index}", "depends_on", f"core{index}", scope=scope)
+    finally:
+        setup.close()
+
+    barrier = Barrier(merges + remembers)
+
+    def run_merge(index: int) -> dict:
+        tool = MemoryTools(
+            live_cfg, "factory-droid", project=scope, harness_session_id=str(uuid4())
+        )
+        try:
+            tool._client_or_raise()
+            barrier.wait(timeout=10)
+            return tool.merge_entity(f"alias{index}", f"canonical{index}", "rename", scopes=[scope])
+        finally:
+            tool.close()
+
+    def run_remember(index: int) -> tuple[dict, str]:
+        tool = MemoryTools(
+            live_cfg, "factory-droid", project=scope, harness_session_id=str(uuid4())
+        )
+        try:
+            tool._client_or_raise()
+            token = f"alongsidemerge{index}x"
+            barrier.wait(timeout=10)
+            return tool.remember(f"fact {token}", "fact", scope=scope), token
+        finally:
+            tool.close()
+
+    with ThreadPoolExecutor(max_workers=merges + remembers) as pool:
+        merge_futs = [pool.submit(run_merge, i) for i in range(merges)]
+        rem_futs = [pool.submit(run_remember, i) for i in range(remembers)]
+        merge_results = [f.result() for f in merge_futs]
+        rem_results = [f.result() for f in rem_futs]
+
+    assert all(not r["degraded"] and len(r["superseded"]) == 1 for r in merge_results)
+    assert all(not r["queued"] for r, _ in rem_results)
+    checker = MemoryTools(live_cfg, "factory-droid", project=scope, harness_session_id=str(uuid4()))
+    try:
+        for index in range(merges):
+            assert checker.graph(f"canonical{index}", scopes=[scope])["items"]
+        for written, token in rem_results:
+            found = [item["memory_id"] for item in checker.recall(token, scopes=[scope])["items"]]
+            assert written["memory_id"] in found
+    finally:
+        checker.close()

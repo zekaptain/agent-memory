@@ -10,7 +10,7 @@ from ..capture.pipeline import make_redactor
 from ..capture.record import SessionInfo
 from ..capture.session import LedgerSession, Observed, event_row
 from ..config import Config
-from ..db import MemoryClient, sql_literal
+from ..db import MemoryClient, retrying, sql_literal
 from ..judge.verdict import Verdict
 from ..lifecycle import HUMAN_AGENT, LifecyclePlan, stable_id
 
@@ -87,21 +87,6 @@ def admit(
     eid = ids.event_id(record.agent_id, record.harness_session_id, record.kind, record.source_key)
     with MemoryClient.from_config(cfg) as client:
         session.open(client, redactor)
-        rows: list[tuple[str, list[dict[str, Any]]]] = []
-        if not client.query(f"SELECT 1 FROM events WHERE event_id = {sql_literal(eid)}")[1]:
-            event = event_row(
-                cfg.blob_dir,
-                sid,
-                eid,
-                record.kind,
-                record.content,
-                record.payload,
-                ts=record.ts,
-                seq=record.seq,
-                redactions=record.redactions,
-            )
-            rows.append(("events", [event]))
-        plan = LifecyclePlan(client)
         content, _ = redactor.text(draft["rule"])
         lesson, _ = redactor.value({"kind": draft["kind"], "claims": draft["claims"]})
         clean_metadata, _ = redactor.value(metadata)
@@ -112,45 +97,67 @@ def admit(
             for entry in item["sidecar"]
             if entry["n"] in cited and entry.get("event_id")
         )
-        mid, duplicate = plan.remember(
-            {
-                "memory_id": stable_id(
-                    human_action["action_id"] if human_action and replace_memory_id else eid,
-                    "memory",
-                ),
-                "scope": item.get("project") or "global",
-                "type": MEMORY_TYPES[draft["kind"]],
-                "content": content,
-                "content_hash": blobs.content_hash(content),
-                "confidence": result["score"],
-                "trust_level": "tool",
-                "created_by_session": sid,
-                "metadata": {"lesson": lesson, "admission": clean_metadata},
-            },
-            event_id=eid,
-            actor=HUMAN_AGENT if human_action else ADMISSION_AGENT,
-            deduplicate=replace_memory_id is None,
-            sources=[
-                {"event_id": source, "relation": "derived_from"} for source in sorted(sources)
-            ],
-        )
-        if human_action is not None or (auto and result["action"] == "write"):
-            action = human_action or {
-                "action_id": stable_id(eid, "approve"),
-                "action": "approve",
-                "reason": f"approver {result['approver_version']} score {result['score']:.6f}",
-            }
-            plan.review(
+
+        def attempt() -> tuple[str, bool]:
+            rows: list[tuple[str, list[dict[str, Any]]]] = []
+            if not client.query(f"SELECT 1 FROM events WHERE event_id = {sql_literal(eid)}")[1]:
+                event = event_row(
+                    cfg.blob_dir,
+                    sid,
+                    eid,
+                    record.kind,
+                    record.content,
+                    record.payload,
+                    ts=record.ts,
+                    seq=record.seq,
+                    redactions=record.redactions,
+                )
+                rows.append(("events", [event]))
+            plan = LifecyclePlan(client)
+            mid, duplicate = plan.remember(
                 {
-                    **action,
-                    "memory_id": mid,
-                    "actor": HUMAN_AGENT if human_action else ADMISSION_AGENT,
-                    "session_id": sid,
-                    "event_id": eid,
-                    "related_memory_id": replace_memory_id,
-                }
+                    "memory_id": stable_id(
+                        human_action["action_id"] if human_action and replace_memory_id else eid,
+                        "memory",
+                    ),
+                    "scope": item.get("project") or "global",
+                    "type": MEMORY_TYPES[draft["kind"]],
+                    "content": content,
+                    "content_hash": blobs.content_hash(content),
+                    "confidence": result["score"],
+                    "trust_level": "tool",
+                    "created_by_session": sid,
+                    "metadata": {"lesson": lesson, "admission": clean_metadata},
+                },
+                event_id=eid,
+                actor=HUMAN_AGENT if human_action else ADMISSION_AGENT,
+                deduplicate=replace_memory_id is None,
+                sources=[
+                    {"event_id": source, "relation": "derived_from"} for source in sorted(sources)
+                ],
             )
-        client.insert([*rows, *plan.rows])
+            if human_action is not None or (auto and result["action"] == "write"):
+                action = human_action or {
+                    "action_id": stable_id(eid, "approve"),
+                    "action": "approve",
+                    "reason": (
+                        f"approver {result['approver_version']} score {result['score']:.6f}"
+                    ),
+                }
+                plan.review(
+                    {
+                        **action,
+                        "memory_id": mid,
+                        "actor": HUMAN_AGENT if human_action else ADMISSION_AGENT,
+                        "session_id": sid,
+                        "event_id": eid,
+                        "related_memory_id": replace_memory_id,
+                    }
+                )
+            client.insert([*rows, *plan.rows])
+            return mid, duplicate
+
+        mid, duplicate = retrying(attempt)
     return {**result, "memory_id": mid, "duplicate": duplicate, "event_id": eid}
 
 
@@ -158,10 +165,14 @@ def review_memory(cfg: Config, memory_id: str, action: dict[str, Any]) -> str:
     """Apply a human action using its stable review identity."""
     clean, _ = make_redactor(cfg).value(action)
     with MemoryClient.from_config(cfg) as client:
-        plan = LifecyclePlan(client)
-        mid = plan.review({**clean, "memory_id": memory_id, "actor": HUMAN_AGENT})
-        client.insert(plan.rows)
-    return mid
+
+        def attempt() -> str:
+            plan = LifecyclePlan(client)
+            mid = plan.review({**clean, "memory_id": memory_id, "actor": HUMAN_AGENT})
+            client.insert(plan.rows)
+            return mid
+
+        return retrying(attempt)
 
 
 def terminal_memory(cfg: Config, memory_id: str) -> bool:

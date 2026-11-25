@@ -13,7 +13,7 @@ from typing import Any
 from ..capture import blobs
 from ..capture.record import parse_ts
 from ..capture.redact import Redactor
-from ..db import MemoryClient
+from ..db import MemoryClient, retrying
 from ..lifecycle import LifecyclePlan, maintain_corrections, stable_id
 from .model import Relation, normalize_entity
 from .sql import ROW, relations_sql, sources_sql
@@ -83,87 +83,91 @@ def apply_merge(
     caller owns the session. Returns the relations superseded and retired, with the event's
     id when there were any. Nothing is written when no relation mentions the alias.
     """
-    maintain_corrections(client)
-    _, rows = client.query(relations_sql(merge.scopes, [merge.alias_norm]))
-    old: list[tuple[dict[str, Any], Relation, Relation | None]] = []
-    for row in rows:
-        record = dict(zip(ROW, row, strict=True))
-        relation = Relation.from_metadata(json.loads(record["metadata"]))
-        if relation is None:
-            continue
-        ends = {relation.subject_norm, relation.object_norm}
-        # Renamed, a relation between the two names would point an entity at itself.
-        renamed = (
-            None
-            if ends == {merge.alias_norm, merge.canonical_norm}
-            else relation.renamed(merge.alias_norm, merge.canonical, merge.canonical_type)
-        )
-        old.append((record, relation, renamed))
-    done: dict[str, Any] = {"superseded": [], "retired": []}
-    if not old:
+
+    def attempt() -> dict[str, Any]:
+        maintain_corrections(client)
+        _, rows = client.query(relations_sql(merge.scopes, [merge.alias_norm]))
+        old: list[tuple[dict[str, Any], Relation, Relation | None]] = []
+        for row in rows:
+            record = dict(zip(ROW, row, strict=True))
+            relation = Relation.from_metadata(json.loads(record["metadata"]))
+            if relation is None:
+                continue
+            ends = {relation.subject_norm, relation.object_norm}
+            # Renamed, a relation between the two names would point an entity at itself.
+            renamed = (
+                None
+                if ends == {merge.alias_norm, merge.canonical_norm}
+                else relation.renamed(merge.alias_norm, merge.canonical, merge.canonical_type)
+            )
+            old.append((record, relation, renamed))
+        done: dict[str, Any] = {"superseded": [], "retired": []}
+        if not old:
+            return done
+        _, source_rows = client.query(sources_sql([rec["memory_id"] for rec, _, _ in old]))
+        sources: dict[str, list[tuple[str, str]]] = defaultdict(list)
+        for mid, eid, rel in source_rows:
+            sources[str(mid)].append((str(eid), str(rel)))
+        event = write_event(f"merge entity {merge.alias} into {merge.canonical}", merge.request)
+        session_id, event_id = event["session_id"], event["event_id"]
+        plan = LifecyclePlan(client)
+
+        def retire(mid: str, into: str | None) -> None:
+            plan.review(
+                {
+                    "action_id": stable_id(event_id, f"merge-retire:{mid}"),
+                    "memory_id": mid,
+                    "action": "retire",
+                    "actor": merge.actor,
+                    "session_id": session_id,
+                    "event_id": event_id,
+                    "related_memory_id": into,
+                    "reason": merge.reason,
+                }
+            )
+            done["retired"].append({"memory_id": mid, "into": into})
+
+        for record, relation, renamed in old:
+            mid = record["memory_id"]
+            if renamed is None:
+                retire(mid, None)
+                continue
+            content = redactor.text(_rename_in_text(record["content"], relation, renamed))[0]
+            target, duplicate = plan.remember(
+                {
+                    "memory_id": client.new_ids()[0],
+                    "scope": redactor.text(record["scope"])[0],
+                    "type": record["type"],
+                    "key": renamed.key,
+                    "content": content,
+                    "content_hash": blobs.content_hash(content),
+                    "confidence": float(record["confidence"]),
+                    "importance": float(record["importance"]),
+                    "trust_level": record["trust_level"],
+                    "supersedes": mid,
+                    "valid_from": _ts(record["valid_from"]),
+                    "valid_to": _ts(record["valid_to"]),
+                    "expires_at": _ts(record["expires_at"]),
+                    "created_by_session": session_id,
+                    "metadata": redactor.value(renamed.metadata())[0],
+                },
+                event_id=event_id,
+                actor=merge.actor,
+                carry_approval_from=mid,
+                sources=[
+                    {"event_id": event_id, "relation": "derived_from"},
+                    *({"event_id": eid, "relation": rel} for eid, rel in sources[mid]),
+                ],
+            )
+            if duplicate:
+                retire(mid, target)
+            else:
+                done["superseded"].append({"memory_id": mid, "by": target, "key": renamed.key})
+        client.insert([("events", [event]), *plan.rows])
+        done["event_id"] = event_id
         return done
-    _, source_rows = client.query(sources_sql([rec["memory_id"] for rec, _, _ in old]))
-    sources: dict[str, list[tuple[str, str]]] = defaultdict(list)
-    for mid, eid, rel in source_rows:
-        sources[str(mid)].append((str(eid), str(rel)))
-    event = write_event(f"merge entity {merge.alias} into {merge.canonical}", merge.request)
-    session_id, event_id = event["session_id"], event["event_id"]
-    plan = LifecyclePlan(client)
 
-    def retire(mid: str, into: str | None) -> None:
-        plan.review(
-            {
-                "action_id": stable_id(event_id, f"merge-retire:{mid}"),
-                "memory_id": mid,
-                "action": "retire",
-                "actor": merge.actor,
-                "session_id": session_id,
-                "event_id": event_id,
-                "related_memory_id": into,
-                "reason": merge.reason,
-            }
-        )
-        done["retired"].append({"memory_id": mid, "into": into})
-
-    for record, relation, renamed in old:
-        mid = record["memory_id"]
-        if renamed is None:
-            retire(mid, None)
-            continue
-        content = redactor.text(_rename_in_text(record["content"], relation, renamed))[0]
-        target, duplicate = plan.remember(
-            {
-                "memory_id": client.new_ids()[0],
-                "scope": redactor.text(record["scope"])[0],
-                "type": record["type"],
-                "key": renamed.key,
-                "content": content,
-                "content_hash": blobs.content_hash(content),
-                "confidence": float(record["confidence"]),
-                "importance": float(record["importance"]),
-                "trust_level": record["trust_level"],
-                "supersedes": mid,
-                "valid_from": _ts(record["valid_from"]),
-                "valid_to": _ts(record["valid_to"]),
-                "expires_at": _ts(record["expires_at"]),
-                "created_by_session": session_id,
-                "metadata": redactor.value(renamed.metadata())[0],
-            },
-            event_id=event_id,
-            actor=merge.actor,
-            carry_approval_from=mid,
-            sources=[
-                {"event_id": event_id, "relation": "derived_from"},
-                *({"event_id": eid, "relation": rel} for eid, rel in sources[mid]),
-            ],
-        )
-        if duplicate:
-            retire(mid, target)
-        else:
-            done["superseded"].append({"memory_id": mid, "by": target, "key": renamed.key})
-    client.insert([("events", [event]), *plan.rows])
-    done["event_id"] = event_id
-    return done
+    return retrying(attempt)
 
 
 def _rename_in_text(content: str, old: Relation, new: Relation) -> str:
