@@ -56,6 +56,15 @@ def test_spool_layout_and_status(tmp_path):
     assert spool.purge_done(30) == [done]
 
 
+@pytest.mark.parametrize("name", [".", ".."])
+def test_a_name_made_of_dots_stays_inside_the_spool(tmp_path, name):
+    spool = Spool(tmp_path / "home" / "spool")
+    (waiting,) = spool.append([rec("s-1", "a", agent_id=name)])
+    assert waiting == spool.root / "_" / "s-1.jsonl"
+    assert spool.write_failed(name, "s-1", ["{}"]) == spool.failed_dir / "_" / "s-1.jsonl"
+    assert [f.path for f in spool.pending()] == [waiting]
+
+
 def test_deliver_spools_when_the_server_is_down(down_cfg):
     delivery = deliver(
         down_cfg, [rec("d-1", "a", content="token ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij0123")]

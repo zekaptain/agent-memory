@@ -25,7 +25,9 @@ DONE_KEEP_DAYS = 30.0
 
 
 def _safe(name: str) -> str:
-    return _SAFE.sub("_", name)[:200] or "_"
+    # A name of only dots would be the directory itself or the one above it.
+    name = _SAFE.sub("_", name)[:200]
+    return name if name.strip(".") else "_"
 
 
 @contextmanager
