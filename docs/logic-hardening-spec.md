@@ -102,9 +102,10 @@ when more than four writers collided at once.
 - `db.retrying` retries `TransactionException` up to 16 times with
   capped randomized backoff (from 15 ms up to 250 ms) and duplicate-key
   `ConstraintException` up to 3 times. Each attempt re-reads the ledger
-  and rebuilds `LifecyclePlan`, so concurrent identical writes
-  deduplicate to one memory and concurrent competing corrections still
-  settle to one winner and a stale-correction error.
+  and rebuilds `LifecyclePlan`, so a writer retrying after a conflict
+  sees whatever committed ahead of it (deduplicating an identical memory
+  rather than inserting a second copy, while competing corrections still
+  settle to one winner and a stale-correction error).
 - Every memory writer shares `db.retrying`: MCP `remember`, `relate`,
   and `review`, `graph.apply_merge` (`merge_entity`), admission
   (`admit` and `review_memory`), capture/replay (`Writer.write` and
