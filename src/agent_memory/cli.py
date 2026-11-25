@@ -1,6 +1,8 @@
 """The `mem` command."""
 
+import contextlib
 import json
+import os
 import signal
 import sys
 import threading
@@ -18,6 +20,7 @@ from .adapters import HARNESS_NAMES, UnsupportedTranscript, get_adapter
 from .admission.cli import admit_app
 from .capture.pipeline import IMPORT_DEADLINE, Delivery, catch_up, deliver, replay_spool
 from .capture.spool import DONE_KEEP_DAYS, Spool
+from .capture.stream import RecordStream
 from .config import Config, ConfigError, RootOptions, command_config
 from .db import (
     EXPORT_KEEP,
@@ -387,6 +390,46 @@ def event(
     except Exception as exc:
         raise _hook_failure(f"transcript not imported: {type(exc).__name__}: {exc}") from None
     _report_delivery(delivery, transcript.name, summary=False)
+
+
+@app.command()
+def records(
+    ctx: typer.Context,
+    spool_only: Annotated[
+        bool, typer.Option("--spool-only", help="Write to the spool without trying the server.")
+    ] = False,
+) -> None:
+    """Take capture records from stdin, one JSON object per line, until stdin closes.
+
+    Made to be kept running by a harness extension, which writes a line for each record
+    and waits for no answer. Records are delivered while stdin is open. Prints nothing on
+    stdout and reports problems on stderr. Exits 0 when every line was kept somewhere (the
+    ledger, the spool, or spool/failed/) and 1 when one could not be kept anywhere.
+
+    A signal meant for the harness reaches this command too, while the harness still has
+    records to hand over. So an interrupt or a hangup is ignored unless stdin is a
+    terminal, and the command ends when stdin does. SIGTERM spools what is held and exits.
+    """
+    cfg = command_config(ctx)
+
+    def report(message: str) -> None:
+        # The extension that started this may have stopped reading stderr.
+        with contextlib.suppress(OSError):
+            print(f"mem records: {message}", file=sys.stderr, flush=True)
+
+    stream = RecordStream(cfg, spool_only=spool_only, report=report)
+    stdin = sys.stdin.fileno()
+    handlers: dict[int, Any] = {signal.SIGTERM: lambda *_: stream.stop()}
+    if not os.isatty(stdin):
+        handlers |= {signal.SIGINT: signal.SIG_IGN, signal.SIGHUP: signal.SIG_IGN}
+    previous = {number: signal.signal(number, handler) for number, handler in handlers.items()}
+    try:
+        taken = stream.run(stdin)
+    finally:
+        for number, handler in previous.items():
+            signal.signal(number, handler)
+    if taken.lost:
+        raise typer.Exit(1)
 
 
 @app.command()

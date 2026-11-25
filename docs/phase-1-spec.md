@@ -50,6 +50,13 @@ unreadable or nothing could be kept, and never 2, which a harness reads as
 an instruction to block the agent; usage errors exit 1 as well.
 `mem ingest` prints a summary on stdout and exits 2 on a usage error.
 
+`mem records` takes capture records themselves, one JSON object per line
+on stdin, for as long as stdin stays open. It is for a harness that runs
+no hook commands and loads an extension into its own process: the
+extension writes a line for each record and waits for no answer. It
+prints nothing on stdout. See "Capture records from an extension" under
+"As built".
+
 ### Capture record (schema v1)
 
 JSON object, one per line in the spool:
@@ -88,6 +95,32 @@ Rules:
   `mem event --keep-raw`. A record that has one keeps it, redacted, under
   `payload.raw`. No later step is told to keep it or drop it, so a record
   that waits in the spool keeps it too.
+
+Every field of version 1. A line without `v` is read as version 1, and a
+line of another version is refused. A field that is absent is null.
+
+| field | type | notes |
+|---|---|---|
+| `agent_id` | text, required | a row of `agents`; a record of an agent the ledger does not know is rejected |
+| `harness_session_id` | text, required | the harness's own id of the session |
+| `kind` | text, required | one of the seeded `event_kinds` |
+| `ts` | required | ISO 8601 with `Z` or an offset, or a number of seconds or of milliseconds since 1970; a time without an offset is read as UTC |
+| `source_key` | text, required | as in the rules above |
+| `role` | text | when absent, the role its kind implies |
+| `content` | text | |
+| `payload` | object | |
+| `parent_key` | text | as in the rules above |
+| `parent_kind` | text | the kind of the record `parent_key` names; required with `parent_key` unless the kind implies it, as `tool_result` implies `tool_call` |
+| `seq` | integer | 0 when absent |
+| `session` | object | `cwd`, `model`, `harness_version`, `project`, `started_at`, `scope`, and `metadata`, an object |
+| `raw` | object | as in the rules above |
+| `observation` | object | the capture observation of the pass that read the record; a record without one is observed by itself, or by the pass that delivers it |
+| `attribution` | object | kept under `payload.capture_attribution` |
+| `memory`, `action` | object | the memory or the review action to create when the record is written; `mem-mcp` sets them on what it queues while the server is down |
+| `redactions` | integer | redactions already made in the record |
+
+A record is the same wherever it comes from: an adapter, a line of the
+spool, or a line on the stdin of `mem records`.
 
 ### Deterministic ids
 
@@ -263,6 +296,7 @@ harness events are never silently lost.
 
 ```
 mem event  --harness droid [--spool-only] [--keep-raw] [--record-pre-tool]
+mem records [--spool-only]   # capture records on stdin, one object per line
 mem ingest --harness droid --transcript PATH [--since-key KEY] [--include-thinking]
            [--spool-only]
 mem ingest --spool [--purge-done DAYS]
@@ -1786,3 +1820,106 @@ come from Droid's log.
 What stays wrong is in [roadmap.md](roadmap.md#known-defects). The
 regression is `test_a_session_that_clear_started_has_one_start` in
 `tests/test_capture_identity.py`.
+
+### Capture records from an extension (2026-11-24)
+
+omp runs no hook commands. It calls an extension inside its own process
+(what it hands one was recorded for MEM-36), and an extension is
+TypeScript, while the rules for redaction, ids, the spool, and delivery
+are Python. Writing them a second time in the extension would give two
+copies to keep alike. So the extension is to make capture records and
+hand them, as lines, to a `mem` process that it starts once and keeps:
+`mem records` (MEM-38). No extension exists yet (MEM-37), and omp has
+not run this command.
+
+It is a command of its own and not a mode of `mem ingest`. `mem ingest`
+prints a summary on stdout, gives a write 300 s, and ends when its
+input is read. `mem records` stays for a session or for several, gives
+the ledger a hook's deadline, and is silent.
+
+- **Input.** One capture record per line, in the format of "Capture
+  record (schema v1)". Empty lines are passed over, and a last line
+  without a newline is a line. Bytes that are not UTF-8 are replaced,
+  not refused.
+- **Passes.** The command waits for a line, takes the lines that follow
+  within 0.5 s, at most 500, and delivers them as one batch, as `mem
+  event` delivers what a hook brought: to the ledger if it takes them
+  within the deadline (2 s, `AGENT_MEMORY_DEADLINE`), else to the
+  spool. Redaction, ids, blobs, and rejection are those of every
+  delivery. Each pass opens a connection of its own.
+- **Capture observations.** A record that brings no observation would
+  be observed by itself, which is a row of `capture_observations` for
+  every event of a session. A pass therefore gives the first record of
+  each session it read one observation of all it read of that session:
+  mode `record`, the first and the last source key as its cursors, the
+  earliest and the latest time as what it covers, the exclusion
+  `no_complete_capture_evidence`, and what the records said of their
+  session, a later record's word over an earlier one's. If any record
+  of the session brings an observation, the pass adds none. The
+  observation is part of the record, so it is the same after the spool.
+- **Order.** An event is not rewritten when its parent arrives, so a
+  tool result written before its call is never linked to it. Once a
+  pass has left records in the spool, each later pass adds its records
+  to the spool too and then replays the spool, which writes all that
+  waits as one batch. It goes back to writing to the ledger when
+  nothing it spooled is still pending. The replay is the one `mem
+  ingest --spool` makes: every pending file, another agent's included.
+  A delivery that gave up at its deadline may still be writing when
+  the replay writes the same records, which the ids make safe.
+- **A line that is not a capture record.** What is kept of it goes
+  under `spool/failed/`: its JSON, redacted, or only its hash when it
+  is not JSON. A capture error records it in the session the line
+  names, or else in the session of the record read before it. A line
+  with neither is kept in `spool/failed/unknown/records.jsonl` and
+  reported on stderr, since no session can show it. The lines after it
+  are taken as before.
+- **An agent the ledger does not know.** The record is rejected and
+  kept under `spool/failed/<agent_id>/`, and the rest of the pass is
+  written. No capture error records it, at this command or at a
+  replay: an event belongs to a session, and a session to an agent the
+  ledger knows. The spool names a directory after the agent, and until
+  this change a name of only dots was used as it stood, so the records
+  of an agent called `..` waited outside the spool, where no replay
+  looks. Such a name is now `_`.
+- **The end of input.** What is still held is delivered in what is left
+  of one deadline, counted from the moment the input ended, and spooled
+  after that. The command exits 0 when every line was kept somewhere
+  and 1 when one could not be kept anywhere.
+- **Signals.** A terminal sends an interrupt to every process of the
+  foreground group, so one meant for the harness reaches this command
+  while the harness still has records to hand over. `SIGINT` and
+  `SIGHUP` are ignored unless stdin is a terminal, and the command ends
+  when stdin does. `SIGTERM` spools what is held and exits 0.
+- **stderr.** A line when the ledger is first not reached, a line when
+  the spool has been replayed, and a line for each line that is not a
+  record, each rejection, and each line that could not be kept. A
+  failure to write to stderr is ignored, since the extension may not
+  read it.
+
+Measured on 2026-11-24 on macOS with a throwaway home and server, the
+lines written by a script and not by omp:
+
+| | |
+|---|---|
+| start of the command to its first event in the ledger | 0.9 s |
+| a line written to the running command, to its event in the ledger | 0.57 s, of which 0.5 s is the wait for more lines |
+| 3,000 lines written at once | 1.5 s, in six passes |
+| one line of 2 MiB | 0.7 s |
+| end of input to exit, 20 lines still held | 0.13 s |
+
+What it does not do:
+
+- The lines of a pass are held in memory until they are delivered. A
+  command that is killed outright loses them, which is at most the 0.5 s
+  of lines it waited for and those of the delivery under way.
+- A line the extension wrote and the command had not read when
+  `SIGTERM` came is not kept.
+- Lines that arrive faster than the ledger takes them wait in memory
+  without a bound.
+- The replay it starts has no deadline. A pass waits for it no longer
+  than its own deadline and spools, and the replay goes on.
+
+Tests: `tests/test_record_stream.py`. They run the command as a process
+written to through a pipe where the timing matters: delivery while the
+input is open, a server that comes back between a tool call and its
+result, and the signals.

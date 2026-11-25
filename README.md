@@ -219,6 +219,16 @@ problems on stderr. It exits 0 once every record is kept somewhere and 1
 when nothing could be kept. It never exits 2, which a harness reads as an
 instruction to block the agent.
 
+### Capture from an extension
+
+A harness such as oh-my-pi runs no hook commands. It loads an extension
+into its own process. `mem records` is the command such an extension
+keeps running: it takes capture records on stdin, one JSON object per
+line, and delivers them while stdin stays open, with the same redaction,
+ids, and spool as every other capture. It prints nothing on stdout. No
+extension uses it yet. The record format and the command's behavior are
+in the [capture spec](docs/phase-1-spec.md).
+
 ### Recover queued records
 
 If the server is down, capture saves records under `spool/` instead.

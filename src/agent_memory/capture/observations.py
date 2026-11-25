@@ -6,7 +6,7 @@ import hashlib
 import json
 import uuid
 from collections.abc import Iterable, Sequence
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from typing import Any
 
 from ..db import MemoryClient, sql_literal
@@ -96,6 +96,39 @@ def observation_rows(
         )
         found[oid] = {"observation_id": oid, **row}
     return list(found.values())
+
+
+def covering(records: Sequence[Record]) -> dict[str, Any]:
+    """The observation of a capture pass that read these records of one session, in this
+    order, and has no evidence that it read all of the session. What the records say of
+    their session is kept, a later record's word over an earlier one's."""
+    first = records[0]
+    said: dict[str, Any] = {}
+    metadata: dict[str, Any] = {}
+    for rec in records:
+        info = rec.session
+        if info is None:
+            continue
+        plain = asdict(replace(info, started_at=None, metadata=None))
+        said.update({key: value for key, value in plain.items() if value is not None})
+        if info.started_at:
+            said["started_at"] = info.started_at.isoformat()
+        metadata.update(info.metadata or {})
+    if metadata:
+        said["metadata"] = metadata
+    return {
+        "source_mode": "record",
+        "adapter_version": f"{first.agent_id}_records_v1",
+        "source_fingerprint": fingerprint(
+            [first.agent_id, first.harness_session_id, [[r.kind, r.source_key] for r in records]]
+        ),
+        "covered_from": min(rec.ts for rec in records).isoformat(),
+        "covered_through": max(rec.ts for rec in records).isoformat(),
+        "cursor_start": first.source_key,
+        "cursor_end": records[-1].source_key,
+        "exclusions": ["no_complete_capture_evidence"],
+        "session_metadata": said,
+    }
 
 
 def last_import_end(

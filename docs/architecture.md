@@ -86,7 +86,9 @@ call, so `mem event` records none from a payload. At `Stop` and
 `SessionEnd` it imports what the session's transcript has gained since the
 last import, so one hook command does all of capture. `mem hooks install`
 writes that command into Droid's hooks file and leaves every other hook
-there as it is. `mem ingest --spool` replays, and
+there as it is. `mem records` takes capture records as lines on stdin
+from a harness extension, for as long as its input stays open.
+`mem ingest --spool` replays, and
 `mem serve` drains the spool at startup. A record the ledger rejects, or a
 spool line it cannot read, becomes a `capture_error` event and is kept under
 `spool/failed/` while the rest of its batch is written. A real transcript

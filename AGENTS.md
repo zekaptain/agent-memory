@@ -29,7 +29,7 @@ that. Read the guide yourself in these cases:
 | --- | --- |
 | change code under `src/agent_memory/` | `src/agent_memory/AGENTS.md`: schema, export, Quack, redaction, the rows every writer shares, approval, recall, relations, model calls |
 | change `adapters/` or `hooks.py`, or what a Droid hook records | `src/agent_memory/adapters/AGENTS.md` |
-| change `capture/`, `mem event`, `mem ingest`, or the spool | `src/agent_memory/capture/AGENTS.md` |
+| change `capture/`, `mem event`, `mem records`, `mem ingest`, or the spool | `src/agent_memory/capture/AGENTS.md` |
 | add an MCP tool or change a tool's inputs | `src/agent_memory/mcp_server/AGENTS.md` |
 | change `judge/` or its Go labeling helper, or run a `mem judge` command | `src/agent_memory/judge/AGENTS.md` |
 | change `admission/`, or run a `mem admit` command | `src/agent_memory/admission/AGENTS.md` and the judge guide |
@@ -96,7 +96,7 @@ All runtime paths below are under `src/agent_memory/`.
 | `hooks.py` | `mem hooks`: mem's capture command in Droid's hooks file, written, checked, and taken out, with every other hook left as it is | `test_hooks` |
 | `endpoints.py` | The HTTP transport to model servers and the opt-in check for sending data off-machine | `test_endpoints` |
 | `model_call.py` | A model call that must return a JSON object: its attempts, the three model servers, latency and cost over every attempt | `test_model_call` |
-| `adapters/`, `capture/` | Harness input to records, redaction, blobs, idempotent writes, spool/replay, capture identity, the session and event rows every writer shares, observed coverage, attribution | `test_adapters`, `test_capture`, `test_writer`, `test_spool`, `test_capture_identity`, `test_ledger_session`, `test_observed_capture`, `test_answer_bindings`, `test_audit_persistence` |
+| `adapters/`, `capture/` | Harness input to records, records taken from an extension, redaction, blobs, idempotent writes, spool/replay, capture identity, the session and event rows every writer shares, observed coverage, attribution | `test_adapters`, `test_capture`, `test_writer`, `test_spool`, `test_record_stream`, `test_capture_identity`, `test_ledger_session`, `test_observed_capture`, `test_answer_bindings`, `test_audit_persistence` |
 | `mcp_server/` | Stdio tools, the recorded recall path and its query strategies, writes, review actions, citations | `test_mcp` |
 | `graph/` | Relation metadata, traversal SQL, graph recall strategies, entity merges, entity resolution | `test_graph` |
 | `judge/` | Import, callers and authors, candidates, projection, draft, decide, label (including the Go helper in `label_ui/`), report | `test_judge`, `test_judge_pipeline`, `test_judge_verdict`, `test_judge_unanswered`, `test_judge_core_regressions`, `test_judge_store`, `test_judge_admission`, `test_label_ui` |
