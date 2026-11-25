@@ -11,15 +11,12 @@ the redactor and applies it itself.
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-import duckdb
-
-from ..db import AgentMemoryError, MemoryClient, sql_literal
+from ..db import AgentMemoryError, MemoryClient, retrying, sql_literal
 from . import blobs, ids
 from .observations import fingerprint, pending_observations
 from .record import Record, SessionInfo, now
@@ -38,9 +35,6 @@ ROLE_FOR_KIND = {
     "system_context": "harness",
     "capture_error": "harness",
 }
-
-# How often a write is repeated after another writer committed the same rows first.
-RACE_RETRIES = 3
 
 
 class UnknownAgent(AgentMemoryError):
@@ -112,24 +106,6 @@ def event_row(
         "redactions": redactions,
         "ts": ts,
     }
-
-
-def retrying[T](action: Callable[[], T]) -> T:
-    """Repeat a write that lost a race. Another writer can commit the same session or event
-    between our pre-read and our commit; reading again finds its rows and skips them."""
-    retries = RACE_RETRIES
-    while True:
-        try:
-            return action()
-        except duckdb.Error as exc:
-            # A conflict found at commit is a TransactionException; one found at insert is a
-            # ConstraintException that names a duplicate key.
-            lost_race = isinstance(exc, duckdb.TransactionException) or (
-                isinstance(exc, duckdb.ConstraintException) and "Duplicate key" in str(exc)
-            )
-            if not lost_race or not retries:
-                raise
-            retries -= 1
 
 
 class LedgerSession:

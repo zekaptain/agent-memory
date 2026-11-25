@@ -13,14 +13,14 @@ from typing import Any
 
 import duckdb
 
-from ..db import AgentMemoryError, MemoryClient, sql_literal
+from ..db import AgentMemoryError, MemoryClient, retrying, sql_literal
 from ..lifecycle import LifecycleError, LifecyclePlan, check_asker, is_validation_error
 from . import blobs, ids
 from .attribution import reconcile_answers
 from .observations import pending_observations
 from .record import Record, SessionInfo, parse_ts
 from .redact import Redactor
-from .session import event_row, retrying, session_row
+from .session import event_row, session_row
 
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
@@ -399,8 +399,7 @@ def _ledger_unavailable(exc: Exception) -> bool:
     if isinstance(exc, (WriterError, LifecycleError)):
         return False
     if isinstance(exc, duckdb.Error):
-        # A commit conflict that outlasts its retries is contention, not a bad record.
-        return isinstance(exc, duckdb.TransactionException) or not is_validation_error(exc)
+        return not is_validation_error(exc)
     return isinstance(exc, (AgentMemoryError, OSError))
 
 

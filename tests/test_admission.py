@@ -10,8 +10,11 @@ import select
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from threading import Barrier
+from uuid import uuid4
 
 import pytest
 
@@ -917,3 +920,93 @@ print("ADMISSION_UI_OK", flush=True)
 def test_experiment_home_guard_remains(command, args, capsys):
     assert main(["--home", str(Path.home() / ".agent-memory"), "judge", command, *args]) == 1
     assert "refuses to run against the default home" in capsys.readouterr().err
+
+
+def test_concurrent_admission_and_remember_all_land(admission_live):
+    from agent_memory.mcp_server.tools import MemoryTools
+
+    cfg = admission_live
+    scope = f"concurrent-admit-{uuid4()}"
+    capture(cfg, session="admit-race", count=1)
+    with MemoryClient.from_config(cfg) as client:
+        _, rows = client.query(
+            "SELECT event_id::VARCHAR FROM events WHERE kind = 'outcome' LIMIT 1"
+        )
+        turn_event_id = str(rows[0][0])
+
+    admits = 4
+    remembers = 4
+    barrier = Barrier(admits + remembers)
+    created_at = datetime.now(UTC).isoformat()
+
+    def run_admit(index: int) -> tuple[dict, str]:
+        token = f"admitword{index}k"
+        item = {
+            "item_id": f"race-item-{index}",
+            "turn_event_id": turn_event_id,
+            "project": scope,
+            "sidecar": [],
+            "stratum": "ordinary",
+            "flags": [],
+            "projection_version": "projection_v1",
+            "projection_hash": f"ph-{index}",
+        }
+        draft = {
+            "drafter": "synthetic",
+            "rule": f"Always verify {token} before deploying.",
+            "kind": "project_fact",
+            "claims": [{"text": f"Check {token}.", "cited": []}],
+        }
+        verdict = {
+            "run_id": "race-run",
+            "item_id": f"race-item-{index}",
+            "backend": "llm:synthetic",
+            "questions_version": "questions_v2",
+            "projection_version": "projection_v1",
+            "projection_hash": f"ph-{index}",
+            "drafter": "synthetic",
+            "draft_hash": f"dh-{index}",
+            "action": "write_lesson",
+            "reasons": [],
+            "answers": {},
+        }
+        result = {
+            "action": "write",
+            "approver_version": "synthetic-v1",
+            "score": 0.95,
+            "reasons": ["passes"],
+        }
+        barrier.wait(timeout=10)
+        admitted = ledger.admit(
+            cfg, "2026-11-24", created_at, item, draft, verdict, result, auto=True
+        )
+        return admitted, token
+
+    def run_remember(index: int) -> tuple[dict, str]:
+        tool = MemoryTools(cfg, "factory-droid", project=scope, harness_session_id=str(uuid4()))
+        try:
+            tool._client_or_raise()
+            token = f"alongsideadmit{index}m"
+            barrier.wait(timeout=10)
+            return tool.remember(f"note {token}", "fact", scope=scope), token
+        finally:
+            tool.close()
+
+    with ThreadPoolExecutor(max_workers=admits + remembers) as pool:
+        admit_futs = [pool.submit(run_admit, i) for i in range(admits)]
+        rem_futs = [pool.submit(run_remember, i) for i in range(remembers)]
+        admit_results = [f.result() for f in admit_futs]
+        rem_results = [f.result() for f in rem_futs]
+
+    assert all(r["memory_id"] for r, _ in admit_results)
+    assert all(not r["queued"] for r, _ in rem_results)
+    checker = MemoryTools(cfg, "factory-droid", project=scope, harness_session_id=str(uuid4()))
+    try:
+        for admitted, token in admit_results:
+            found = [item["memory_id"] for item in checker.recall(token, scopes=[scope])["items"]]
+            assert admitted["memory_id"] in found
+        for written, token in rem_results:
+            found = [item["memory_id"] for item in checker.recall(token, scopes=[scope])["items"]]
+            assert written["memory_id"] in found
+    finally:
+        checker.close()

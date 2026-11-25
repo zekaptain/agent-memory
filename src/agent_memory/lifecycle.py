@@ -15,7 +15,7 @@ from uuid import NAMESPACE_URL, uuid5
 import duckdb
 
 from .capture.record import parse_ts
-from .db import AgentMemoryError, MemoryClient, sql_literal
+from .db import AgentMemoryError, MemoryClient, retrying, sql_literal
 
 REVIEW_ACTIONS = frozenset({"approve", "quarantine", "retire", "confirm", "flag_contradiction"})
 TERMINAL = frozenset({"retired", "superseded", "expired", "deduplicated"})
@@ -59,6 +59,8 @@ def validate_interval(spec: Mapping[str, Any]) -> None:
 
 
 def is_validation_error(exc: Exception) -> bool:
+    # A TransactionException is MVCC write contention (for example on the incremental
+    # full-text index), never a schema, constraint, or lifecycle validation failure.
     return isinstance(
         exc,
         (
@@ -68,7 +70,6 @@ def is_validation_error(exc: Exception) -> bool:
             duckdb.ConversionException,
             duckdb.BinderException,
             duckdb.InvalidInputException,
-            duckdb.TransactionException,
         ),
     )
 
@@ -372,7 +373,7 @@ def maintain_corrections(
             else connection.execute(sql).fetchall()
         )
 
-    for attempt in range(2):
+    def run_once() -> int:
         # No memories/status/reviews query on the common no-due-work path.
         rows = query(
             "SELECT work_id::VARCHAR, predecessor_id::VARCHAR, successor_id::VARCHAR, "
@@ -423,33 +424,33 @@ def maintain_corrections(
             ("memory_replacements", acceptances),
             ("memory_correction_closures", closures),
         ]
-        try:
-            if isinstance(connection, MemoryClient):
-                connection.insert(pairs)
-            else:
-                connection.execute("BEGIN")
-                try:
-                    for table, batch in pairs:
-                        if not batch:
-                            continue
-                        columns = ", ".join(batch[0])
-                        placeholders = "(" + ", ".join("?" for _ in batch[0]) + ")"
-                        connection.execute(
-                            f"INSERT INTO {table} ({columns}) VALUES "
-                            + ", ".join(placeholders for _ in batch),
-                            [value for row in batch for value in row.values()],
-                        )
-                    connection.execute("COMMIT")
-                except Exception:
-                    connection.execute("ROLLBACK")
-                    raise
-            return len(acceptances) + len(closures)
-        except duckdb.ConstraintException as exc:
-            if "Duplicate key" not in str(exc) or attempt:
+        if isinstance(connection, MemoryClient):
+            connection.insert(pairs)
+        else:
+            connection.execute("BEGIN")
+            try:
+                for table, batch in pairs:
+                    if not batch:
+                        continue
+                    columns = ", ".join(batch[0])
+                    placeholders = "(" + ", ".join("?" for _ in batch[0]) + ")"
+                    connection.execute(
+                        f"INSERT INTO {table} ({columns}) VALUES "
+                        + ", ".join(placeholders for _ in batch),
+                        [value for row in batch for value in row.values()],
+                    )
+                connection.execute("COMMIT")
+            except Exception:
+                connection.execute("ROLLBACK")
                 raise
+        return len(acceptances) + len(closures)
+
+    for attempt in range(2):
+        try:
+            return retrying(run_once)
         except duckdb.InvalidInputException as exc:
             if "invalid acceptance" not in str(exc) or attempt:
                 raise
-        # Re-read once after a concurrent acceptance/withdrawal. The failed
-        # transaction left every member of the batch unchanged.
+        # Re-read once after a concurrent withdrawal. The failed transaction
+        # left every member of the batch unchanged.
     return 0

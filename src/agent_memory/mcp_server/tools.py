@@ -22,7 +22,7 @@ from ..capture.redact import Redactor
 from ..capture.session import LedgerSession, Observed, UnknownAgent, event_row
 from ..capture.spool import Spool
 from ..config import Config, ConfigError
-from ..db import AgentMemoryError, MemoryClient, sql_literal
+from ..db import AgentMemoryError, MemoryClient, retrying, sql_literal
 from ..graph import (
     MAX_HOPS,
     EntityMerge,
@@ -278,7 +278,6 @@ class MemoryTools:
                     "type must be one of "
                     + ", ".join(sorted(self._vocabulary(client, "memory_types", "type")))
                 )
-            known_sources = self._existing_events(client, sources)
             event = self._event(client, "memory_write", content, spec)
             row = {
                 "memory_id": client.new_ids()[0],
@@ -302,22 +301,28 @@ class MemoryTools:
                 "expires_at": _ts(spec.get("expires_at")),
                 "created_by_session": self.session_id,
             }
-            plan = LifecyclePlan(client)
-            mid, duplicate = plan.remember(
-                row,
-                event_id=event["event_id"],
-                actor=self.agent_id,
-                sources=[
-                    {
-                        "event_id": event["event_id"],
-                        "relation": "user_stated"
-                        if spec["trust_level"] == "user"
-                        else "derived_from",
-                    },
-                    *({"event_id": eid, "relation": "derived_from"} for eid in known_sources),
-                ],
-            )
-            client.insert([("events", [event]), *plan.rows])
+
+            def attempt() -> tuple[LifecyclePlan, str, bool, list[str]]:
+                known = self._existing_events(client, sources)
+                plan = LifecyclePlan(client)
+                mid, duplicate = plan.remember(
+                    row,
+                    event_id=event["event_id"],
+                    actor=self.agent_id,
+                    sources=[
+                        {
+                            "event_id": event["event_id"],
+                            "relation": "user_stated"
+                            if spec["trust_level"] == "user"
+                            else "derived_from",
+                        },
+                        *({"event_id": eid, "relation": "derived_from"} for eid in known),
+                    ],
+                )
+                client.insert([("events", [event]), *plan.rows])
+                return plan, mid, duplicate, known
+
+            plan, mid, duplicate, known_sources = retrying(attempt)
             correction = {}
             if spec.get("supersedes"):
                 _, proposals = client.query(
@@ -403,8 +408,10 @@ class MemoryTools:
                 for link in links
             ]
             client.insert(rows)
-            reconcile_answers(
-                client, [self.session_id], placeholder_event_ids=[str(answer_event_id)]
+            retrying(
+                lambda: reconcile_answers(
+                    client, [self.session_id], placeholder_event_ids=[str(answer_event_id)]
+                )
             )
         except (AgentMemoryError, ConfigError, duckdb.Error) as exc:
             self._reset()
@@ -447,16 +454,22 @@ class MemoryTools:
         try:
             client = self._client_or_raise()
             event = self._event(client, "memory_write", original_reason, {"review": spec})
-            plan = LifecyclePlan(client)
-            resolved = plan.review(
-                {
-                    "action_id": client.new_ids()[0],
-                    "session_id": self.session_id,
-                    "event_id": event["event_id"],
-                    **spec,
-                }
-            )
-            client.insert([("events", [event]), *plan.rows])
+            action_id = client.new_ids()[0]
+
+            def attempt() -> str:
+                plan = LifecyclePlan(client)
+                resolved = plan.review(
+                    {
+                        "action_id": action_id,
+                        "session_id": self.session_id,
+                        "event_id": event["event_id"],
+                        **spec,
+                    }
+                )
+                client.insert([("events", [event]), *plan.rows])
+                return resolved
+
+            resolved = retrying(attempt)
             return {
                 "memory_id": memory_id,
                 "action": action,

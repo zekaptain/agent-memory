@@ -6,6 +6,7 @@ import contextlib
 import hashlib
 import json
 import os
+import random
 import re
 import secrets
 import shutil
@@ -725,6 +726,43 @@ class MemoryClient:
         counts = ", ".join(f"(SELECT count(*) FROM {table})" for table in ALL_TABLES)
         _, rows = self.query(f"SELECT {counts}")
         return dict(zip(ALL_TABLES, (int(n) for n in rows[0]), strict=True))
+
+
+# How often a write is repeated after another writer committed the same primary key first,
+# or after DuckDB rejected a commit on a write-write conflict (every insert into `memories`
+# updates shared rows in its incremental full-text index).
+RACE_RETRIES = 3
+CONFLICT_RETRIES = 16
+CONFLICT_BASE_SECONDS = 0.015
+CONFLICT_MAX_SECONDS = 0.25
+
+
+def retrying[T](action: Callable[[], T]) -> T:
+    """Repeat a write that lost a race.
+
+    Another writer can commit the same session, event, or memory between our pre-read
+    and our commit (a duplicate-key ConstraintException), or change the same internal
+    index rows during our transaction (a TransactionException, notably the incremental
+    full-text index on `memories`). Reading and planning again lets the loser see what
+    committed and either skip duplicate rows, deduplicate, or take its turn.
+    """
+    duplicate_retries = RACE_RETRIES
+    conflict_retries = CONFLICT_RETRIES
+    attempt = 0
+    while True:
+        try:
+            return action()
+        except duckdb.TransactionException:
+            if not conflict_retries:
+                raise
+            conflict_retries -= 1
+            ceiling = min(CONFLICT_MAX_SECONDS, CONFLICT_BASE_SECONDS * (2**attempt))
+            time.sleep(random.uniform(0.0, ceiling))
+            attempt += 1
+        except duckdb.ConstraintException as exc:
+            if "Duplicate key" not in str(exc) or not duplicate_retries:
+                raise
+            duplicate_retries -= 1
 
 
 def _encode(value: Any, column_type: str) -> Any:
