@@ -86,8 +86,12 @@ _Avoid_: Record (bare), payload, row
 A command a harness runs when something happens in a session, handing it a payload that describes what happened. Hooks bring the ledger what the transcript does not hold, or not soon enough: a prompt as it arrives, a notification, the start and end of a session.
 _Avoid_: Callback, trigger, plugin
 
+**Extension**:
+A module a harness loads into its own process and calls when something happens in a session, handing it what happened as values. It brings the ledger what a hook brings, for a harness that runs no hook commands.
+_Avoid_: Plugin (Amp's name for one), hook (which is a command), add-on
+
 **Hook event**:
-A point in a session at which a harness runs its hooks, such as the arrival of a prompt or the end of a turn. It is the harness's occasion and not an event in the ledger: capture records something at some hook events and nothing at others.
+A point in a session at which a harness runs its hooks or calls its extensions, such as the arrival of a prompt or the end of a turn. It is the harness's occasion and not an event in the ledger: capture records something at some hook events and nothing at others.
 _Avoid_: Event (bare, for this), hook (for the occasion), trigger, lifecycle event
 
 **Transcript**:

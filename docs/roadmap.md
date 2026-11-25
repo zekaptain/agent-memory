@@ -227,11 +227,28 @@ only the user saw, and the text of a tool result", and "What a terminal
 and a `SessionStart` hook's stdout showed" in
 [phase-1-spec.md](phase-1-spec.md).
 
+omp was checked against real payloads on 2026-11-24: version 19.1.1, in
+22 runs with no interface and a local model, recorded by an extension.
+An extension is handed every prompt, reply, tool call, tool result, and
+compaction in omp's own process. No message carries an id. A tool call
+does, and so does a transcript entry, which the extension reads from
+the session and not from the payload. `session_start` is raised once in
+a process and says nothing of a resume. A new session, a fork, and a
+branch in a running omp raise `session_switch` or `session_branch`.
+`session_stop` closes a prompt that ran to its reply. It is not raised
+after a signal or a time limit, nor in a spawned session, which runs in
+its caller's process with an id and a transcript of its own. omp waits
+for a function at `tool_call`, and fails the call when the function
+takes 30 s. It tells an MCP server nothing of the session that calls
+it. Not checked: omp in a terminal, an automatic compaction, and a
+model that is not on this machine. See "What omp hands an extension" in
+[phase-1-spec.md](phase-1-spec.md).
+
 | Harness | Events | Payload | Gaps for capture |
 |---------|--------|---------|------------------|
 | Droid (`~/.factory/hooks.json`) | `SessionStart` (`source`: startup, resume, clear, compact), `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PreCompact`, `Stop`, `SubagentStop`, `Notification`, `SessionEnd` | JSON on stdin: `session_id`, `transcript_path`, `cwd`, `permission_mode`, `hook_event_name`, `message_id`; tool hooks add `tool_name`, `tool_input`, `tool_response`; `SubagentStop` adds `task_name`, `task_result`; a `SessionStart` after `/clear` in a terminal adds `previous_session_id`. Default timeout 60 s. | No hook carries the assistant reply; read the transcript. `SessionStart` repeats per resume and compaction. No hook command runs to its end when Droid exits in a terminal. |
 | Vibe (`~/.vibe/hooks.toml`) | `pre_tool`, `post_tool`, `post_agent` | JSON on stdin: `session_id`, `parent_session_id`, `transcript_path`, `cwd`, `hook_event_name`; tool hooks add `tool_name`, `tool_call_id`, `tool_input`, `tool_status`, `tool_output`, `tool_output_text`, `tool_error`. Default timeout 60 s. | No prompt, session, or compaction hooks; `post_agent` carries no text. Project-level hooks load only in trusted folders. Plugin-declared hooks do not run yet. |
-| omp (`~/.omp/agent/hooks/{pre,post}/*.ts`) | `session_start`, `session_switch`, `session_compact`, `session_shutdown`, `agent_start`, `agent_end`, `turn_start`, `turn_end`, `message_start`, `message_end`, `tool_call`, `tool_result`, `tool_execution_*`, `tool_approval_*`, `auto_compaction_*`, `session_stop` | Typed in-process payloads with full message text, tool inputs and results, compaction entries, `session_file`. | None material. Skip the high-volume `message_update` and `tool_execution_update`. |
+| omp (an extension: a TypeScript module given with `-e`, or found in `~/.omp/agent/extensions/` or `.omp/extensions/` by omp's source) | Raised on 2026-11-24: `session_start`, `session_before_switch`, `session_switch`, `session_before_branch`, `session_branch`, `session_before_compact`, `session.compacting`, `session_compact`, `session_stop`, `session_shutdown`, `input`, `before_agent_start`, `agent_start`, `agent_end`, `context`, `turn_start`, `turn_end`, `message_start`, `message_update`, `message_end`, `assistant_message`, `before_provider_request`, `after_provider_response`, `tool_call`, `tool_result`, `tool_execution_start`, `tool_execution_update`, `tool_execution_end`, `before_subagent_spawn`. Registered and not raised: 23 more, among them `session_clear`, `auto_compaction_*`, and `tool_approval_*`. | In process, as values: whole messages, tool inputs and results, the compaction's entry; the session's id, file, and entries from the function's context. A function has 30 s, and 2 s at `session_shutdown`. | No message carries an id. `session_start` once in a process, and none after a switch or a branch. No `session_stop` after a signal or a time limit, or in a spawned session. A slow function at `tool_call` fails the call. An MCP server is told nothing of the session. Not checked in a terminal. |
 | Amp (`.amp/plugins/*.ts`) | `session.start`, `agent.start`, `tool.call`, `tool.result`, `agent.end` | In-process: thread id, prompt and message id on `agent.start`; `toolUseID`, `tool`, `input`, `status`, `output` on tool events; every `ThreadMessage` of the turn on `agent.end`. | No compaction or session-end event; `onDispose` runs on unload for about 3 s. |
 | Junie | none | MCP tools only | Everything except what the agent chooses to log. |
 
