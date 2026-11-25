@@ -110,7 +110,7 @@ def deliver(
             writer = Writer(client, cfg.blob_dir, redactor)
             written = writer.write(records)
             attempt.unreported = [
-                _capture_error(r.record, r.record.to_json(), r.reason) for r in written.rejected
+                capture_error(r.record, r.record.to_json(), r.reason) for r in written.rejected
             ]
             attempt.written = written
             if attempt.unreported:
@@ -233,7 +233,7 @@ def _replay_files(
         file: SpoolFile, number: int, line: str, reason: str, session: Record | SpoolFile
     ) -> None:
         bad_by_file[file.path].append(line)
-        errors.append(_capture_error(session, line, reason, file=file.path.name, line=number))
+        errors.append(capture_error(session, line, reason, file=file.path.name, line=number))
         result.errors.append(f"{file.path.name} line {number}: {reason}")
 
     for file in files:
@@ -242,11 +242,7 @@ def _replay_files(
             try:
                 record = writer.redactor.record(Record.from_json(line))
             except RecordError as exc:
-                try:
-                    unread = json.loads(line)
-                except json.JSONDecodeError:
-                    unread = {"unparseable_line_sha256": hashlib.sha256(line.encode()).hexdigest()}
-                line = json.dumps(writer.redactor.value(unread)[0], ensure_ascii=False)
+                line = kept_of_line(writer.redactor, line)
                 sanitized.append(line)
                 fail(file, number, line, writer.redactor.text(str(exc))[0], file)
                 continue
@@ -275,7 +271,17 @@ def _replay_files(
         spool.mark_done(file)
 
 
-def _capture_error(session: Record | SpoolFile, raw: str, reason: str, **source: Any) -> Record:
+def kept_of_line(redactor: Redactor, line: str) -> str:
+    """What is kept of a line that is not a capture record: its JSON, redacted, or only its
+    hash when it is not JSON, since text that cannot be read cannot be redacted by field."""
+    try:
+        unread = json.loads(line)
+    except json.JSONDecodeError:
+        unread = {"unparseable_line_sha256": hashlib.sha256(line.encode()).hexdigest()}
+    return json.dumps(redactor.value(unread)[0], ensure_ascii=False)
+
+
+def capture_error(session: Record | SpoolFile, raw: str, reason: str, **source: Any) -> Record:
     """The note the ledger keeps about text it did not take, in the session the text belongs
     to. It is keyed by that text, so failing on the same text again adds nothing."""
     return Record(

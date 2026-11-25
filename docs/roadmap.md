@@ -791,6 +791,13 @@ Verified against the code in the audit of 2026-11 and still open.
   `mem ingest --spool` (`capture/pipeline.py`). A server that replayed
   now and then while it serves would end the wait, and would purge
   `spool/done/` as often, which today happens only when it starts.
+- `mem records` holds the lines it has read in memory until a pass
+  delivers them, and nothing bounds them: lines that arrive faster than
+  the ledger takes them grow the process, and a command that is killed
+  outright loses what it held. A line written to it and not yet read
+  when `SIGTERM` comes is lost as well. The replay it starts has no
+  deadline (`capture/stream.py`). See "Capture records from an
+  extension" in [phase-1-spec.md](phase-1-spec.md).
 - A tool call's input is stored twice: in the text of the event, and as
   `tool_input` in its payload, which has no size limit. The largest
   payload measured was 713 KB (`adapters/droid.py`).
