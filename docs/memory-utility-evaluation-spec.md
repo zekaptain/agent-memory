@@ -863,6 +863,106 @@ arm and write an immutable `record.json` under
   and fake-binary tests exercise the full runner without calling a real
   model.
 
+### Recall and citation accounting (`usefulness/accounting.py`, 2026-11-26, MEM-19)
+
+`src/agent_memory/usefulness/accounting.py` and its integration in
+`runner.run_trial` import each finished memory-arm trial's transcript
+into its trial home and record what recall and citations did under
+`record.json`'s `recall_accounting` (`None` in the `no_memory` arm):
+
+- **Pre-trial baseline:** Before invoking the harness in the memory arm,
+  `capture_trial_baseline` snapshots pre-existing `sessions`,
+  `retrievals`, `context_links`, and placeholder `events` copied from the
+  memory set so historical rows are excluded from the trial's counts.
+- **Transcript import:** After the harness finishes and before stopping
+  the trial `MemoryServer`, `import_trial_transcript` imports the
+  transcript via `get_adapter(harness).from_transcript` and
+  `capture.pipeline.deliver` with `AGENT_MEMORY_MCP_SERVER_NAME` set to
+  the trial's configured memory server name so cross-session attribution
+  (`captured_cite_turn_v1`) binds citation placeholders to imported
+  replies.
+- **Recall classification:** `account_trial_recall` reconciles transcript
+  `recall` and `graph` tool calls against the trial's new `retrievals`
+  rows and records `made_no_recall` plus per-recall entries classified as
+  `returned` (`retrievals.returned > 0`), `miss` (`retrievals.returned ==
+  0`), `degraded` (`tool_result` reports `degraded: true` without the
+  ledger), or `missing_record` (any recall shown in the transcript that
+  the trial ledger does not hold, including zero-item responses with an
+  unrecorded or historical `retrieval_id`, tool errors, or missing tool
+  results, never counted as `miss`). Any trial ledger retrieval without a
+  matching transcript call is also retained as `ledger_only`.
+- **Citation counts:** Counts `citations_made`, transcript `cite` calls
+  (and `degraded_cite_calls`), `returned_memories_cited_count` (distinct
+  memories returned by trial retrievals and declared used via
+  `cited_memory` links), `unbound_placeholder_count` (placeholders with
+  no binding or a null/invalid target in `effective_answer_bindings`),
+  and `single_citation_reply_count` alongside `multi_citation_reply_count`
+  for actual assistant replies bound to one vs. multiple citations.
+  `account_trial_recall` also accepts a stopped trial home path directly
+  (read-only) to verify or recompute counts offline.
+
+### Post-trial check runner (`usefulness/checks.py`, `usefulness/cli.py`, 2026-11-26, MEM-24)
+
+`src/agent_memory/usefulness/checks.py` and
+`mem --home <exp_home> usefulness run-checks` execute a task's declared
+checks on a finished trial's clone and keep the results beside the trial:
+
+- **Post-run hidden tests and immutability:** Refuses to run before the
+  trial's `record.json` exists or if `checks.json` already exists,
+  verifies the task against `record.json`'s `task_sha256` and the run's
+  `task-manifest.json`, and installs `<task_dir>/hidden_tests/` via
+  `tasks.install_hidden_tests` only now (never while the agent is
+  working). Writes check results to a separate write-once
+  `<trial_dir>/checks.json` (recording `record_sha256` and omitting
+  `arm` so the file is safe for blind grading) and leaves `record.json`
+  untouched byte-for-byte.
+- **Arm symmetry and failure vs. could-not-run:** Executes the exact
+  same `task.checks` commands in the same sanitized environment
+  (stripping `AGENT_MEMORY_*` and `FACTORY_*`) in both arms, with
+  per-check POSIX process-group timeouts (`SIGTERM` -> `SIGKILL`).
+  Distinguishes `passed` (`exit_code == 0`), `failed` (ran to exit with
+  non-zero exit code), and `could_not_run` (`command_not_found`,
+  `permission_denied`, `os_error`, `timeout`, `terminated_by_signal`, or
+  `hidden_test_conflict` when the agent's clone already holds a file or
+  symlink at a hidden-test path).
+
+### Pair schedule and resumable execution (MEM-22)
+
+`src/agent_memory/usefulness/schedule.py` and the `mem usefulness
+schedule`, `mem usefulness schedule-status`, and `mem usefulness
+run-schedule` CLI commands fix a run's pair order and within-pair arm
+order from a registered integer seed and `task-manifest.json`:
+
+- **Deterministic order and repeats:** `build_schedule` sorts the
+  selected split's tasks by `task_id`, expands repeated trials per task
+  (`repeats` and per-task `task_repeats` overrides, producing canonical
+  pair IDs `<task_id>__r<k>`), shuffles the sorted pair list with
+  `random.Random(seed)`, and draws each pair's arm order from the same
+  seeded generator. `create_run_schedule` persists `schedule.json` once
+  via `UsefulnessRunStore.write_schedule` alongside
+  `task_manifest_sha256`; `load_run_schedule` refuses to continue if
+  `task-manifest.json` no longer matches.
+- **Resumable execution and preserved interruptions:** `run_schedule`
+  tracks execution in append-only `schedule-events.jsonl` and assigns
+  attempt-scoped trial IDs (`<pair_id>__a<attempt>__<arm>`). Preflight
+  checks (egress, source home, task manifest verification) run before
+  logging `trial_started` so configuration refusals never create false
+  interrupted markers. A trial interrupted mid-run (whether caught and
+  recorded with `failure_category="interrupted"` in `record.json`, or
+  hard-crashed before `record.json` could be written) is kept intact,
+  marked via `record.json` or a write-once `interrupted.json` plus a
+  `trial_interrupted` event, and never overwritten in place; resuming
+  continues with the unmade trials in seeded order.
+- **Explicit retry policy:** `RetryRule` (stored in `schedule.json`,
+  defaulting to `max_pair_retries=0`) is the sole rule deciding whether
+  a finished pair attempt is run again as `attempt + 1`. A pair is
+  retried only when `attempt <= max_pair_retries`, at least one arm did
+  not complete, and every non-completed arm's `failure_category` is in
+  `retryable_failure_categories`. Retry attempts receive fresh trial IDs
+  and an independent deterministic arm order derived from
+  `(seed, pair_id, attempt)` so retrying one pair never shifts another
+  pair's arm order.
+
 ### Registration at the freeze (`usefulness/registration.py`, `mcp_server/__init__.py`, 2026-11-26, MEM-23)
 
 `src/agent_memory/usefulness/registration.py`, `UsefulnessRunStore`,

@@ -30,11 +30,18 @@ from pathlib import Path
 from typing import Any, Literal, Protocol
 
 from ..config import Config, ConfigError
-from ..db import MemoryServer, initialize_home
+from ..db import MemoryClient, MemoryServer, initialize_home
 from ..endpoints import REMOTE_ENV, Unreachable, is_loopback, remote_allowed, require_egress
 from ..judge.store import private_dir, utc_now_iso
 from ..mcp_server import MCP_WORDING_ENV, load_tool_wording_file, validate_tool_wording
 from ..smoke import free_port
+from .accounting import (
+    RecallAccounting,
+    TrialLedgerBaseline,
+    account_trial_recall,
+    capture_trial_baseline,
+    import_trial_transcript,
+)
 from .registration import (
     default_trial_config_overrides,
     detect_hardware_class,
@@ -331,6 +338,7 @@ class HarnessResult:
     resolved_model: str | None = None
     resolved_reasoning_effort: str | None = None
     raw_events_path: Path | None = None
+    transcript_harness: str | None = None
 
 
 class HarnessAdapter(Protocol):
@@ -373,6 +381,7 @@ class TrialRecord:
     record_path: Path
     record_sha256: str
     registration_sha256: str | None = None
+    recall_accounting: RecallAccounting | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -398,6 +407,9 @@ class TrialRecord:
             "wall_time": self.wall_time.to_dict(),
             "tool_calls": [tc.to_dict() for tc in self.tool_calls],
             "tokens": self.tokens.to_dict(),
+            "recall_accounting": (
+                self.recall_accounting.to_dict() if self.recall_accounting is not None else None
+            ),
             "started_at": self.started_at,
             "finished_at": self.finished_at,
             "paths": dict(self.paths),
@@ -1378,6 +1390,76 @@ def _generate_trial_id(task_id: str, arm: Arm) -> str:
     return f"{task_id}-{arm}-{uuid.uuid4().hex[:12]}"
 
 
+def resolve_trial_registration(
+    experiment_home: Config | Path,
+    run_id: str,
+    task_id: str,
+    task_split: str | None,
+    config: TrialConfig,
+    adapter: HarnessAdapter,
+) -> tuple[str | None, tuple[str, dict[str, str], str] | None, Path | None]:
+    """Enforce the held-out gate and pre-trial registration check.
+
+    Returns ``(registration_sha256, effective_wording, effective_source_home)``.
+    Raises ``UsefulnessError`` before any trial directory or schedule event is written
+    when a held-out task has no registration or when a frozen registration does not
+    match the live trial configuration.
+    """
+    store = UsefulnessRunStore(experiment_home, run_id)
+    registration_sha256: str | None = None
+    effective_source_home: Path | None = config.source_home
+    effective_wording: tuple[str, dict[str, str], str] | None = None
+
+    if task_split == "held_out" and not store.registration_path.exists():
+        raise UsefulnessError(
+            f"cannot start held-out trial for task {task_id!r} in run {run_id!r}: "
+            f"no registration at {store.registration_path}"
+        )
+
+    if store.registration_path.exists():
+        live_harness_version = (
+            config.harness_version
+            if config.harness_version is not None
+            else _adapter_version(adapter)
+        )
+        live_repo_commit = (
+            config.repo_commit if config.repo_commit is not None else detect_repo_commit()
+        )
+        live_hardware_class = (
+            config.hardware_class if config.hardware_class is not None else detect_hardware_class()
+        )
+        verified_reg = verify_registration_for_trial(
+            experiment_home,
+            run_id,
+            harness=adapter.name,
+            harness_version=live_harness_version,
+            repo_commit=live_repo_commit,
+            hardware_class=live_hardware_class,
+            allowed_base_tools=config.base_tools,
+            memory_server_name=config.memory_server_name,
+            config_overrides=default_trial_config_overrides(config.auto_level),
+            model=config.model,
+            reasoning_effort=config.reasoning_effort,
+            wall_time_limit_s=config.wall_time_limit_s,
+            arm=config.arm,
+            source_home=config.source_home,
+            wording_override=config.memory_tool_wording,
+            wording_file=config.memory_tool_wording_file,
+        )
+        registration_sha256 = verified_reg.registration_sha256
+        effective_wording = (
+            verified_reg.memory_tools_instructions,
+            verified_reg.memory_tools_descriptions,
+            verified_reg.memory_tools_sha256,
+        )
+        if config.arm == "memory" and effective_source_home is None:
+            effective_source_home = verified_reg.memory_set_dir
+    else:
+        effective_wording = _resolve_optional_wording(config)
+
+    return registration_sha256, effective_wording, effective_source_home
+
+
 def run_trial(
     experiment_home: Config | Path,
     run_id: str,
@@ -1411,56 +1493,14 @@ def run_trial(
     active_adapter: HarnessAdapter = adapter if adapter is not None else DroidHarnessAdapter()
     allowed_tools = _allowed_tools_for_arm(config)
 
-    registration_sha256: str | None = None
-    effective_source_home: Path | None = config.source_home
-    effective_wording: tuple[str, dict[str, str], str] | None = None
-
-    if task_split == "held_out" and not store.registration_path.exists():
-        raise UsefulnessError(
-            f"cannot start held-out trial for task {task.task_id!r} in run {run_id!r}: "
-            f"no registration at {store.registration_path}"
-        )
-
-    if store.registration_path.exists():
-        live_harness_version = (
-            config.harness_version
-            if config.harness_version is not None
-            else _adapter_version(active_adapter)
-        )
-        live_repo_commit = (
-            config.repo_commit if config.repo_commit is not None else detect_repo_commit()
-        )
-        live_hardware_class = (
-            config.hardware_class if config.hardware_class is not None else detect_hardware_class()
-        )
-        verified_reg = verify_registration_for_trial(
-            experiment_home,
-            run_id,
-            harness=active_adapter.name,
-            harness_version=live_harness_version,
-            repo_commit=live_repo_commit,
-            hardware_class=live_hardware_class,
-            allowed_base_tools=config.base_tools,
-            memory_server_name=config.memory_server_name,
-            config_overrides=default_trial_config_overrides(config.auto_level),
-            model=config.model,
-            reasoning_effort=config.reasoning_effort,
-            wall_time_limit_s=config.wall_time_limit_s,
-            arm=config.arm,
-            source_home=config.source_home,
-            wording_override=config.memory_tool_wording,
-            wording_file=config.memory_tool_wording_file,
-        )
-        registration_sha256 = verified_reg.registration_sha256
-        effective_wording = (
-            verified_reg.memory_tools_instructions,
-            verified_reg.memory_tools_descriptions,
-            verified_reg.memory_tools_sha256,
-        )
-        if config.arm == "memory" and effective_source_home is None:
-            effective_source_home = verified_reg.memory_set_dir
-    else:
-        effective_wording = _resolve_optional_wording(config)
+    registration_sha256, effective_wording, effective_source_home = resolve_trial_registration(
+        experiment_home,
+        run_id,
+        task.task_id,
+        task_split,
+        config,
+        active_adapter,
+    )
 
     # Validate source_home early (including refusing DEFAULT_HOME) before creating trial dirs.
     if effective_source_home is not None:
@@ -1500,7 +1540,9 @@ def run_trial(
     # 2. Setup trial home & dedicated MemoryServer (memory arm only).
     t_setup_start = time.monotonic()
     server: MemoryServer | None = None
+    trial_cfg: Config | None = None
     trial_home_path: Path | None = None
+    trial_baseline: TrialLedgerBaseline | None = None
     memory_endpoint: MemoryEndpoint | None = None
     wording_path: Path | None = None
     wording_sha256: str | None = None
@@ -1521,6 +1563,11 @@ def run_trial(
             trial_cfg = _prepare_trial_home(trial_home_path, effective_source_home, port)
             server = MemoryServer(trial_cfg)
             server.start()
+            baseline_client = MemoryClient.from_config(trial_cfg)
+            try:
+                trial_baseline = capture_trial_baseline(baseline_client)
+            finally:
+                baseline_client.close()
             memory_endpoint = MemoryEndpoint(
                 home=trial_cfg.home,
                 host=trial_cfg.host,
@@ -1577,11 +1624,35 @@ def run_trial(
             )
     harness_s = time.monotonic() - t_harness_start
 
-    # 4. Teardown: stop MemoryServer, restore untouched sanitized MCP files, capture diff.
+    # 4. Teardown: import transcript & account recalls (memory arm), stop server, capture diff.
     t_teardown_start = time.monotonic()
-    if server is not None:
-        with contextlib.suppress(Exception):
-            server.stop()
+    recall_accounting: RecallAccounting | None = None
+    try:
+        if config.arm == "memory" and server is not None and trial_cfg is not None:
+            transcript_harness = harness_result.transcript_harness or active_adapter.name
+            import_summary, parsed_records = import_trial_transcript(
+                trial_cfg,
+                harness_result.transcript_path,
+                harness=transcript_harness,
+                memory_server_name=config.memory_server_name,
+            )
+            accounting_client = MemoryClient.from_config(trial_cfg)
+            try:
+                recall_accounting = account_trial_recall(
+                    accounting_client,
+                    transcript_path=harness_result.transcript_path,
+                    transcript_records=parsed_records,
+                    harness=transcript_harness,
+                    memory_server_name=config.memory_server_name,
+                    baseline=trial_baseline,
+                    transcript_import=import_summary,
+                )
+            finally:
+                accounting_client.close()
+    finally:
+        if server is not None:
+            with contextlib.suppress(Exception):
+                server.stop()
     _restore_untouched_sanitized_files(sanitized_files)
     repo_changes = _capture_repo_changes(clone_dir, base_commit)
     teardown_s = time.monotonic() - t_teardown_start
@@ -1675,6 +1746,9 @@ def run_trial(
         "wall_time": wall_time.to_dict(),
         "tool_calls": [tc.to_dict() for tc in harness_result.tool_calls],
         "tokens": harness_result.tokens.to_dict(),
+        "recall_accounting": (
+            recall_accounting.to_dict() if recall_accounting is not None else None
+        ),
         "started_at": started_at,
         "finished_at": finished_at,
         "paths": paths,
@@ -1715,4 +1789,5 @@ def run_trial(
         environment=environment,
         record_path=record_path,
         record_sha256=record_sha256,
+        recall_accounting=recall_accounting,
     )

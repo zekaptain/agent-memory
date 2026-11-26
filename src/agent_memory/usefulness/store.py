@@ -143,6 +143,14 @@ class UsefulnessRunStore:
         return self.root / "task-manifest.json"
 
     @property
+    def schedule_path(self) -> Path:
+        return self.root / "schedule.json"
+
+    @property
+    def schedule_events_path(self) -> Path:
+        return self.root / "schedule-events.jsonl"
+
+    @property
     def registration_path(self) -> Path:
         return self.root / "registration.json"
 
@@ -189,6 +197,28 @@ class UsefulnessRunStore:
         if not self.registration_path.exists():
             raise UsefulnessError(f"no registration at {self.registration_path}")
         return sha256_file(self.registration_path)
+
+    def write_schedule(self, schedule: Mapping[str, Any]) -> str:
+        """Write ``schedule.json`` once and return its SHA-256."""
+        return write_once_json(self.schedule_path, schedule)
+
+    def read_schedule(self) -> dict[str, Any]:
+        """Read ``schedule.json``."""
+        return read_json_file(self.schedule_path)
+
+    def schedule_sha256(self) -> str:
+        """SHA-256 of the written ``schedule.json``."""
+        if not self.schedule_path.exists():
+            raise UsefulnessError(f"no schedule at {self.schedule_path}")
+        return sha256_file(self.schedule_path)
+
+    def append_schedule_event(self, event: Mapping[str, Any]) -> None:
+        """Append one schedule execution event; earlier events are never rewritten."""
+        append_jsonl(self.schedule_events_path, event)
+
+    def schedule_events(self) -> list[dict[str, Any]]:
+        """Every recorded schedule execution event, in append order."""
+        return read_jsonl(self.schedule_events_path)
 
     def append_deviation(
         self,
