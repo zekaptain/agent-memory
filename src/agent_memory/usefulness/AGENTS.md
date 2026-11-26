@@ -23,6 +23,17 @@ are in `docs/memory-utility-evaluation-spec.md`, and its terms are in
   after the agent finishes via `tasks.install_hidden_tests`. Every trial
   must verify its task against the run's task manifest before starting
   (`tasks.load_verified_task` / `tasks.verify_task_against_manifest`).
+- Every trial runs in a fresh git clone at `task.commit` with future refs
+  stripped and repository-configured memory MCP servers removed in both
+  arms. No capture hook runs during a trial, and nothing reaches the
+  default home.
+- `runner.run_trial` treats a model with no loopback `model_base_url` as
+  hosted and refuses to run without `AGENT_MEMORY_JUDGE_ALLOW_REMOTE=1`
+  (through `endpoints.require_egress`). Token counts the harness does not
+  report are recorded as `None`, never `0`.
+- Tests of the trial runner use `ScriptedHarnessAdapter` or a fake local
+  executable script with `DroidHarnessAdapter`; no test calls a real
+  model.
 - Statistics in `stats.py` use the Python standard library only, with no
   new dependency. A missing value is `None`, left out of estimates, and
   counted as missing; never coerce a missing value to zero. Check every

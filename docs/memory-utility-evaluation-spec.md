@@ -812,6 +812,57 @@ ledger with a `1,116,745,728`-byte (`1.04 GiB`) DuckDB file and
   (such as ext4), plan for the full logical baseline plus per-trial
   writes and slower physical copy throughput.
 
+### Single-trial runner (`usefulness/runner.py`, `usefulness/cli.py`, 2026-11-25, MEM-18)
+
+`src/agent_memory/usefulness/runner.py` and
+`src/agent_memory/usefulness/cli.py` (`mem --home <exp_home> usefulness
+run-trial`) run one trial of a task in either the `memory` or `no_memory`
+arm and write an immutable `record.json` under
+`<experiment_home>/runs/<run_id>/trials/<trial_id>/`:
+
+- **Pre-flight guards:** Refuses the default home
+  (`ensure_experiment_home`) for both the experiment home and any
+  `--source-home`. Treats any model without a loopback
+  `--model-base-url` as hosted and refuses to start unless
+  `AGENT_MEMORY_JUDGE_ALLOW_REMOTE=1` is set (`endpoints.require_egress`).
+  Verifies the task against `task-manifest.json` when present in the run
+  directory.
+- **Fresh clone and isolation:** Clones `task.repository` with
+  `--no-hardlinks --no-checkout` into `<trial_dir>/repo`, detaches at
+  `task.commit`, strips `origin` and any branches, remotes, or tags
+  outside `HEAD`'s ancestry (plus `git gc --prune=now`) so future
+  commits are not reachable, asserts hidden tests are absent, and strips
+  any repository-configured memory MCP server entries in
+  `.factory/mcp.json` or `.mcp.json` in both arms (restoring untouched
+  sanitized files before diff capture so runner sanitization does not
+  pollute `repo_changes`).
+- **Arm symmetry:** In the `memory` arm only, copies a stopped
+  throwaway/source home (or initializes a fresh empty home) with a fresh
+  per-trial token into `<trial_dir>/trial-home`, starts a dedicated
+  `MemoryServer` on a free local port, attaches `mem-mcp` with
+  `AGENT_MEMORY_PROJECT=<task.project>` in
+  `<harness_home>/.factory/mcp.json`, and allows
+  `ToolSearch,MCP:agent-memory` alongside the base tools. In the
+  `no_memory` arm, no trial home or server is created and no memory
+  tools are attached. Both arms strip `FACTORY_SESSION_ID` and
+  `AGENT_MEMORY_*` from the harness subprocess environment, isolate
+  `.factory/` via `FACTORY_HOME_OVERRIDE`, disable hooks
+  (`hooks.hooksDisabled: true`), disable cloud session sync, disable
+  built-in skills, and share identical `--auto` and base tool settings.
+- **Record, limits, and stand-in:** `DroidHarnessAdapter` launches
+  `droid exec -o stream-json` in its own POSIX process group, enforces
+  the external wall-time limit with `SIGTERM` escalating to `SIGKILL`,
+  and parses stream events into `tool_calls`, `tokens` (recording every
+  unavailable count as `None`, never `0`, including pre-call failures
+  with absent `ttft_ms`), `last_reply`, and classified failure
+  categories (`timeout`, `permission_denied`, `auth_error`,
+  `tool_outage`, `model_refusal`, `harness_error`, `environment_error`,
+  `interrupted`). Failed and timed-out trials are retained with their
+  records and itemized `wall_time` (`clone_s`, `setup_s`, `harness_s`,
+  `teardown_s`, `total_s`) and `repo_changes`. `ScriptedHarnessAdapter`
+  and fake-binary tests exercise the full runner without calling a real
+  model.
+
 ## Runs
 
 None yet. A run is listed here with the SHA-256 of its registration when
