@@ -161,7 +161,7 @@ Where a memory applies: everywhere, or in one project.
 _Avoid_: Namespace, project (as a synonym)
 
 **Trust level**:
-What the agent that wrote a memory says it rests on: the user's word, the agent's own inference, a tool's output, or an import. It is the writer's claim, and nothing checks it.
+What the agent that wrote a memory says it rests on: the user's word, the agent's own inference, a tool's output, or an import. It is the writer's claim, and does not exempt a memory whose content triggers write-time quarantine.
 _Avoid_: Confidence, source
 
 **Status**:
@@ -173,7 +173,7 @@ Eligible to be returned by recall.
 _Avoid_: Live, approved
 
 **Quarantined**:
-Held out of recall until it is approved. Memories that come from tools start here.
+Held out of recall until it is approved. Memories that come from tools, and any memory whose content holds invisible or direction-changing characters or instruction-like text, start here.
 _Avoid_: Unreviewed, hidden
 
 **Pending**:

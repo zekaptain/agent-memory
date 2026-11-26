@@ -41,6 +41,7 @@ from ..lifecycle import (
     maintain_corrections,
     validate_interval,
 )
+from ..quarantine import format_reason
 from . import ranking
 from .recall import Recalled, Strategy, run_recall
 
@@ -335,6 +336,7 @@ class MemoryTools:
                         "correction_status": proposals[0][0],
                         "correction_pending_reason": proposals[0][1],
                     }
+            quarantined = plan.content_quarantined.get(mid)
             return {
                 "memory_id": mid,
                 "deduplicated": duplicate,
@@ -342,6 +344,11 @@ class MemoryTools:
                 "status": self._status_of(client, mid),
                 "pending_reason": self._pending_reason(client, mid),
                 "ignored_source_event_ids": sorted(set(sources) - set(known_sources)),
+                **(
+                    {"quarantine_reason": format_reason(quarantined)}
+                    if quarantined and not duplicate
+                    else {}
+                ),
                 **correction,
             }
         except (AgentMemoryError, ConfigError, duckdb.Error) as exc:
