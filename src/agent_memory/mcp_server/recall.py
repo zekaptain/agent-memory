@@ -64,6 +64,7 @@ class Recalled:
     candidates: int = 0
     items: list[dict[str, Any]] = field(default_factory=list)
     reason: str | None = None
+    not_shown: int = 0
 
 
 def run_recall(
@@ -82,6 +83,8 @@ def run_recall(
     _, rows = client.query(sql)
     latency_ms = (time.perf_counter() - started) * 1000
     items = strategy.items(rows)
+    shown = [item for item in items if bool(item.get("injected", True))]
+    not_shown = len(items) - len(shown)
     event = request_event(strategy.request)
     retrieval_id = client.new_ids()[0]
     client.insert(
@@ -98,8 +101,8 @@ def run_recall(
                     "sql_used": sql,
                     "params": strategy.params,
                     "candidates": len(rows),
-                    "returned": len(items),
-                    "token_estimate": sum(len(i["content"]) // 4 for i in items),
+                    "returned": len(shown),
+                    "token_estimate": sum(len(i["content"]) // 4 for i in shown),
                     "latency_ms": latency_ms,
                 }
             ],
@@ -110,7 +113,7 @@ def run_recall(
                     "memory_id": item["memory_id"],
                     "score": item["score"],
                     "score_components": item["score_components"],
-                    "injected": True,
+                    "injected": bool(item.get("injected", True)),
                     "status_at_recall": item["status"],
                 }
                 for rank, item in enumerate(items, start=1)
@@ -123,5 +126,8 @@ def run_recall(
         request_event_id=event["event_id"],
         candidates=len(rows),
         # The status is kept on the retrieval item; every memory shown was active.
-        items=[{k: v for k, v in item.items() if k != "status"} for item in items],
+        items=[
+            {k: v for k, v in item.items() if k not in ("status", "injected")} for item in shown
+        ],
+        not_shown=not_shown,
     )

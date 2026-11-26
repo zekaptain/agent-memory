@@ -67,6 +67,7 @@ class MemoryTools:
         *,
         harness_session_id: str | None = None,
         project: str | None = None,
+        cwd: str | None = None,
         observed: Observed = MCP,
     ) -> None:
         self.cfg = cfg
@@ -78,7 +79,13 @@ class MemoryTools:
             else os.environ,
         )
         self.own_session = self.session_link == "own"
-        self.project = project or os.environ.get("AGENT_MEMORY_PROJECT") or _cwd_name()
+        effective_cwd = cwd or _cwd()
+        self.cwd = effective_cwd
+        self.project = (
+            project
+            or os.environ.get("AGENT_MEMORY_PROJECT")
+            or (_dir_name(cwd) if cwd else _cwd_name())
+        )
         # How an MCP process found its harness session. A command names its own.
         link = (
             {"own_session": self.own_session, "session_link": self.session_link}
@@ -88,7 +95,7 @@ class MemoryTools:
         self.session = LedgerSession(
             agent_id,
             self.harness_session_id,
-            SessionInfo(cwd=_cwd(), project=self.project, metadata=link),
+            SessionInfo(cwd=effective_cwd, project=self.project, metadata=link),
             observed,
         )
         self.session_id = self.session.session_id
@@ -155,14 +162,59 @@ class MemoryTools:
         )
 
     def _scopes(self, scopes: Sequence[str] | None) -> list[str]:
-        values = (
-            [s for s in scopes if s]
-            if scopes
-            else (["global", self.project] if self.project else ["global"])
-        )
+        cleaned = [s for s in scopes if s] if scopes else []
+        values = cleaned or (["global", self.project] if self.project else ["global"])
         return [self.redactor().text(value)[0] for value in values]
 
     # Tools
+
+    def session_context(
+        self,
+        scopes: Sequence[str] | None = None,
+        max_items: int = ranking.SESSION_START_DEFAULT_MAX_ITEMS,
+        max_chars: int = ranking.SESSION_START_DEFAULT_MAX_CHARS,
+        types: Sequence[str] | None = None,
+    ) -> dict[str, Any]:
+        clamped_items = ranking.clamp_session_max_items(max_items)
+        clamped_chars = ranking.clamp_session_max_chars(max_chars)
+        resolved_scopes = self._scopes(scopes)
+        redacted_types = self.redactor().value(list(types) if types is not None else None)[0]
+        strategy = ranking.SessionStart(
+            scopes=resolved_scopes,
+            types=redacted_types,
+            max_items=clamped_items,
+            max_chars=clamped_chars,
+        )
+        got = self._recall(strategy, None)
+        if got.reason is not None:
+            return {
+                "degraded": True,
+                "reason": got.reason,
+                "retrieval_id": None,
+                "request_event_id": None,
+                "strategy": ranking.SESSION_START_STRATEGY,
+                "text": "",
+                "items": [],
+                "shown_count": 0,
+                "not_shown_count": 0,
+                "char_count": 0,
+                "max_chars": clamped_chars,
+            }
+        text, _ = ranking.format_session_context(
+            got.items, max_items=clamped_items, max_chars=clamped_chars
+        )
+        return {
+            "degraded": False,
+            "retrieval_id": got.retrieval_id,
+            "request_event_id": got.request_event_id,
+            "strategy": got.strategy,
+            "text": text,
+            "items": got.items,
+            "shown_count": len(got.items),
+            "not_shown_count": got.not_shown,
+            "char_count": len(text),
+            "max_chars": clamped_chars,
+        }
 
     def recall(
         self,
@@ -760,6 +812,10 @@ def _ts(value: str | None) -> datetime | None:
         raise ToolError(f"bad timestamp {value!r}") from exc
 
 
+def _dir_name(path: str) -> str | None:
+    return os.path.basename(path.rstrip("/\\")) or None
+
+
 def _cwd() -> str | None:
     try:
         return os.getcwd()
@@ -768,4 +824,5 @@ def _cwd() -> str | None:
 
 
 def _cwd_name() -> str | None:
-    return os.path.basename(_cwd() or "") or None
+    cwd = _cwd()
+    return _dir_name(cwd) if cwd else None
