@@ -72,11 +72,13 @@ order:
 Approved beside that line, to be taken up as it allows: MEM-13 (a
 memory with invisible characters or text that reads as an instruction
 starts quarantined, which closes a known defect) and MEM-9 (admission
-records whether a rule's exact values are in the lines it cites). MEM-6
-(what Droid does with the stdout of a `SessionStart` hook, also for a
-person) was checked with MEM-14 on 2026-11-23: Droid gives it to the
-agent. MEM-5 is approved once the user agrees to a read of the
-production home.
+records whether a rule's exact values are in the lines it cites; built
+on 2026-11-25). MEM-6 (what Droid does with the stdout of a
+`SessionStart` hook, also for a person) was checked with MEM-14 on
+2026-11-23: Droid gives it to the agent. MEM-5 (how many captured
+sessions make a recall at all) was measured on 2026-11-25: 0 of 177
+sessions, with 0 memories and 0 retrievals in the production home (see
+"Recall in captured sessions" below).
 
 Approved on 2026-11-24: capture of omp sessions, through a TypeScript
 extension that hands capture records to `mem` (see "Phase 2" below).
@@ -558,6 +560,64 @@ What the numbers favor, for a recall of events by text (MEM-3):
   that run at once conflict at every size measured, and from 1 million
   events they miss their deadline.
 
+## Recall in captured sessions
+
+Measured on 2026-11-25 for MEM-5 by read-only `SELECT` queries through
+the running server of the production home against `session_summary`,
+`sessions`, `events`, `retrievals`, `memories`, and `memory_sources`.
+Nothing was written to the home, and only aggregate counts were read.
+
+Span: 177 captured sessions, all `factory-droid`, recorded from
+2026-11-11 through 2026-11-25 (`sessions.recorded_at`; `last_event_at`
+through 2026-11-25). Four sessions started earlier (`started_at` back
+to 2026-09-27) and were resumed or imported after hooks began recording
+on 2026-11-11; the other 173 started on or after 2026-11-11.
+
+Caller is `agent` when `session_summary.calling_session_id` is set and
+`human` otherwise (cross-checked against opening task headers in first
+user messages, which found 0 unattributed spawned sessions). A session
+counts as having recalled if it has a `memory_recall` event, a row in
+`retrievals`, or a `tool_call` event naming a memory tool.
+
+| Model | Caller | Sessions | With at least one reply | With at least one recall |
+|-------|--------|----------|-------------------------|--------------------------|
+| `gpt-6.1-sol` | human | 55 | 55 | 0 (0%) |
+| `claude-opus-5-5` | human | 46 | 46 | 0 (0%) |
+| `gemini-3.1-pro-preview` | human | 32 | 32 | 0 (0%) |
+| *(none)* | human | 20 | 0 | 0 (0%) |
+| `gpt-6.1-sol` | agent | 13 | 10 | 0 (0%) |
+| `claude-fable-5.2` | agent | 6 | 6 | 0 (0%) |
+| `claude-fable-5.2` | human | 3 | 3 | 0 (0%) |
+| `gemini-4-neon` | human | 1 | 1 | 0 (0%) |
+| `gpt-5.6-sol` | human | 1 | 1 | 0 (0%) |
+| **Total (human)** | human | **158** | **138** | **0 (0%)** |
+| **Total (agent)** | agent | **19** | **16** | **0 (0%)** |
+| **Total** | all | **177** | **154** | **0 (0%)** |
+
+The 20 sessions with no model recorded (13 transcript imports and 7
+hook-only sessions) have no assistant reply.
+
+**Whether sessions had memory tools.** The ledger cannot tell sessions
+that had no memory tools apart from sessions that had them and made no
+recall. Neither `sessions`, `capture_observations`, nor hook payloads
+record which MCP servers or tools were configured, and transcripts do
+not list always-loaded tools. The only partial signal in the ledger is
+Droid's `Deferred tools:` system reminder inside `user_msg` events: 56
+of the 177 sessions carry one, and 0 of those 56 list any
+`agent-memory` or `recall` tool. For the other 121 sessions (and for
+any always-loaded tools in the 56), the ledger cannot say whether
+memory tools were attached.
+
+Across the whole production home on the same read: 0 rows in
+`retrievals`, 0 `memory_recall` events, 0 memory-tool calls among
+26,849 `tool_call` events (across 48 sessions with tool calls), and 0
+rows in `memories` (so 0 active memories naming source events, the
+count MEM-10 waited for). Because the home holds no memories yet and
+the ledger cannot tell which sessions had memory tools attached, this
+0% figure does not settle whether agents call memory tools on their own
+without session-start injection (MEM-7, MEM-8); re-measure once
+`mem-mcp` is active on a populated ledger.
+
 ## Risks and open questions
 
 - Quack shipped in 2.0.0. Its protocol and authorization hook may change;
@@ -910,8 +970,10 @@ it names, or out of the tracker.
 - MEM-4. An agent can read on from a recalled event: the events around
   it, or a session's first and last messages. Waiting with MEM-3.
 - MEM-5. Report how many captured sessions make a recall at all, by
-  model and by caller. It reads the production home, and is approved
-  once the user agrees to that read.
+  model and by caller. Measured on 2026-11-25: 0 of 177 captured
+  sessions (0%), with 0 memories and 0 retrievals in the production
+  home, and the ledger cannot tell which sessions had memory tools
+  attached; see "Recall in captured sessions".
 - MEM-6. Check in a running Droid what the stdout of a `SessionStart`
   hook does: whether it reaches the agent, and at which kinds of start.
   Approved, and checked on 2026-11-23: Droid gives it to the agent at a
@@ -920,9 +982,10 @@ it names, or out of the tracker.
   "What a terminal and a `SessionStart` hook's stdout showed" in
   [phase-1-spec.md](phase-1-spec.md).
 - MEM-7. `mem` prints a bounded block of active memories for a project
-  and records the retrieval under a strategy of its own. Waiting for
-  the number MEM-5 reports: if most sessions already make a recall,
-  this is dropped.
+  and records the retrieval under a strategy of its own. Waiting for a
+  recall-rate check on sessions that actually have memory tools on a
+  populated ledger: MEM-5 found 0 recalls on 0 memories and could not
+  tell which sessions had memory tools attached.
 - MEM-8. A Droid session is given that block once when it starts, by a
   second hook command that a user opts in to; `mem event` still prints
   nothing. Waiting for MEM-7, and it needs a record under `docs/adr/`.
@@ -931,11 +994,12 @@ it names, or out of the tracker.
   block as text of the session.
 - MEM-9. Admission records, without a model, whether the exact values
   in a rule are in the lines its claims cite. It changes no action.
-  Approved.
+  Approved and built on 2026-11-25.
 - MEM-10. A dry run reads active memories against their source events
   with a local model, and writes no memory and no review action.
   Waiting for a count: how many active memories in the production home
-  name source events.
+  name source events. Checked on 2026-11-25: 0 (the production home
+  holds 0 memories).
 - MEM-11. That re-check records a confirmation, or a flag for a human.
   It never approves, retires, or accepts. Waiting for what the dry run
   of MEM-10 finds. Decided at triage: a memory the re-check finds
