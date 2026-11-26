@@ -29,10 +29,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
-from ..config import Config
+from ..config import Config, ConfigError
 from ..db import MemoryClient, MemoryServer, initialize_home
 from ..endpoints import REMOTE_ENV, Unreachable, is_loopback, remote_allowed, require_egress
 from ..judge.store import private_dir, utc_now_iso
+from ..mcp_server import MCP_WORDING_ENV, load_tool_wording_file, validate_tool_wording
 from ..smoke import free_port
 from .accounting import (
     RecallAccounting,
@@ -40,6 +41,13 @@ from .accounting import (
     account_trial_recall,
     capture_trial_baseline,
     import_trial_transcript,
+)
+from .registration import (
+    default_trial_config_overrides,
+    detect_hardware_class,
+    detect_repo_commit,
+    memory_tool_wording_sha256,
+    verify_registration_for_trial,
 )
 from .store import UsefulnessError, UsefulnessRunStore, write_once_json
 from .tasks import TaskSpec, assert_hidden_tests_absent, load_task, load_verified_task
@@ -90,6 +98,7 @@ _STRIPPED_HARNESS_ENV: tuple[str, ...] = (
     "AGENT_MEMORY_AGENT",
     "AGENT_MEMORY_PROJECT",
     "AGENT_MEMORY_SESSION",
+    MCP_WORDING_ENV,
 )
 
 _TRIAL_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
@@ -267,6 +276,8 @@ class MemoryEndpoint:
     project: str
     agent_id: str = DEFAULT_MEMORY_AGENT_ID
     server_name: str = DEFAULT_MEMORY_SERVER_NAME
+    wording_path: Path | None = None
+    wording_sha256: str | None = None
 
 
 @dataclass(frozen=True)
@@ -285,6 +296,11 @@ class TrialConfig:
     verify_manifest: bool = True
     memory_server_name: str = DEFAULT_MEMORY_SERVER_NAME
     kill_grace_s: float = 5.0
+    memory_tool_wording: Mapping[str, Any] | None = None
+    memory_tool_wording_file: Path | None = None
+    repo_commit: str | None = None
+    hardware_class: str | None = None
+    harness_version: str | None = None
 
 
 @dataclass(frozen=True)
@@ -364,6 +380,7 @@ class TrialRecord:
     environment: Mapping[str, Any]
     record_path: Path
     record_sha256: str
+    registration_sha256: str | None = None
     recall_accounting: RecallAccounting | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -373,6 +390,7 @@ class TrialRecord:
             "run_id": self.run_id,
             "task_id": self.task_id,
             "task_sha256": self.task_sha256,
+            "registration_sha256": self.registration_sha256,
             "arm": self.arm,
             "status": self.status,
             "failure_category": self.failure_category,
@@ -933,6 +951,9 @@ class DroidHarnessAdapter:
             else (sys.executable, "-m", "agent_memory.mcp_server")
         )
 
+    def version(self) -> str | None:
+        return self._detect_version()
+
     def _detect_version(self) -> str | None:
         try:
             proc = subprocess.run(
@@ -987,17 +1008,20 @@ class DroidHarnessAdapter:
         mcp_servers: dict[str, Any] = {}
         if invocation.memory_endpoint is not None:
             ep = invocation.memory_endpoint
+            mcp_env: dict[str, str] = {
+                "AGENT_MEMORY_HOME": str(ep.home),
+                "AGENT_MEMORY_PORT": str(ep.port),
+                "AGENT_MEMORY_HOST": ep.host,
+                "AGENT_MEMORY_AGENT": ep.agent_id,
+                "AGENT_MEMORY_PROJECT": ep.project,
+            }
+            if ep.wording_path is not None:
+                mcp_env[MCP_WORDING_ENV] = str(ep.wording_path)
             mcp_servers[ep.server_name] = {
                 "type": "stdio",
                 "command": self.mcp_command[0],
                 "args": list(self.mcp_command[1:]),
-                "env": {
-                    "AGENT_MEMORY_HOME": str(ep.home),
-                    "AGENT_MEMORY_PORT": str(ep.port),
-                    "AGENT_MEMORY_HOST": ep.host,
-                    "AGENT_MEMORY_AGENT": ep.agent_id,
-                    "AGENT_MEMORY_PROJECT": ep.project,
-                },
+                "env": mcp_env,
             }
         mcp_config_path = factory_dir / "mcp.json"
         mcp_config_path.write_text(
@@ -1232,6 +1256,9 @@ class ScriptedHarnessAdapter:
         self._version = version
         self.invocations: list[HarnessInvocation] = []
 
+    def version(self) -> str | None:
+        return self._version
+
     def run(self, invocation: HarnessInvocation) -> HarnessResult:
         self.invocations.append(invocation)
         result = self._handler(invocation)
@@ -1299,24 +1326,138 @@ def _resolve_task_for_trial(
     task_or_dir: TaskSpec | Path,
     *,
     verify_manifest: bool,
-) -> TaskSpec:
+) -> tuple[TaskSpec, str | None]:
+    has_registration = store.registration_path.exists()
+    effective_verify = verify_manifest or has_registration
+    if has_registration and not store.task_manifest_path.exists():
+        raise UsefulnessError(
+            f"cannot run trial under registration without task manifest: {store.task_manifest_path}"
+        )
+
     if isinstance(task_or_dir, TaskSpec):
         task = task_or_dir
-        if verify_manifest and store.task_manifest_path.exists():
+        if effective_verify and store.task_manifest_path.exists():
             from .tasks import verify_task_against_manifest
 
-            verify_task_against_manifest(task, store.read_task_manifest())
-        return task
+            split = verify_task_against_manifest(task, store.read_task_manifest())
+            return task, split
+    else:
+        task_dir = task_or_dir
+        if effective_verify and store.task_manifest_path.exists():
+            task, split = load_verified_task(task_dir, store.read_task_manifest())
+            return task, split
+        task = load_task(task_dir)
 
-    task_dir = task_or_dir
-    if verify_manifest and store.task_manifest_path.exists():
-        task, _ = load_verified_task(task_dir, store.read_task_manifest())
-        return task
-    return load_task(task_dir)
+    if store.task_manifest_path.exists():
+        manifest = store.read_task_manifest()
+        held_out = (manifest.get("split") or {}).get("held_out") or ()
+        if task.task_id in held_out:
+            return task, "held_out"
+    return task, None
+
+
+def _resolve_optional_wording(
+    config: TrialConfig,
+) -> tuple[str, dict[str, str], str] | None:
+    if config.memory_tool_wording is not None and config.memory_tool_wording_file is not None:
+        raise UsefulnessError(
+            "specify at most one of memory_tool_wording or memory_tool_wording_file"
+        )
+    if config.memory_tool_wording_file is not None:
+        try:
+            instr, descs = load_tool_wording_file(config.memory_tool_wording_file)
+        except ConfigError as exc:
+            raise UsefulnessError(str(exc)) from None
+        return instr, descs, memory_tool_wording_sha256(instr, descs)
+    if config.memory_tool_wording is not None:
+        try:
+            instr, descs = validate_tool_wording(config.memory_tool_wording)
+        except ConfigError as exc:
+            raise UsefulnessError(str(exc)) from None
+        return instr, descs, memory_tool_wording_sha256(instr, descs)
+    return None
+
+
+def _adapter_version(adapter: HarnessAdapter) -> str | None:
+    version_fn = getattr(adapter, "version", None)
+    if callable(version_fn):
+        ver = version_fn()
+        return ver if isinstance(ver, str) else None
+    return None
 
 
 def _generate_trial_id(task_id: str, arm: Arm) -> str:
     return f"{task_id}-{arm}-{uuid.uuid4().hex[:12]}"
+
+
+def resolve_trial_registration(
+    experiment_home: Config | Path,
+    run_id: str,
+    task_id: str,
+    task_split: str | None,
+    config: TrialConfig,
+    adapter: HarnessAdapter,
+) -> tuple[str | None, tuple[str, dict[str, str], str] | None, Path | None]:
+    """Enforce the held-out gate and pre-trial registration check.
+
+    Returns ``(registration_sha256, effective_wording, effective_source_home)``.
+    Raises ``UsefulnessError`` before any trial directory or schedule event is written
+    when a held-out task has no registration or when a frozen registration does not
+    match the live trial configuration.
+    """
+    store = UsefulnessRunStore(experiment_home, run_id)
+    registration_sha256: str | None = None
+    effective_source_home: Path | None = config.source_home
+    effective_wording: tuple[str, dict[str, str], str] | None = None
+
+    if task_split == "held_out" and not store.registration_path.exists():
+        raise UsefulnessError(
+            f"cannot start held-out trial for task {task_id!r} in run {run_id!r}: "
+            f"no registration at {store.registration_path}"
+        )
+
+    if store.registration_path.exists():
+        live_harness_version = (
+            config.harness_version
+            if config.harness_version is not None
+            else _adapter_version(adapter)
+        )
+        live_repo_commit = (
+            config.repo_commit if config.repo_commit is not None else detect_repo_commit()
+        )
+        live_hardware_class = (
+            config.hardware_class if config.hardware_class is not None else detect_hardware_class()
+        )
+        verified_reg = verify_registration_for_trial(
+            experiment_home,
+            run_id,
+            harness=adapter.name,
+            harness_version=live_harness_version,
+            repo_commit=live_repo_commit,
+            hardware_class=live_hardware_class,
+            allowed_base_tools=config.base_tools,
+            memory_server_name=config.memory_server_name,
+            config_overrides=default_trial_config_overrides(config.auto_level),
+            model=config.model,
+            reasoning_effort=config.reasoning_effort,
+            wall_time_limit_s=config.wall_time_limit_s,
+            arm=config.arm,
+            source_home=config.source_home,
+            wording_override=config.memory_tool_wording,
+            wording_file=config.memory_tool_wording_file,
+        )
+        registration_sha256 = verified_reg.registration_sha256
+        effective_wording = (
+            verified_reg.memory_tools_instructions,
+            verified_reg.memory_tools_descriptions,
+            verified_reg.memory_tools_sha256,
+        )
+        if config.arm == "memory" and effective_source_home is None:
+            effective_source_home = verified_reg.memory_set_dir
+    else:
+        effective_wording = _resolve_optional_wording(config)
+
+    return registration_sha256, effective_wording, effective_source_home
 
 
 def run_trial(
@@ -1332,22 +1473,40 @@ def run_trial(
     Enforces:
     - Refusal of the default production home (``ensure_experiment_home``).
     - Egress opt-in for any model not on this machine (``check_trial_egress``).
+    - Registration presence for held-out tasks, plus verification of task
+      manifest, memory set, environment manifest, and memory-tool wording
+      whenever ``registration.json`` exists in the run.
     - Fresh git clone at ``task.commit`` with hidden tests verified absent and
       repository-configured memory MCP servers stripped in both arms.
     - Isolated per-trial ``MemoryServer`` and trial home in the memory arm only,
-      with ``AGENT_MEMORY_PROJECT=<task.project>``.
+      with ``AGENT_MEMORY_PROJECT=<task.project>`` and any registered MCP tool
+      wording injected via ``AGENT_MEMORY_MCP_WORDING_FILE``.
     - Wall-time enforcement and retained trial records on failure or timeout.
     """
     _validate_trial_config(config)
     store = UsefulnessRunStore(experiment_home, run_id)
     egress_mode = check_trial_egress(config.model, config.model_base_url)
-    task = _resolve_task_for_trial(store, task_or_dir, verify_manifest=config.verify_manifest)
+    task, task_split = _resolve_task_for_trial(
+        store, task_or_dir, verify_manifest=config.verify_manifest
+    )
+
+    active_adapter: HarnessAdapter = adapter if adapter is not None else DroidHarnessAdapter()
+    allowed_tools = _allowed_tools_for_arm(config)
+
+    registration_sha256, effective_wording, effective_source_home = resolve_trial_registration(
+        experiment_home,
+        run_id,
+        task.task_id,
+        task_split,
+        config,
+        active_adapter,
+    )
 
     # Validate source_home early (including refusing DEFAULT_HOME) before creating trial dirs.
-    if config.source_home is not None:
+    if effective_source_home is not None:
         from .store import ensure_experiment_home
 
-        resolved_src = ensure_experiment_home(config.source_home)
+        resolved_src = ensure_experiment_home(effective_source_home)
         if config.arm == "memory":
             if not (resolved_src / "memory.duckdb").is_file():
                 raise UsefulnessError(
@@ -1369,9 +1528,6 @@ def run_trial(
     harness_home = trial_dir / "harness-home"
     private_dir(harness_home)
 
-    active_adapter: HarnessAdapter = adapter if adapter is not None else DroidHarnessAdapter()
-    allowed_tools = _allowed_tools_for_arm(config)
-
     started_at = utc_now_iso()
     t_total_start = time.monotonic()
 
@@ -1388,13 +1544,23 @@ def run_trial(
     trial_home_path: Path | None = None
     trial_baseline: TrialLedgerBaseline | None = None
     memory_endpoint: MemoryEndpoint | None = None
+    wording_path: Path | None = None
+    wording_sha256: str | None = None
     setup_error: str | None = None
 
     try:
         if config.arm == "memory":
+            if effective_wording is not None:
+                w_instr, w_descs, w_sha = effective_wording
+                wording_path = harness_home / "memory-tool-wording.json"
+                write_once_json(
+                    wording_path,
+                    {"instructions": w_instr, "descriptions": w_descs},
+                )
+                wording_sha256 = w_sha
             trial_home_path = trial_dir / "trial-home"
             port = free_port()
-            trial_cfg = _prepare_trial_home(trial_home_path, config.source_home, port)
+            trial_cfg = _prepare_trial_home(trial_home_path, effective_source_home, port)
             server = MemoryServer(trial_cfg)
             server.start()
             baseline_client = MemoryClient.from_config(trial_cfg)
@@ -1409,6 +1575,8 @@ def run_trial(
                 project=task.project,
                 agent_id=DEFAULT_MEMORY_AGENT_ID,
                 server_name=config.memory_server_name,
+                wording_path=wording_path,
+                wording_sha256=wording_sha256,
             )
     except Exception as exc:
         if server is not None:
@@ -1529,6 +1697,7 @@ def run_trial(
             if harness_result.raw_events_path is not None
             else None
         ),
+        "memory_tool_wording_path": str(wording_path) if wording_path is not None else None,
     }
 
     environment: dict[str, Any] = {
@@ -1542,6 +1711,7 @@ def run_trial(
         "egress_mode": egress_mode,
         "project": task.project if config.arm == "memory" else None,
         "memory_server_name": config.memory_server_name if config.arm == "memory" else None,
+        "memory_tools_wording_sha256": wording_sha256 if config.arm == "memory" else None,
         "sanitized_repo_mcp_files": [
             {"path": item.rel_path, "removed_servers": list(item.removed_servers)}
             for item in sanitized_files
@@ -1555,6 +1725,7 @@ def run_trial(
         "run_id": run_id,
         "task_id": task.task_id,
         "task_sha256": task.task_sha256,
+        "registration_sha256": registration_sha256,
         "arm": config.arm,
         "status": harness_result.status,
         "failure_category": failure_category,
@@ -1591,6 +1762,7 @@ def run_trial(
         run_id=run_id,
         task_id=task.task_id,
         task_sha256=task.task_sha256,
+        registration_sha256=registration_sha256,
         arm=config.arm,
         status=harness_result.status,
         failure_category=failure_category,

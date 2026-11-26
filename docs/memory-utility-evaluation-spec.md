@@ -963,6 +963,52 @@ order from a registered integer seed and `task-manifest.json`:
   `(seed, pair_id, attempt)` so retrying one pair never shifts another
   pair's arm order.
 
+### Registration at the freeze (`usefulness/registration.py`, `mcp_server/__init__.py`, 2026-11-26, MEM-23)
+
+`src/agent_memory/usefulness/registration.py`, `UsefulnessRunStore`,
+`runner.py`, `mcp_server/__init__.py`, and the CLI commands
+`mem --home <exp_home> usefulness freeze`, `verify-registration`,
+`deviate`, and `deviations` implement the write-once registration and
+its enforcement:
+
+- **Freeze and write-once storage:** `freeze_registration` validates all
+  ten sections under "The registration" (`primary_endpoint`,
+  `task_manifest` including the `exact_value` stratum rule and every
+  stratum present in `task-manifest.json`, `memory_set`, `models`,
+  `memory_tools`, `calibration_settings`, `environment_manifest`,
+  `limits`, `invalidation_rule`, `analysis`, and `stopping_rule`), binds
+  the live SHA-256 digests of `task-manifest.json` and the verified
+  memory set, hashes the `environment_manifest` and `memory_tools`
+  wording, refuses while any required field is missing or disagrees with
+  the run's artifacts, and writes `runs/<run_id>/registration.json` once
+  via `UsefulnessRunStore.write_registration` (`write_once_json`). A
+  second write is refused and the store provides no mutation path.
+- **Held-out gate and pre-trial enforcement:** `runner.run_trial`
+  refuses to start any trial of a `held_out` task when
+  `registration.json` is absent (while calibration tasks continue to run
+  before the freeze with `registration_sha256: null`). Whenever
+  `registration.json` exists in a run, `run_trial` requires task
+  manifest verification, runs `verify_registration_for_trial` to confirm
+  the live task manifest, memory set (and any explicit `source_home`),
+  environment manifest (harness, version, repo commit, allowed base
+  tools, memory server name, hardware class, and config overrides),
+  model/reasoning effort, wall-time limit, and memory-tool wording all
+  match the registration, defaults the memory arm's `source_home` to the
+  registered memory set, and records `registration_sha256` in
+  `record.json`.
+- **Registered MCP tool wording:** `mem-mcp` (`mcp_server/__init__.py`)
+  reads `AGENT_MEMORY_MCP_WORDING_FILE` when set and passes the
+  registered server instructions and per-tool descriptions to
+  `build_server`. In a registered memory-arm trial, `run_trial` writes
+  the registered wording to `<harness_home>/memory-tool-wording.json`
+  and `DroidHarnessAdapter` passes `AGENT_MEMORY_MCP_WORDING_FILE` in
+  `mcp.json`, so trials always expose the registered wording even when
+  the installed package's defaults change later.
+- **Append-only deviations:** `append_deviation` and `list_deviations`
+  append dated deviation rows (`recorded_at`, `reason`, optional
+  `metadata`) to `runs/<run_id>/deviations.jsonl` via
+  `UsefulnessRunStore.append_deviation`, never rewriting earlier lines.
+
 ## Runs
 
 None yet. A run is listed here with the SHA-256 of its registration when

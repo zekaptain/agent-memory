@@ -18,6 +18,14 @@ are in `docs/memory-utility-evaluation-spec.md`, and its terms are in
   (`record.json` with `failure_category="interrupted"` or write-once
   `interrupted.json`), never overwritten in place; pair retries use new
   attempt-scoped trial IDs and follow `schedule.RetryRule` only.
+- Held-out tasks cannot start a trial before `registration.json` is
+  frozen (`registration.freeze_registration`). Once `registration.json`
+  exists in a run, every trial verifies the live task manifest, memory
+  set, environment manifest, model/limits, and memory-tool wording
+  against it, records `registration_sha256` in `record.json`, and gives
+  the memory arm's `mem-mcp` the registered wording via
+  `AGENT_MEMORY_MCP_WORDING_FILE` rather than assuming the installed
+  defaults.
 - A memory set (`memory_set.py`) is copied once from a stopped home
   (never a home served by `mem serve`) and never written to afterwards.
   Every memory-arm trial clones a fresh trial home via

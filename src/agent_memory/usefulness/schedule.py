@@ -29,10 +29,12 @@ from .runner import (
     FAILURE_CATEGORIES,
     VALID_ARMS,
     Arm,
+    DroidHarnessAdapter,
     HarnessAdapter,
     TrialConfig,
     TrialRecord,
     check_trial_egress,
+    resolve_trial_registration,
     run_trial,
 )
 from .store import (
@@ -502,6 +504,11 @@ class ScheduleRunConfig:
     model_base_url: str | None = None
     source_home: Path | None = None
     kill_grace_s: float = 10.0
+    memory_tool_wording: Mapping[str, Any] | None = None
+    memory_tool_wording_file: Path | None = None
+    repo_commit: str | None = None
+    hardware_class: str | None = None
+    harness_version: str | None = None
 
     def to_trial_config(self, *, arm: Arm, trial_id: str) -> TrialConfig:
         return TrialConfig(
@@ -517,6 +524,11 @@ class ScheduleRunConfig:
             verify_manifest=True,
             trial_id=trial_id,
             kill_grace_s=self.kill_grace_s,
+            memory_tool_wording=self.memory_tool_wording,
+            memory_tool_wording_file=self.memory_tool_wording_file,
+            repo_commit=self.repo_commit,
+            hardware_class=self.hardware_class,
+            harness_version=self.harness_version,
         )
 
 
@@ -1002,9 +1014,15 @@ def run_schedule(
         tasks_dir.expanduser().resolve() if tasks_dir is not None else store.tasks_dir
     )
 
-    # Preflight egress and source_home before recording any trial_started event
-    # so a configuration refusal never leaves a false interrupted marker.
+    # Preflight egress, held-out registration gate, and source_home before
+    # recording any trial_started event so a configuration refusal never leaves
+    # a false interrupted marker.
     check_trial_egress(run_config.model, run_config.model_base_url)
+    if schedule.split == "held_out" and not store.registration_path.exists():
+        raise UsefulnessError(
+            f"cannot run held-out schedule for run {run_id!r}: "
+            f"no registration at {store.registration_path}"
+        )
     if run_config.source_home is not None:
         resolved_src = ensure_experiment_home(run_config.source_home)
         if not (resolved_src / "memory.duckdb").is_file():
@@ -1017,6 +1035,7 @@ def run_schedule(
                 "stop its server before copying into a trial"
             )
 
+    active_adapter: HarnessAdapter = adapter if adapter is not None else DroidHarnessAdapter()
     executed: list[str] = []
     interrupted = False
     stopped_by_max = False
@@ -1047,10 +1066,19 @@ def run_schedule(
             raise UsefulnessError(
                 f"task directory missing for scheduled task {pair.task_id!r}: {task_dir}"
             )
-        # Verify the task matches the manifest before logging trial_started.
-        verified_task, _ = load_verified_task(task_dir, manifest)
+        # Verify the task manifest and any frozen registration before logging
+        # trial_started so a refusal never creates a false interrupted marker.
+        verified_task, task_split = load_verified_task(task_dir, manifest)
 
         trial_cfg = run_config.to_trial_config(arm=slot.arm, trial_id=slot.trial_id)
+        resolve_trial_registration(
+            experiment_home,
+            run_id,
+            verified_task.task_id,
+            task_split,
+            trial_cfg,
+            active_adapter,
+        )
         store.append_schedule_event(
             {
                 "event": "trial_started",
@@ -1070,7 +1098,7 @@ def run_schedule(
                 run_id,
                 verified_task,
                 trial_cfg,
-                adapter=adapter,
+                adapter=active_adapter,
             )
         except KeyboardInterrupt:
             interrupted = True

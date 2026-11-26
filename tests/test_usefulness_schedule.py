@@ -13,8 +13,13 @@ import pytest
 from typer.testing import CliRunner
 
 from agent_memory.cli import app
+from agent_memory.config import Config
+from agent_memory.db import initialize_home
 from agent_memory.endpoints import Unreachable
+from agent_memory.mcp_server import default_tool_wording
 from agent_memory.usefulness import (
+    DEFAULT_BASE_TOOLS,
+    DEFAULT_WALL_TIME_LIMIT_S,
     HarnessInvocation,
     HarnessResult,
     RetryRule,
@@ -26,8 +31,11 @@ from agent_memory.usefulness import (
     build_schedule,
     build_task_manifest,
     create_run_schedule,
+    default_trial_config_overrides,
+    freeze_registration,
     inspect_schedule_progress,
     load_run_schedule,
+    make_memory_set,
     run_schedule,
     sha256_file,
     trial_id_for_slot,
@@ -141,6 +149,106 @@ def _setup_run_with_tasks(
     manifest = build_task_manifest(tasks_dir, split_after="2026-11-15T00:00:00Z")
     store.write_task_manifest(manifest)
     return exp_home, store, manifest
+
+
+def _freeze_run_registration(
+    tmp_path: Path,
+    exp_home: Path,
+    run_id: str,
+    *,
+    model: str = "local-model",
+    model_base_url: str = "http://127.0.0.1:8080/v1",
+    wall_time_limit_s: float = DEFAULT_WALL_TIME_LIMIT_S,
+    auto_level: str = "high",
+    harness_version: str = "scripted-1.0.0",
+    repo_commit: str = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+    hardware_class: str = "darwin-arm64",
+) -> ScheduleRunConfig:
+    """Create an immutable memory set and freeze a matching registration for held-out runs."""
+    source_home = tmp_path / f"source-ledger-{run_id}"
+    initialize_home(Config(home=source_home))
+    make_memory_set(
+        source_home,
+        exp_home,
+        cutoff="2026-11-01T00:00:00Z",
+        last_day="2026-11-14T23:59:59Z",
+    )
+    wording = default_tool_wording()
+    spec = {
+        "primary_endpoint": {
+            "endpoint": "paired_blind_success_rate_diff",
+            "practical_benefit_threshold": 0.10,
+        },
+        "task_manifest": {
+            "population": "synthetic scheduled tasks",
+            "inclusion_exclusion_rules": ["include all local tasks"],
+            "sampling_seed": 20261125,
+            "sample_size": 3,
+            "trials_per_task": 1,
+            "strata_rules": {
+                "general": "synthetic general stratum",
+                "exact_value": "tasks that hinge on an exact value",
+            },
+        },
+        "models": {
+            "models": [
+                {
+                    "model": model,
+                    "reasoning_effort": None,
+                    "model_base_url": model_base_url,
+                }
+            ],
+            "harness_settings": {
+                "auto_level": auto_level,
+                "seed_supported": False,
+                "temperature_supported": False,
+            },
+            "pooling": "single model",
+        },
+        "memory_tools": {
+            "instructions": wording["instructions"],
+            "descriptions": dict(wording["descriptions"]),
+        },
+        "calibration_settings": {"recall_limit": 8},
+        "environment_manifest": {
+            "harness": "scripted",
+            "harness_version": harness_version,
+            "repo_commit": repo_commit,
+            "allowed_base_tools": list(DEFAULT_BASE_TOOLS),
+            "memory_server_name": "agent-memory",
+            "hardware_class": hardware_class,
+            "config_overrides": default_trial_config_overrides(auto_level),
+        },
+        "limits": {
+            "tokens": None,
+            "wall_time_s": wall_time_limit_s,
+            "tool_calls": None,
+            "retries": {"max_retries": 1, "retryable_categories": ["tool_outage"]},
+            "enforced": ["wall_time_s", "retries"],
+        },
+        "invalidation_rule": "invalid on reference check failure or non-retryable env error",
+        "analysis": {
+            "bootstrap_seed": 42,
+            "bootstrap_resamples": 1000,
+            "secondary_measures": {"wall_time_ratio": "median ratio"},
+            "exploratory_slices": ["general"],
+        },
+        "stopping_rule": {
+            "stop_at": {"kind": "sample_size", "held_out_pairs": 3},
+            "safety_stop_harmful_uses": 3,
+            "sequential_error_control": "none",
+        },
+    }
+    freeze_registration(exp_home, run_id, spec)
+    return ScheduleRunConfig(
+        model=model,
+        model_base_url=model_base_url,
+        wall_time_limit_s=wall_time_limit_s,
+        auto_level=auto_level,
+        harness_version=harness_version,
+        repo_commit=repo_commit,
+        hardware_class=hardware_class,
+    )
 
 
 def test_schedule_deterministic_from_seed_and_manifest_with_repeats(tmp_path: Path) -> None:
@@ -263,12 +371,8 @@ def test_interrupted_run_keeps_and_marks_interrupted_trial_and_resumes_unmade_tr
     ]
     assert len(expected_order) == 6
 
-    run_cfg = ScheduleRunConfig(
-        model="local-model",
-        model_base_url="http://127.0.0.1:8080/v1",
-    )
-
-    # 1. Preflight refusal (hosted model without opt-in) must NOT mark any trial interrupted.
+    # 1. Preflight refusals (hosted model without opt-in, or held-out schedule without a
+    #    frozen registration) must NOT record trial_started or mark any trial interrupted.
     hosted_cfg = ScheduleRunConfig(model="claude-sonnet-4-6", model_base_url=None)
     with pytest.raises(Unreachable, match="AGENT_MEMORY_JUDGE_ALLOW_REMOTE"):
         run_schedule(
@@ -279,8 +383,23 @@ def test_interrupted_run_keeps_and_marks_interrupted_trial_and_resumes_unmade_tr
                 lambda inv: HarnessResult(status="completed", last_reply="ok")
             ),
         )
+    unregistered_cfg = ScheduleRunConfig(
+        model="local-model",
+        model_base_url="http://127.0.0.1:8080/v1",
+    )
+    with pytest.raises(UsefulnessError, match="no registration"):
+        run_schedule(
+            exp_home,
+            "run-resume",
+            unregistered_cfg,
+            adapter=ScriptedHarnessAdapter(
+                lambda inv: HarnessResult(status="completed", last_reply="ok")
+            ),
+        )
     assert store.schedule_events() == []
     assert inspect_schedule_progress(exp_home, "run-resume").interrupted_trials == 0
+
+    run_cfg = _freeze_run_registration(tmp_path, exp_home, "run-resume")
 
     # 2. First execution: trial 0 completes, trial 1 raises KeyboardInterrupt inside the harness.
     seen_pass1: list[str] = []
@@ -445,10 +564,7 @@ def test_retry_rule_strictly_governs_pair_retries(tmp_path: Path) -> None:
             )
         return HarnessResult(status="completed", last_reply="ok")
 
-    run_cfg = ScheduleRunConfig(
-        model="local-model",
-        model_base_url="http://127.0.0.1:8080/v1",
-    )
+    run_cfg = _freeze_run_registration(tmp_path, exp_home, "run-retry")
     res = run_schedule(exp_home, "run-retry", run_cfg, adapter=ScriptedHarnessAdapter(agent))
 
     assert res.progress.is_complete is True
