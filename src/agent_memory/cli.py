@@ -497,6 +497,99 @@ def ingest(
     _report_delivery(delivery, transcript.name)
 
 
+@app.command()
+def bridge(
+    ctx: typer.Context,
+    agent: Annotated[
+        str | None,
+        typer.Option(
+            "--agent",
+            help=(
+                "Agent id recorded for bridge sessions. Defaults to $AGENT_MEMORY_AGENT, "
+                "otherwise oh-my-pi."
+            ),
+            show_default=False,
+        ),
+    ] = None,
+) -> None:
+    """Serve persistent NDJSON stdio memory operations for a harness extension."""
+    from .bridge import run_bridge
+
+    cfg = command_config(ctx)
+    code = run_bridge(cfg, agent_id=agent)
+    if code:
+        raise typer.Exit(code)
+
+
+@app.command()
+def context(
+    ctx: typer.Context,
+    project: Annotated[
+        str | None,
+        typer.Option(
+            help="Project scope. Defaults to $AGENT_MEMORY_PROJECT, then --cwd or cwd basename.",
+            show_default=False,
+        ),
+    ] = None,
+    cwd: Annotated[
+        str | None,
+        typer.Option(
+            help="Working directory recorded on the session and used to infer --project.",
+            show_default=False,
+        ),
+    ] = None,
+    scope: Annotated[
+        list[str] | None,
+        typer.Option("--scope", help="Scope to read; repeatable. Default: global and project."),
+    ] = None,
+    max_chars: Annotated[
+        int,
+        typer.Option(
+            "--max-chars",
+            help="Maximum characters in the rendered block (clamped 200..16000).",
+        ),
+    ] = 2400,
+    max_items: Annotated[
+        int,
+        typer.Option(
+            "--max-items",
+            help="Maximum memories in the rendered block (clamped 1..50).",
+        ),
+    ] = 12,
+    agent: Annotated[
+        str,
+        typer.Option("--agent", help="Agent recorded as the actor of this recall."),
+    ] = "human",
+    session: Annotated[
+        str | None,
+        typer.Option(
+            "--session",
+            help="Harness session id. Defaults to a timestamped context session.",
+            show_default=False,
+        ),
+    ] = None,
+    as_json: Annotated[
+        bool,
+        typer.Option("--json", help="Print the full JSON session_context result object."),
+    ] = False,
+) -> None:
+    """Print a bounded block of active memories for session start, and record the retrieval."""
+    from .bridge import run_context
+
+    cfg = command_config(ctx)
+    run_context(
+        cfg,
+        project=project,
+        cwd=cwd,
+        scopes=scope,
+        max_chars=max_chars,
+        max_items=max_items,
+        agent_id=agent,
+        harness_session_id=session,
+        as_json=as_json,
+    )
+
+
 audit_app = typer.Typer(help="Read-only ledger diagnostics.", no_args_is_help=True)
 app.add_typer(audit_app, name="audit")
 

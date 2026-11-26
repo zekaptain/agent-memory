@@ -19,7 +19,9 @@ METHOD = "captured_cite_turn_v1"
 
 
 def _memory_tool(payload: dict[str, Any], operation: str) -> bool:
-    """Require the configured MCP server identity, not a generic tool-name suffix."""
+    """Require the configured MCP server identity or Corvus native tool identity."""
+    if payload.get("extension") == "corvus" and payload.get("memory_op") == operation:
+        return True
     server = os.environ.get("AGENT_MEMORY_MCP_SERVER_NAME", "agent-memory")
     name = payload.get("tool_name")
     if payload.get("mcp_server") == server and name == operation:
