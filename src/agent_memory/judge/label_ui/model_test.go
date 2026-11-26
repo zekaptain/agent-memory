@@ -719,3 +719,41 @@ func TestFooterContainsOnlyAvailableControlsInWrappedPairs(t *testing.T) {
 		t.Fatal("footer exceeded measured available width")
 	}
 }
+
+func TestTrialSubjectRendersAndNavigates(t *testing.T) {
+	s := syntheticScreen()
+	s.Subject = "Trial"
+	s.Key = "1:met_checks"
+	s.Metadata = "Task: t-h1 · Project: demo · Checks: passed"
+	s.Evidence = "REQUEST\nFix the bug.\n\nCHECKS\nunit: passed\n\nREPO CHANGES\napp.py\n\nLAST REPLY\nDone."
+	s.Projection = s.Evidence + "\n\nFULL DIFF\n+return 2"
+	s.Question = "Did this trial meet the task's checks and required behavior?"
+	s.Options = []option{{"y", "Yes"}, {"n", "No"}}
+	s.Selected = "y"
+	s.CanBack = false
+	s.CanRedo = false
+
+	m, out := testModel(t, s)
+	for _, size := range [][2]int{{60, 24}, {100, 32}, {140, 40}} {
+		m.Update(tea.WindowSizeMsg{Width: size[0], Height: size[1]})
+		assertFits(t, m, size[0], size[1])
+		if m.tooSmall {
+			t.Fatalf("trial screen should fit at %v", size)
+		}
+		view := ansi.Strip(m.View().Content)
+		for _, want := range []string{"Trial", "Fix the bug.", "Did this trial meet", "Yes", "No"} {
+			if !strings.Contains(view, want) {
+				t.Fatalf("missing %q in trial view at %v:\n%s", want, size, view)
+			}
+		}
+	}
+	// Redo is not allowed on Trial screens even if CanRedo is somehow set.
+	if m.canRedo() {
+		t.Fatal("redo must not be active on Trial subject")
+	}
+	press(m, "down")
+	a := sentAction(t, m, out, press(m, "enter"))
+	if a.Action != "answer" || a.Value != "n" {
+		t.Fatalf("expected answer 'n', got %+v", a)
+	}
+}
