@@ -429,7 +429,9 @@ and a trial has no interface.
 
 Stage 1 starts by recording these from a real run. Factory's
 documentation speaks to the first three, and none of it has been
-checked here against a run.
+checked here against a run. The first six items were checked on
+2026-11-25 (MEM-17, recorded under "As built" below); the seventh waits
+for the memory set (MEM-20).
 
 - What a run with no interface reports when it ends: the last reply,
   the session's id, how long it took, and token counts.
@@ -457,6 +459,203 @@ checked here against a run.
    withdrawal/backflow can be measured.
 
 ## As built
+
+### Headless Droid probe (2026-11-25, MEM-17)
+
+Probed with `droid 1.21.0` on macOS using `droid exec` against
+`claude-sonnet-4-6` (default `reasoning_effort=high`) on synthetic tasks
+in throwaway git repositories and a throwaway ledger home. A read-only
+check of `~/.agent-memory` and its spool after the probes confirmed zero
+captured sessions and zero spooled records in the production home.
+
+#### What a run reports and what can be missing
+
+- `-o json` prints one JSON object on stdout:
+  - On success (exit `0`): `type` (`"result"`), `subtype` (`"success"`),
+    `is_error` (`false`), `duration_ms`, `num_turns`, `result` (final
+    assistant reply), `session_id`, and `usage` (`input_tokens`,
+    `output_tokens`, `cache_read_input_tokens`,
+    `cache_creation_input_tokens`, `factory_credits`, `thinking_tokens`,
+    `ttft_ms`).
+  - On failure (exit `1`, observed on authentication failure and on an
+    `--auto medium` permission stop): `subtype` (`"failure"`), `is_error`
+    (`true`), `num_turns` (`0`), and `result` carries the error message
+    instead of an assistant reply. When failure happens before any model
+    call (authentication failure), `usage.ttft_ms` is omitted and token
+    counts are `0`. When failure happens after a model turn (permission
+    stop on a tool call), `usage` reports the tokens and `ttft_ms` spent
+    before termination.
+  - `-o json` omits the resolved model ID, reasoning effort, and per-call
+    tool invocations; those appear in `-o stream-json` and in the session
+    transcript and sidecar settings file.
+- `-o stream-json` prints NDJSON events: `system` (`subtype: "init"`,
+  with `cwd`, `session_id`, `model`, `reasoning_effort`, `tools`),
+  `message`, `reasoning` (when thinking is enabled), `tool_call`,
+  `tool_result`, and a terminal `completion` (`finalText`, `numTurns`,
+  `durationMs`, `session_id`, `timestamp`, `usage`) or `error`.
+  - `system/init.tools` lists all built-in tools plus allowed MCP tools
+    even when `--only-tools` restricts execution. The effective allowed
+    list comes from `droid exec --list-tools --output-format json`
+    (entries with `currentlyAllowed: true`) and is also recorded as
+    `restrictToolIds` in `<session_id>.settings.json`.
+- `input_tokens` counts non-cached input tokens only; total input tokens
+  are `input_tokens + cache_read_input_tokens +
+  cache_creation_input_tokens`. Droid reports end-to-end `duration_ms` /
+  `durationMs` (and `assistantActiveTimeMs` in the sidecar) without
+  itemizing model, retrieval, build, and retry durations; per-event
+  timestamps are in the transcript, and retrieval latency is recorded in
+  `retrievals.latency_ms`.
+
+#### Isolating one run from user and repository configuration
+
+- **Home override and macOS auth:** Inside Factory Desktop or another
+  Droid session, `FACTORY_HOME_OVERRIDE` is inherited and takes
+  precedence over `HOME`, so changing `HOME` alone does not isolate
+  `.factory/`. Changing `HOME` on macOS also breaks Keychain lookup for
+  `auth.v2.loginkeychain` (producing `Authentication failed` even with
+  symlinked `auth.v2.*` files).
+- **Working isolation recipe (macOS):** Keep real `HOME` (or set
+  `FACTORY_API_KEY`), set `FACTORY_HOME_OVERRIDE=<trial_factory_home>` to
+  a fresh per-trial directory, unset `FACTORY_SESSION_ID`, set
+  `FACTORY_DROID_AUTO_UPDATE_ENABLED=false`, symlink `auth.v2.file`,
+  `auth.v2.key`, and `auth.v2.loginkeychain` into
+  `<trial_factory_home>/.factory/` (not needed with `FACTORY_API_KEY`),
+  pass `--settings <path>` with `{"hooks": {"hooksDisabled": true},
+  "cloudSessionSync": false}`, pass `--disable-builtin-skills`, and pass
+  `--only-tools ...`.
+- **Hooks:** `FACTORY_HOME_OVERRIDE` isolates `~/.factory/hooks.json` and
+  `~/.factory/settings.json`. `hooks.hooksDisabled: true` in `--settings`
+  additionally blocks repository `.factory/hooks.json` hooks (verified
+  with a synthetic repo `SessionStart` hook, which fired without
+  `hooksDisabled` and did not fire with it).
+- **MCP servers and org connectors:** `FACTORY_HOME_OVERRIDE` isolates
+  `~/.factory/mcp.json` (`droid mcp list` reported no configured
+  servers), but org/account connectors and repository `.factory/mcp.json`
+  servers remain exposed unless restricted. Passing
+  `--only-tools Read,LS,Glob,Grep,Edit,Create,Execute` removes all org
+  connectors, all repository `.factory/mcp.json` servers, and all other
+  built-in tools (verified via `--list-tools --output-format json`: only
+  those 7 tools had `currentlyAllowed: true`).
+- **Instruction files:** `FACTORY_HOME_OVERRIDE` redirects both
+  `.factory/` and `.agents/` (a synthetic
+  `<trial_factory_home>/.agents/AGENTS.md` was read as
+  `~/.agents/AGENTS.md`). Task clones should live in a neutral temp
+  directory so Droid does not inherit an unrelated parent `AGENTS.md`.
+- **Skills:** `FACTORY_HOME_OVERRIDE` keeps out user skills under
+  `~/.factory/skills/`, `~/.agents/skills/`, and `~/.factory/plugins/`,
+  and `--disable-builtin-skills` keeps out Factory built-in skills
+  (verified: model reported zero visible skills).
+- **Subagents:** `FACTORY_HOME_OVERRIDE` keeps out personal droids under
+  `~/.factory/droids/`, leaving only built-in `worker` and `explorer`.
+  Omitting `Task` from `--only-tools` disables subagent invocation
+  altogether.
+
+#### Attaching or withholding an MCP server with its own environment
+
+- **Memory arm:** Write `<trial_factory_home>/.factory/mcp.json` with a
+  `stdio` server under `mcpServers` (for example `"agent-memory"` running
+  `mem-mcp` with `env` setting `AGENT_MEMORY_HOME`, `AGENT_MEMORY_PORT`,
+  `AGENT_MEMORY_AGENT=factory-droid`, and
+  `AGENT_MEMORY_PROJECT=<task.project>`), and pass
+  `--only-tools <base_tools>,ToolSearch,MCP:agent-memory`. Verified that
+  per-server `env` reaches both a synthetic probe server and `mem-mcp`.
+- **Deferred tool loading:** MCP tools start deferred in `droid 1.21.0`
+  and must be loaded via `ToolSearch` (`select:<server>___<tool>`), so
+  `ToolSearch` is required in `--only-tools` for the memory arm.
+- **Autonomy level:** An MCP tool declaring
+  `ToolAnnotations(readOnlyHint=True)` succeeded under `--auto medium`,
+  whereas MCP tools without `readOnlyHint=True` (including `mem-mcp`'s
+  `recall` as currently shipped) exited `1` under `--auto medium`
+  (`insufficient permission to proceed. Re-run with --auto high`). Under
+  `--auto high`, both `agent-memory___recall` and `agent-memory___cite`
+  succeeded. Because `cite`, `remember`, `review`, and `relate` write to
+  the trial ledger and both arms must share identical permissions, both
+  arms must run at `--auto high` (or `--skip-permissions-unsafe` inside
+  an isolated container or VM).
+- **No-memory arm:** Omit `"agent-memory"` from
+  `<trial_factory_home>/.factory/mcp.json` and omit `MCP:agent-memory`
+  from `--only-tools` (which also suppresses any memory server declared
+  in a task repository's `.factory/mcp.json`). Verified in a paired probe
+  that the no-memory arm had no memory tools available.
+
+#### MCP server instructions vs tool descriptions
+
+- In a canary probe against `claude-sonnet-4-6`,
+  `MCPServer(instructions=...)` (`InitializeResult.instructions`) did
+  **not** reach the model; only the tool description string reached the
+  model.
+- On `droid 1.21.0`, `mem-mcp`'s `INSTRUCTIONS` text in
+  `src/agent_memory/mcp_server/__init__.py` is therefore not shown to the
+  agent. Any memory-arm guidance varied during calibration must be placed
+  in tool descriptions (or passed explicitly via Droid's
+  `--append-system-prompt` / `--append-system-prompt-file` if the design
+  is updated to use that channel).
+
+#### Limits, seed, and temperature
+
+- `droid exec` (`1.21.0`) accepts `-m/--model` and
+  `-r/--reasoning-effort`, and accepts no CLI flags for wall-time limit,
+  token cap, tool-call cap, random seed, or temperature. `settings.json`
+  exposes only a per-request HTTP timeout (`llmRequestTimeoutMs`).
+- The trial runner (`MEM-18`) must enforce wall-time limits externally
+  (subprocess timeout and process-group kill). Live tool-call counting is
+  possible by reading `tool_call` events from `-o stream-json`; aggregate
+  token counts appear on the final `completion` event. Decoding seed and
+  temperature cannot be fixed for hosted models via `droid exec`, so
+  paired trials cannot share a seed on this harness.
+
+#### Transcript location, import, and citation binding
+
+- Droid writes each run's transcript to
+  `<FACTORY_HOME_OVERRIDE>/.factory/sessions/<sanitized-cwd>/<session_id>.jsonl`
+  (where `<sanitized-cwd>` is the resolved realpath of `cwd` with `/`
+  replaced by `-`), alongside `<session_id>.settings.json`.
+- Importing the memory-arm transcript into the throwaway trial home with
+  `mem --home <trial_home> --port <port> ingest --harness droid
+  --transcript <path>` exited `0` and stored the session with
+  `model="claude-sonnet-4-6"`, the final assistant reply (`assistant_msg`
+  with `modelId`, `apiProvider`, `reasoningEffort`, and
+  `turn_complete=true`), and all `tool_call` / `tool_result` pairs
+  (`ToolSearch`, `agent-memory___recall`, `agent-memory___cite`).
+- Because no capture hook runs and Droid does not export
+  `AGENT_MEMORY_SESSION` to stdio MCP servers, the trial home holds two
+  sessions per memory-arm trial: the `mem-mcp` session
+  (`mcp-factory-droid-<uuid>`, `project=<task.project>`, `model=NULL`,
+  holding `retrievals`, `context_links`, and the placeholder
+  `assistant_msg`) and the imported Droid session (holding the transcript
+  events and `model`, with `project` derived from the clone directory
+  name).
+- On transcript import, cross-session attribution
+  (`0006_cross_session_answer_bindings`) bound the MCP citation
+  placeholder to the imported assistant reply in `answer_bindings` and
+  `effective_answer_bindings` (`resolution_method="captured_cite_turn_v1"`,
+  `reason_code="unique_captured_turn"`, with `captured_retrievals`
+  populated).
+- Attribution matches `<server>___cite`, `<server>___recall`, and
+  `<server>___graph` using `AGENT_MEMORY_MCP_SERVER_NAME` (default
+  `"agent-memory"`), so the server key in
+  `<trial_factory_home>/.factory/mcp.json` must match that name during
+  `mem ingest`.
+
+#### What could not be seen
+
+- Behavior on non-Claude models, models with reasoning disabled, and
+  custom local model endpoints (`custom:...`), including whether
+  `thinking_tokens` or `ttft_ms` are omitted and whether custom local
+  model entries in `settings.json` support decoding parameters such as
+  temperature or seed.
+- Whether `droid exec` emits partial JSON or a terminal `completion` /
+  `error` event when terminated mid-run by a runner timeout (`SIGTERM` /
+  `SIGKILL`) or an upstream network or rate-limit failure.
+- Whether `~/AGENTS.md` or `~/.claude/CLAUDE.md` in real `HOME` would be
+  read when real `HOME` is preserved alongside `FACTORY_HOME_OVERRIDE`
+  (none of those files existed on the probed machine).
+- Whether org-managed settings (`org-managed-settings.cache.json`) can
+  override `--settings` keys beyond the hooks, tools, skills, and
+  subagents verified above, and how `--append-system-prompt` interacts
+  with `--settings`.
+- Copy duration and per-trial disk usage for a real memory set (waits
+  for user go-ahead and `MEM-20`).
 
 ### Statistics (`usefulness/stats.py`, 2026-11-25, MEM-26)
 
