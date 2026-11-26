@@ -14,6 +14,14 @@ are in `docs/memory-utility-evaluation-spec.md`, and its terms are in
 - Write-once run files (task manifest, memory-set manifest, registration)
   must go through `store.write_once_json` and cannot be overwritten;
   deviations are append-only (`store.append_jsonl`).
+- Held-out tasks cannot start a trial before `registration.json` is
+  frozen (`registration.freeze_registration`). Once `registration.json`
+  exists in a run, every trial verifies the live task manifest, memory
+  set, environment manifest, model/limits, and memory-tool wording
+  against it, records `registration_sha256` in `record.json`, and gives
+  the memory arm's `mem-mcp` the registered wording via
+  `AGENT_MEMORY_MCP_WORDING_FILE` rather than assuming the installed
+  defaults.
 - A memory set (`memory_set.py`) is copied once from a stopped home
   (never a home served by `mem serve`) and never written to afterwards.
   Every memory-arm trial clones a fresh trial home via

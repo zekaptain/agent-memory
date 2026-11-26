@@ -176,6 +176,20 @@ class UsefulnessRunStore:
             raise UsefulnessError(f"no task manifest at {self.task_manifest_path}")
         return sha256_file(self.task_manifest_path)
 
+    def write_registration(self, registration: Mapping[str, Any]) -> str:
+        """Write ``registration.json`` once at the freeze and return its SHA-256."""
+        return write_once_json(self.registration_path, registration)
+
+    def read_registration(self) -> dict[str, Any]:
+        """Read ``registration.json``."""
+        return read_json_file(self.registration_path)
+
+    def registration_sha256(self) -> str:
+        """SHA-256 of the written ``registration.json``."""
+        if not self.registration_path.exists():
+            raise UsefulnessError(f"no registration at {self.registration_path}")
+        return sha256_file(self.registration_path)
+
     def append_deviation(
         self,
         reason: str,

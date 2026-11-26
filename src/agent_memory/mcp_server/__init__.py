@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
+from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 from mcp.server.mcpserver import MCPServer
@@ -11,6 +14,18 @@ from mcp.server.mcpserver import MCPServer
 from ..config import ConfigError, load_config
 from ..lifecycle import HUMAN_AGENT
 from .tools import MemoryTools, ToolError
+
+MCP_WORDING_ENV = "AGENT_MEMORY_MCP_WORDING_FILE"
+
+TOOL_NAMES: tuple[str, ...] = (
+    "recall",
+    "remember",
+    "cite",
+    "review",
+    "relate",
+    "graph",
+    "status",
+)
 
 INSTRUCTIONS = """Shared, auditable memory across coding agents.
 Call recall before answering questions about the user, this project's history, or past
@@ -27,24 +42,135 @@ call, with the entity names as they appear in the source. Call graph to walk tho
 connections from an entity when a question spans several facts, and cite its retrieval_id
 too."""
 
+DEFAULT_TOOL_DESCRIPTIONS: dict[str, str] = {
+    "recall": (
+        "Search memory. Returns ranked active memories with a retrieval_id for cite.\n"
+        "query: free text; empty returns the most important recent memories.\n"
+        'scopes: default ["global", <project>]. types: fact, preference, decision, procedure,\n'
+        "observation, profile. Every call is logged with what was returned."
+    ),
+    "remember": (
+        "Store one durable memory: a fact, preference, decision, procedure, observation,\n"
+        "or profile attribute. Not for transient task state. trust_level: user (the user said\n"
+        "it), agent (you inferred it), tool (came from tool output; quarantined until the user\n"
+        "approves it). Content with invisible or direction-changing characters or\n"
+        "instruction-like text is also written quarantined regardless of trust_level and waits\n"
+        "for the user to approve it with `mem review`.\n"
+        "Pass supersedes=<memory_id> when correcting an existing memory. Identical content\n"
+        "in the same scope is confirmed rather than duplicated."
+    ),
+    "cite": (
+        "Record what an answer was based on: the recall it used and the memories it relied\n"
+        "on. Call it when you answer using recalled memory. Without answer_event_id a\n"
+        "placeholder answer event is created and returned."
+    ),
+    "review": (
+        "Change a memory's standing. action: retire (wrong or obsolete), quarantine (hide\n"
+        "until the user reviews it), confirm (still true), flag_contradiction (conflicts with\n"
+        "related_memory_id). reason is required. You cannot approve a quarantined memory:\n"
+        "only the user can, with `mem review`."
+    ),
+    "relate": (
+        "Record one relation between two named entities as a fact memory:\n"
+        'subject --[predicate]--> object, for example ("payments-api", "owned by", "Dana").\n'
+        "Use short verb-phrase predicates and the entity names as written in the source.\n"
+        "subject_type and object_type are optional labels such as PERSON, SERVICE, FILE,\n"
+        "LIBRARY, DECISION. content is an optional fuller sentence; the default is the\n"
+        "triple itself. The same triple in the same scope is confirmed, not duplicated."
+    ),
+    "graph": (
+        "Walk recorded relations outward from an entity. Returns the edges within hops\n"
+        '(1 to 3) as items and as "(subject) --[predicate]--> (object)" triples you can\n'
+        "reason over, plus a retrieval_id for cite. Entity names match case- and\n"
+        "punctuation-insensitively. Use it for questions that chain facts: who owns the\n"
+        "thing that depends on X, what replaced the approach a decision retired."
+    ),
+    "status": (
+        "Whether the memory server is reachable, this session's id, how much is waiting\n"
+        "in the spool, and how many records the ledger rejected."
+    ),
+}
 
-def build_server(tools: MemoryTools) -> MCPServer:
-    server = MCPServer(name="agent-memory", instructions=INSTRUCTIONS)
 
-    @server.tool()
+def default_tool_wording() -> dict[str, Any]:
+    """Return the installed default MCP instructions and per-tool descriptions."""
+    return {
+        "instructions": INSTRUCTIONS,
+        "descriptions": dict(DEFAULT_TOOL_DESCRIPTIONS),
+    }
+
+
+def validate_tool_wording(data: Mapping[str, Any]) -> tuple[str, dict[str, str]]:
+    """Validate an MCP wording mapping and return ``(instructions, descriptions)``."""
+    if not isinstance(data, Mapping):
+        raise ConfigError("memory tool wording must be a JSON object")
+    raw_instructions = data.get("instructions")
+    if not isinstance(raw_instructions, str) or not raw_instructions.strip():
+        raise ConfigError("memory tool wording is missing non-empty 'instructions'")
+    raw_descriptions = data.get("descriptions")
+    if not isinstance(raw_descriptions, Mapping):
+        raise ConfigError("memory tool wording is missing 'descriptions' mapping")
+
+    expected = set(TOOL_NAMES)
+    provided = set(raw_descriptions.keys())
+    missing = sorted(expected - provided)
+    extra = sorted(provided - expected)
+    if missing:
+        raise ConfigError(
+            f"memory tool wording is missing descriptions for tool(s): {', '.join(missing)}"
+        )
+    if extra:
+        raise ConfigError(f"memory tool wording names unknown tool(s): {', '.join(extra)}")
+
+    descriptions: dict[str, str] = {}
+    for name in TOOL_NAMES:
+        val = raw_descriptions[name]
+        if not isinstance(val, str) or not val.strip():
+            raise ConfigError(f"memory tool wording description for {name!r} must be non-empty")
+        descriptions[name] = val
+    return (raw_instructions, descriptions)
+
+
+def load_tool_wording_file(path: Path) -> tuple[str, dict[str, str]]:
+    """Read and validate registered MCP instructions and tool descriptions from ``path``."""
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise ConfigError(f"cannot read memory tool wording file {path}: {exc}") from None
+    except json.JSONDecodeError as exc:
+        raise ConfigError(f"invalid JSON in memory tool wording file {path}: {exc}") from None
+    return validate_tool_wording(raw)
+
+
+def build_server(
+    tools: MemoryTools,
+    *,
+    instructions: str | None = None,
+    tool_descriptions: Mapping[str, str] | None = None,
+) -> MCPServer:
+    effective_instructions = INSTRUCTIONS if instructions is None else instructions
+    if not isinstance(effective_instructions, str) or not effective_instructions.strip():
+        raise ConfigError("MCP server instructions must be a non-empty string")
+
+    if tool_descriptions is None:
+        descriptions = dict(DEFAULT_TOOL_DESCRIPTIONS)
+    else:
+        _, descriptions = validate_tool_wording(
+            {"instructions": effective_instructions, "descriptions": tool_descriptions}
+        )
+
+    server = MCPServer(name="agent-memory", instructions=effective_instructions)
+
+    @server.tool(description=descriptions["recall"])
     def recall(
         query: str,
         scopes: list[str] | None = None,
         limit: int = 8,
         types: list[str] | None = None,
     ) -> dict[str, Any]:
-        """Search memory. Returns ranked active memories with a retrieval_id for cite.
-        query: free text; empty returns the most important recent memories.
-        scopes: default ["global", <project>]. types: fact, preference, decision, procedure,
-        observation, profile. Every call is logged with what was returned."""
         return tools.recall(query=query, scopes=scopes, limit=limit, types=types)
 
-    @server.tool()
+    @server.tool(description=descriptions["remember"])
     def remember(
         content: str,
         type: str,
@@ -59,14 +185,6 @@ def build_server(tools: MemoryTools) -> MCPServer:
         expires_at: str | None = None,
         valid_to: str | None = None,
     ) -> dict[str, Any]:
-        """Store one durable memory: a fact, preference, decision, procedure, observation,
-        or profile attribute. Not for transient task state. trust_level: user (the user said
-        it), agent (you inferred it), tool (came from tool output; quarantined until the user
-        approves it). Content with invisible or direction-changing characters or
-        instruction-like text is also written quarantined regardless of trust_level and waits
-        for the user to approve it with `mem review`.
-        Pass supersedes=<memory_id> when correcting an existing memory. Identical content
-        in the same scope is confirmed rather than duplicated."""
         return tools.remember(
             content=content,
             memory_type=type,
@@ -82,16 +200,13 @@ def build_server(tools: MemoryTools) -> MCPServer:
             valid_to=valid_to,
         )
 
-    @server.tool()
+    @server.tool(description=descriptions["cite"])
     def cite(
         retrieval_id: str | None = None,
         memory_ids: list[str] | None = None,
         context_event_ids: list[str] | None = None,
         answer_event_id: str | None = None,
     ) -> dict[str, Any]:
-        """Record what an answer was based on: the recall it used and the memories it relied
-        on. Call it when you answer using recalled memory. Without answer_event_id a
-        placeholder answer event is created and returned."""
         return tools.cite(
             retrieval_id=retrieval_id,
             memory_ids=memory_ids,
@@ -99,17 +214,13 @@ def build_server(tools: MemoryTools) -> MCPServer:
             answer_event_id=answer_event_id,
         )
 
-    @server.tool()
+    @server.tool(description=descriptions["review"])
     def review(
         action: str,
         memory_id: str,
         reason: str,
         related_memory_id: str | None = None,
     ) -> dict[str, Any]:
-        """Change a memory's standing. action: retire (wrong or obsolete), quarantine (hide
-        until the user reviews it), confirm (still true), flag_contradiction (conflicts with
-        related_memory_id). reason is required. You cannot approve a quarantined memory:
-        only the user can, with `mem review`."""
         return tools.review(
             action=action,
             memory_id=memory_id,
@@ -117,7 +228,7 @@ def build_server(tools: MemoryTools) -> MCPServer:
             related_memory_id=related_memory_id,
         )
 
-    @server.tool()
+    @server.tool(description=descriptions["relate"])
     def relate(
         subject: str,
         predicate: str,
@@ -134,12 +245,6 @@ def build_server(tools: MemoryTools) -> MCPServer:
         expires_at: str | None = None,
         valid_to: str | None = None,
     ) -> dict[str, Any]:
-        """Record one relation between two named entities as a fact memory:
-        subject --[predicate]--> object, for example ("payments-api", "owned by", "Dana").
-        Use short verb-phrase predicates and the entity names as written in the source.
-        subject_type and object_type are optional labels such as PERSON, SERVICE, FILE,
-        LIBRARY, DECISION. content is an optional fuller sentence; the default is the
-        triple itself. The same triple in the same scope is confirmed, not duplicated."""
         return tools.relate(
             subject=subject,
             predicate=predicate,
@@ -157,7 +262,7 @@ def build_server(tools: MemoryTools) -> MCPServer:
             valid_to=valid_to,
         )
 
-    @server.tool()
+    @server.tool(description=descriptions["graph"])
     def graph(
         entity: str,
         hops: int = 1,
@@ -165,17 +270,10 @@ def build_server(tools: MemoryTools) -> MCPServer:
         limit: int = 25,
         types: list[str] | None = None,
     ) -> dict[str, Any]:
-        """Walk recorded relations outward from an entity. Returns the edges within hops
-        (1 to 3) as items and as "(subject) --[predicate]--> (object)" triples you can
-        reason over, plus a retrieval_id for cite. Entity names match case- and
-        punctuation-insensitively. Use it for questions that chain facts: who owns the
-        thing that depends on X, what replaced the approach a decision retired."""
         return tools.graph(entity=entity, hops=hops, scopes=scopes, limit=limit, types=types)
 
-    @server.tool()
+    @server.tool(description=descriptions["status"])
     def status() -> dict[str, Any]:
-        """Whether the memory server is reachable, this session's id, how much is waiting
-        in the spool, and how many records the ledger rejected."""
         return tools.status()
 
     return server
@@ -202,10 +300,15 @@ def tools_from_env() -> MemoryTools:
 def main() -> int:
     try:
         tools = tools_from_env()
+        wording_path = os.environ.get(MCP_WORDING_ENV)
+        if wording_path:
+            instructions, descriptions = load_tool_wording_file(Path(wording_path))
+            server = build_server(tools, instructions=instructions, tool_descriptions=descriptions)
+        else:
+            server = build_server(tools)
     except ConfigError as exc:
         print(f"mem-mcp: {exc}", file=sys.stderr)
         return 1
-    server = build_server(tools)
     try:
         server.run(transport="stdio")
     finally:
@@ -213,4 +316,16 @@ def main() -> int:
     return 0
 
 
-__all__ = ["MemoryTools", "ToolError", "build_server", "main"]
+__all__ = [
+    "DEFAULT_TOOL_DESCRIPTIONS",
+    "INSTRUCTIONS",
+    "MCP_WORDING_ENV",
+    "TOOL_NAMES",
+    "MemoryTools",
+    "ToolError",
+    "build_server",
+    "default_tool_wording",
+    "load_tool_wording_file",
+    "main",
+    "validate_tool_wording",
+]

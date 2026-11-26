@@ -10,6 +10,12 @@ import typer
 
 from ..config import command_config
 from .memory_set import estimate_run_disk_usage, make_memory_set, verify_memory_set
+from .registration import (
+    append_deviation,
+    freeze_registration,
+    list_deviations,
+    verify_registration_artifacts,
+)
 from .runner import (
     DEFAULT_AUTO_LEVEL,
     DEFAULT_DROID_MODEL,
@@ -19,7 +25,7 @@ from .runner import (
     TrialConfig,
     run_trial,
 )
-from .store import UsefulnessError
+from .store import UsefulnessError, read_json_file
 
 usefulness_app = typer.Typer(
     help="Usefulness experiment commands (always require a separate experiment --home).",
@@ -202,6 +208,13 @@ def run_trial_command(
         str | None,
         typer.Option("--trial-id", help="Optional explicit trial identifier."),
     ] = None,
+    wording_file: Annotated[
+        Path | None,
+        typer.Option(
+            "--wording-file",
+            help="Optional JSON file with registered MCP instructions and tool descriptions.",
+        ),
+    ] = None,
     droid_bin: Annotated[
         str,
         typer.Option("--droid-bin", help="Droid executable path or name."),
@@ -225,6 +238,7 @@ def run_trial_command(
         model_base_url=model_base_url,
         source_home=source_home,
         trial_id=trial_id,
+        memory_tool_wording_file=wording_file,
     )
     adapter = DroidHarnessAdapter(droid_bin=droid_bin)
     record = run_trial(cfg, run_id, task_dir, trial_cfg, adapter=adapter)
@@ -235,6 +249,8 @@ def run_trial_command(
 
     print(f"trial       {record.trial_id}")
     print(f"task        {record.task_id}  arm={record.arm}")
+    if record.registration_sha256 is not None:
+        print(f"registration {record.registration_sha256}")
     print(
         f"status      {record.status}"
         + (f" ({record.failure_category})" if record.failure_category else "")
@@ -253,3 +269,144 @@ def run_trial_command(
         f"total={record.tokens.total_tokens}"
     )
     print(f"record      {record.record_path}")
+
+
+@usefulness_app.command("freeze")
+def freeze_command(
+    ctx: typer.Context,
+    run_id: Annotated[
+        str,
+        typer.Option("--run-id", help="Run identifier under <experiment_home>/runs/<run_id>."),
+    ],
+    spec: Annotated[
+        Path,
+        typer.Option(
+            "--spec",
+            help="JSON file naming every field required under 'The registration'.",
+            exists=True,
+            dir_okay=False,
+        ),
+    ],
+    as_json: Annotated[
+        bool,
+        typer.Option("--json", help="Print the frozen registration and its SHA-256 as JSON."),
+    ] = False,
+) -> None:
+    """Validate and write the run's write-once registration.json at the freeze."""
+    cfg = command_config(ctx)
+    spec_data = read_json_file(spec)
+    result = freeze_registration(cfg, run_id, spec_data)
+    if as_json:
+        print(
+            json.dumps(
+                {
+                    "registration_path": str(result.registration_path),
+                    "registration_sha256": result.registration_sha256,
+                    "registration": result.registration,
+                },
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return
+
+    print(f"run          {run_id}")
+    print(f"registration {result.registration_path}")
+    print(f"sha256       {result.registration_sha256}")
+
+
+@usefulness_app.command("verify-registration")
+def verify_registration_command(
+    ctx: typer.Context,
+    run_id: Annotated[
+        str,
+        typer.Option("--run-id", help="Run identifier under <experiment_home>/runs/<run_id>."),
+    ],
+    wording_file: Annotated[
+        Path | None,
+        typer.Option(
+            "--wording-file",
+            help="Optional memory-tool wording JSON file to verify against the registration.",
+        ),
+    ] = None,
+    as_json: Annotated[
+        bool,
+        typer.Option("--json", help="Print the verified registration summary as JSON."),
+    ] = False,
+) -> None:
+    """Verify registration.json against the run's task manifest, memory set, and wording."""
+    cfg = command_config(ctx)
+    result = verify_registration_artifacts(cfg, run_id, wording_file=wording_file)
+    if as_json:
+        print(
+            json.dumps(
+                {
+                    "registration_path": str(result.registration_path),
+                    "registration_sha256": result.registration_sha256,
+                    "registration": result.registration,
+                },
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return
+
+    print(f"verified     {result.registration_path}  sha256={result.registration_sha256}")
+
+
+@usefulness_app.command("deviate")
+def deviate_command(
+    ctx: typer.Context,
+    run_id: Annotated[
+        str,
+        typer.Option("--run-id", help="Run identifier under <experiment_home>/runs/<run_id>."),
+    ],
+    reason: Annotated[
+        str,
+        typer.Option("--reason", help="Non-empty reason for the deviation from registration."),
+    ],
+    date: Annotated[
+        str | None,
+        typer.Option("--date", help="Optional ISO-8601 timestamp (defaults to current UTC time)."),
+    ] = None,
+    as_json: Annotated[
+        bool,
+        typer.Option("--json", help="Print the appended deviation row as JSON."),
+    ] = False,
+) -> None:
+    """Append a dated deviation record to the run's append-only deviations.jsonl."""
+    cfg = command_config(ctx)
+    row = append_deviation(cfg, run_id, reason, date=date)
+    if as_json:
+        print(json.dumps(row, ensure_ascii=False, indent=2, sort_keys=True))
+        return
+
+    print(f"deviation   {row['recorded_at']}  {row['reason']}")
+
+
+@usefulness_app.command("deviations")
+def deviations_command(
+    ctx: typer.Context,
+    run_id: Annotated[
+        str,
+        typer.Option("--run-id", help="Run identifier under <experiment_home>/runs/<run_id>."),
+    ],
+    as_json: Annotated[
+        bool,
+        typer.Option("--json", help="Print all deviations as a JSON array."),
+    ] = False,
+) -> None:
+    """List every deviation recorded for a run in append order."""
+    cfg = command_config(ctx)
+    rows = list_deviations(cfg, run_id)
+    if as_json:
+        print(json.dumps(rows, ensure_ascii=False, indent=2, sort_keys=True))
+        return
+
+    if not rows:
+        print(f"deviations  none recorded for run {run_id}")
+        return
+    for row in rows:
+        print(f"{row['recorded_at']}  {row['reason']}")
