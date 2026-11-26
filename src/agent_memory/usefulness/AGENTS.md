@@ -75,3 +75,17 @@ are in `docs/memory-utility-evaluation-spec.md`, and its terms are in
   counted as missing; never coerce a missing value to zero. Check every
   statistic against a worked example whose answer comes from outside the
   code.
+- Run reports (`report.py`, `mem usefulness report`) are local aggregates
+  built strictly from structured run files (`task-manifest.json`,
+  `registration.json`, `memory-set/manifest.json`, `schedule.json`,
+  `schedule-events.jsonl`, `record.json`, `interrupted.json`,
+  `grades-final.json` / `grades.jsonl`, `attributions.jsonl`,
+  `deviations.jsonl`) and never read task content, transcripts, trial
+  ledgers, check outputs, diffs, replies, failure details, or free-text
+  grade/attribution notes. Reports refuse held-out results until
+  `registration.json` matches the live manifests, every finished trial is
+  covered by verified `grades-final.json`, and the run has reached its
+  registered stop (sample size, resource budget, or safety stop). Reports
+  contain no wall-clock generation timestamps and must produce identical
+  bytes for `report.md` and `report.json` when rebuilt from the same
+  files.

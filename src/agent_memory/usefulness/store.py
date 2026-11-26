@@ -179,6 +179,10 @@ class UsefulnessRunStore:
         return self.root / "report.md"
 
     @property
+    def report_json_path(self) -> Path:
+        return self.root / "report.json"
+
+    @property
     def is_grades_final(self) -> bool:
         return self.grades_final_path.exists()
 
@@ -294,3 +298,14 @@ class UsefulnessRunStore:
     def attributions(self) -> list[dict[str, Any]]:
         """Every recorded post-grading attribution, in append order."""
         return read_jsonl(self.attributions_path, strict=True)
+
+    def write_report(self, markdown: str, json_text: str) -> tuple[str, str]:
+        """Atomically write ``report.md`` and ``report.json`` and return their SHA-256 digests."""
+        private_dir(self.root)
+        with lock(_lock_path(self.report_path)):
+            atomic_write(self.report_path, markdown)
+            atomic_write(self.report_json_path, json_text)
+            return (
+                sha256_bytes(markdown.encode("utf-8")),
+                sha256_bytes(json_text.encode("utf-8")),
+            )

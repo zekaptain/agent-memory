@@ -1054,6 +1054,61 @@ post-grading memory-use attribution on top of the shared
   `confident_wrong_linked_to_memory` to `runs/<run_id>/attributions.jsonl`
   without changing any grade.
 
+### Run report (`usefulness/report.py`, `usefulness/cli.py`, 2026-11-26, MEM-27)
+
+`src/agent_memory/usefulness/report.py`, `UsefulnessRunStore.write_report`,
+and `mem --home <exp_home> usefulness report` build a deterministic local
+aggregate report (`runs/<run_id>/report.md` and `runs/<run_id>/report.json`)
+from a run's structured files without publishing anything:
+
+- **Held-out stopping and finalization gates:** Refuses held-out results
+  (`split="held_out"` or `"all"`) unless `registration.json` exists and
+  matches `task-manifest.json` and `memory-set/manifest.json` (and every
+  held-out trial carries that `registration_sha256`), every finished trial
+  is covered by a verified `grades-final.json` matching `grades.jsonl`,
+  and the run has reached its registered stop (sample size / schedule
+  completion across all registered models, a declared resource budget in
+  `stopping_rule.stop_at`, or the registered `safety_stop_harmful_uses`
+  threshold). Refuses overriding the registered bootstrap seed or
+  resample count on held-out reports. Pre-freeze `calibration` split
+  reports remain available for reviewing calibration runs.
+- **Primary endpoint, strata, models, and exploratory slices:** Reports
+  paired task success (with family-clustered bootstrap interval, exact
+  McNemar test, exact family sign test, family count, ICC, design effect,
+  and effective sample size) for the registered aggregate, for each
+  stratum (marking registered exploratory strata), and for each model
+  when more than one model is registered or observed (otherwise stating
+  the single-model scope limitation). Pairs retried under `RetryRule`
+  resolve to their latest attempt while keeping superseded attempts for
+  retry-inclusive token/latency accounting and failure reporting.
+  Exploratory slices (`recalled_pairs_only` and
+  `excluding_arm_leaked_pairs`) are explicitly marked exploratory.
+- **Secondary measures with denominators and intervals:** Reports
+  repeat-error rate (over recurrence opportunities), harmful memory use
+  (combined, wrong action, and attempted retired/expired/out-of-scope
+  use, disclosing unattributed passing trials and leaving unattributed
+  failures missing), confident wrong replies (memory-linked among memory
+  use, all trials per arm, without memory link, and stated failures),
+  total tokens and end-to-end/itemized/retrieval/retry wall time (paired
+  differences, paired ratios, medians, tail quantiles, preserving
+  unavailable fields as missing), recall and retrieval outcomes
+  (`made_no_recall`, `returned`, `miss`, `degraded`, `missing_record`
+  separately), citations (returned memories declared used, unbound
+  placeholders, single-citation replies, with no causal claim), and
+  abstention (appropriate non-use, unnecessary recall, unnecessary or
+  harmful use, harmful use) — every proportion carrying its denominator,
+  family-clustered bootstrap interval, and Wilson score interval.
+- **Integrity, limitations, privacy, and determinism:** Lists graded
+  non-ordinary and execution-level failure categories, trials whose
+  material gave the arm away, every deviation from `deviations.jsonl`,
+  and the count of memories whose validity crosses `[cutoff, last_day]`
+  from `memory-set/manifest.json`. Reads only structured run metadata
+  (never task directories, hidden tests, check outputs, transcripts,
+  trial ledgers, replies, diffs, tool calls, failure details, or grade
+  and attribution notes), emits no wall-clock generation timestamps, and
+  produces identical bytes for `report.md` and `report.json` when rebuilt
+  from the same files.
+
 ## Runs
 
 None yet. A run is listed here with the SHA-256 of its registration when
