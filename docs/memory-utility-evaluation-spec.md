@@ -901,6 +901,31 @@ into its trial home and record what recall and citations did under
   `account_trial_recall` also accepts a stopped trial home path directly
   (read-only) to verify or recompute counts offline.
 
+### Post-trial check runner (`usefulness/checks.py`, `usefulness/cli.py`, 2026-11-26, MEM-24)
+
+`src/agent_memory/usefulness/checks.py` and
+`mem --home <exp_home> usefulness run-checks` execute a task's declared
+checks on a finished trial's clone and keep the results beside the trial:
+
+- **Post-run hidden tests and immutability:** Refuses to run before the
+  trial's `record.json` exists or if `checks.json` already exists,
+  verifies the task against `record.json`'s `task_sha256` and the run's
+  `task-manifest.json`, and installs `<task_dir>/hidden_tests/` via
+  `tasks.install_hidden_tests` only now (never while the agent is
+  working). Writes check results to a separate write-once
+  `<trial_dir>/checks.json` (recording `record_sha256` and omitting
+  `arm` so the file is safe for blind grading) and leaves `record.json`
+  untouched byte-for-byte.
+- **Arm symmetry and failure vs. could-not-run:** Executes the exact
+  same `task.checks` commands in the same sanitized environment
+  (stripping `AGENT_MEMORY_*` and `FACTORY_*`) in both arms, with
+  per-check POSIX process-group timeouts (`SIGTERM` -> `SIGKILL`).
+  Distinguishes `passed` (`exit_code == 0`), `failed` (ran to exit with
+  non-zero exit code), and `could_not_run` (`command_not_found`,
+  `permission_denied`, `os_error`, `timeout`, `terminated_by_signal`, or
+  `hidden_test_conflict` when the agent's clone already holds a file or
+  symlink at a hidden-test path).
+
 ## Runs
 
 None yet. A run is listed here with the SHA-256 of its registration when

@@ -20,9 +20,11 @@ are in `docs/memory-utility-evaluation-spec.md`, and its terms are in
   `memory_set.create_trial_home`, which stays readable after the run.
 - A task's hidden tests live only under `<task_dir>/hidden_tests/` (never
   in the repository clone while the agent works) and are installed only
-  after the agent finishes via `tasks.install_hidden_tests`. Every trial
-  must verify its task against the run's task manifest before starting
-  (`tasks.load_verified_task` / `tasks.verify_task_against_manifest`).
+  after the agent finishes via `tasks.install_hidden_tests` inside
+  `checks.run_trial_checks`. Check results go to write-once `checks.json`
+  (omitting the arm for blind grading) and must never alter `record.json`.
+  Every trial must verify its task against the run's task manifest before
+  starting (`tasks.load_verified_task` / `tasks.verify_task_against_manifest`).
 - Every trial runs in a fresh git clone at `task.commit` with future refs
   stripped and repository-configured memory MCP servers removed in both
   arms. No capture hook runs during a trial, and nothing reaches the
