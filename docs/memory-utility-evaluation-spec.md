@@ -490,6 +490,67 @@ statistical functions with no new dependency and no file I/O:
   rejected. Every statistic is checked against an independent worked
   example in `tests/test_usefulness_stats.py`.
 
+### Run files and tasks (`usefulness/store.py`, `usefulness/tasks.py`, 2026-11-25, MEM-21)
+
+`src/agent_memory/usefulness/store.py` and
+`src/agent_memory/usefulness/tasks.py` implement the experiment-home
+guard, write-once run files, task directory form, per-part hashing,
+chronological family-disjoint split, and hidden-test isolation.
+
+#### Written form of a task
+
+Each task lives in its own directory under
+`<experiment_home>/tasks/<task_id>/` (never inside this repository). The
+directory name is `<task_id>` (`[A-Za-z0-9][A-Za-z0-9._-]{0,63}`).
+Every task directory holds:
+
+- `task.json`: required fields `repository` (local path or git URL),
+  `commit` (fixed hex git commit SHA, 7 to 64 hex digits; floating refs
+  are refused), `project` (the scope memories are queried under),
+  `work_done_at` (ISO-8601 date `YYYY-MM-DD` or timezone-aware
+  timestamp, normalized to UTC), `task_family` (non-empty string),
+  `strata` (non-empty list of unique non-empty strings), and `checks`
+  (`{"commands": [{"name": ..., "command": [...], "timeout_s": ...}]}`
+  with a non-empty list of named argv commands). An optional `task_id`
+  must match the directory name; an optional `exclude_reason` marks a
+  task left out of the splits with a non-empty reason code.
+- `request.md`: non-empty UTF-8 text given to the agent as the task
+  request.
+- `required_behavior.md`: non-empty UTF-8 list of required behavior
+  written before any trial of the task (part of its checks).
+- `hidden_tests/` (optional directory): regular files (no symlinks)
+  placed at paths relative to the clone root. These files must not exist
+  in the task's clone while the agent works
+  (`assert_hidden_tests_absent`) and are copied into the clone only
+  after the agent finishes (`install_hidden_tests`), with each file's
+  SHA-256 checked against the manifest.
+
+A task missing any required file or field is refused by `load_task`,
+naming the missing part.
+
+#### Task manifest and split
+
+`build_task_manifest` loads a task directory tree, separates excluded
+tasks with their `reason_code`, verifies an optional `cutoff`
+(`work_done_at > cutoff`), validates or computes the split, and writes
+`runs/<run_id>/task-manifest.json` once through
+`UsefulnessRunStore.write_task_manifest` (a second write is refused).
+
+- Each included task entry stores only metadata and per-part SHA-256
+  digests (`repository_commit`, `request`, `checks`,
+  `required_behavior`, `hidden_tests`, `project`, `work_done_at`,
+  `task_family`, `strata`, `task_json`, per-file `hidden_test_files`,
+  and the combined `task_sha256`), never private task text.
+- `split_tasks` and `validate_split` require both `calibration` and
+  `held_out` to be non-empty, every calibration task's `work_done_at`
+  to be strictly earlier than every held-out task's `work_done_at`, and
+  no `task_family` to appear in both splits. A task set that admits no
+  such split is refused.
+- Before starting any trial, `load_verified_task` /
+  `verify_task_against_manifest` recomputes every part hash from disk
+  and refuses any task that is missing, excluded, or modified in any
+  part or hidden test file.
+
 ## Runs
 
 None yet. A run is listed here with the SHA-256 of its registration when
