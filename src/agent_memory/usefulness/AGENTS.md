@@ -31,6 +31,14 @@ are in `docs/memory-utility-evaluation-spec.md`, and its terms are in
   hosted and refuses to run without `AGENT_MEMORY_JUDGE_ALLOW_REMOTE=1`
   (through `endpoints.require_egress`). Token counts the harness does not
   report are recorded as `None`, never `0`.
+- At the end of a memory-arm trial, `runner.run_trial` imports its
+  transcript into its trial home via the capture path
+  (`accounting.import_trial_transcript`, setting
+  `AGENT_MEMORY_MCP_SERVER_NAME` to the trial's configured memory server
+  so cross-session attribution binds citations) and counts recalls and
+  citations against the pre-trial baseline (`accounting.account_trial_recall`).
+  A recall the transcript shows that is absent from the trial's retrievals
+  is counted as `missing_record`, never as `miss`.
 - Tests of the trial runner use `ScriptedHarnessAdapter` or a fake local
   executable script with `DroidHarnessAdapter`; no test calls a real
   model.
