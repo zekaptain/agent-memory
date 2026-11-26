@@ -16,6 +16,7 @@ from ..judge.labeling import cited_entries
 from ..judge.store import JudgeError, RunStore
 from ..lifecycle import stable_id
 from . import ledger
+from .exact_values import check_draft
 from .examples import example_for
 from .store import AdmissionStore, memory_split, write_jsonl
 
@@ -243,6 +244,11 @@ class ReviewController:
         result = self.admitted[iid]
         memory_id = result.get("memory_id")
         label = row["label"]
+        draft = self.drafts[iid]
+        exact = draft.get("exact_values")
+        if not isinstance(exact, dict) and not draft.get("declined") and draft.get("rule"):
+            exact = check_draft(draft, self.day.read_projection(iid))
+            draft = {**draft, "exact_values": exact}
         action = {
             "action_id": row["action_id"],
             "action": "approve" if label else "retire",
@@ -258,7 +264,7 @@ class ReviewController:
                     self.day.run_id,
                     self.run["created_at"],
                     self.items[iid],
-                    self.drafts[iid],
+                    draft,
                     self.verdicts[iid],
                     result,
                     human_action=action,
@@ -283,7 +289,7 @@ class ReviewController:
         )
         if label is not None or revokes_label:
             example = example_for(
-                self.drafts[iid],
+                draft,
                 self.items[iid],
                 self.verdicts[iid],
                 result["embedding"],
@@ -300,6 +306,8 @@ class ReviewController:
                 ledger_memory_id=memory_id,
                 revision=row["revision"],
             )
+            if isinstance(exact, dict):
+                example["exact_values"] = exact
             existing = {r["source"] for r in RunStore.read_jsonl(self.store.examples_path)}
             if row["action_id"] not in existing:
                 self.store.write_state(mode="shadow", approver_version=None)

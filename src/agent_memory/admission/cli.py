@@ -18,6 +18,7 @@ from . import approver
 from .examples import import_labels
 from .fit import fit_approver
 from .ledger import ADMISSION_AGENT
+from .report import admission_report
 from .review import review_day
 from .run import DEFAULT_DRAFTER, run_day
 from .store import AdmissionStore
@@ -146,7 +147,23 @@ def run_command(
         result = run_day(
             cfg, day=day, drafter=drafter, backend=backend, log=lambda s: print(s, flush=True)
         )
-    print(f"Admission {result['day']}: {result['processed']} processed ({result['mode']}).")
+    print(
+        f"Admission {result['day']}: {result['processed']} processed ({result['mode']}); "
+        f"{result['exact_values_failed']} of {result['lessons']} "
+        "lesson(s) failed exact-value check."
+    )
+
+
+@admit_app.command("report")
+def report_command(
+    ctx: typer.Context,
+    day: Annotated[
+        str | None, typer.Option(help="UTC admission day; omit to include every day.")
+    ] = None,
+) -> None:
+    """Report daily exact-value check counts and retirement rates over examples."""
+    cfg = _config(ctx)
+    print(json.dumps(admission_report(cfg, day=day), indent=2, sort_keys=True))
 
 
 @admit_app.command("review")

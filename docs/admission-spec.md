@@ -45,6 +45,7 @@ uv run mem --home "$HOME/.agent-memory" --port 9494 admit fit --backend llm:gemm
 uv run mem --home "$HOME/.agent-memory" --port 9494 admit status
 uv run mem --home "$HOME/.agent-memory" --port 9494 admit enable --shadow
 uv run mem --home "$HOME/.agent-memory" --port 9494 admit run
+uv run mem --home "$HOME/.agent-memory" --port 9494 admit report --day 2026-11-10
 uv run mem --home "$HOME/.agent-memory" --port 9494 admit review --day 2026-11-10
 ```
 
@@ -167,7 +168,7 @@ Each `write` or `review` creates a memory through `LifecyclePlan.remember`:
 | scope | Source session project, or global when absent |
 | trust_level | `tool`, quarantined by the existing status view |
 | confidence | Approver probability of storing the exact draft |
-| metadata.lesson | Kind and redacted claims |
+| metadata.lesson | Kind, redacted claims, and exact-value check result |
 | metadata.admission | Approver version, score, reasons, draft hash, item, backend, drafter |
 | memory_sources | `derived_from` opening event and every cited event in the sidecar |
 
@@ -202,8 +203,8 @@ when it looks for new turns. The reasons are in
 numbered prompts. It does not use the experiment's `LabelController`.
 It has a controller of its own, and the loop that shows labeling's
 screens shows this one's too (`drive` in `judge/label_frontend.py`).
-The rule, kind, claims and cited excerpts stay visible. The judge, and
-the approver's action and score, are hidden.
+The rule, kind, claims and cited excerpts stay visible. The judge, the
+approver's action and score, and the exact-value check result are hidden.
 
 One question asks "Store this exact lesson?" with Yes, No, Unclear,
 followed by an optional note and save confirmation:
@@ -280,3 +281,29 @@ opt-in rule. No projection text enters examples or approver metadata.
 Redaction runs on model drafts and again before ledger insertion.
 Synthetic regression runs and throwaway servers are the validation
 fixtures; no production labeling or enablement is part of implementation.
+
+### Exact-value check (2026-11-25)
+
+For each non-declined lesson a drafter writes, `admission/exact_values.py`
+checks deterministically, with no model call, whether the exact values in
+`draft["rule"]` (identifiers, numbers, paths, commands, flags, URLs, and
+assignments) appear in the full, untruncated bodies of the numbered
+projection entries its claims cite. Entry-number prefixes (`[n] `) and
+omission/cut markers are stripped before matching, and any redaction
+marker (`[REDACTED:...]`) in the cited lines prevents missing values from
+failing the check (`redacted_cited: true`, `missing: []`, `ok: true`).
+
+The result (`version`, `ok`, `values`, `missing`, `redacted_cited`) is
+stored on the lesson in `days/<day>/drafts.jsonl`, copied into the
+admitted memory's `metadata.lesson.exact_values` (never into `decision`
+event payloads), and recorded on human-labeled examples in
+`examples.jsonl` during `mem admit review` and `mem admit import-labels`.
+The check is strictly observational: it is excluded from `examples_hash`,
+does not alter fitting, scoring, or shadow/auto actions, and stays hidden
+from `mem admit review`.
+
+`mem admit run` prints how many lessons on that day failed the check, and
+`mem admit report [--day YYYY-MM-DD]` reports daily counts alongside the
+human retirement rate over existing examples for lessons that failed vs
+passed the check (backfilling pre-existing day drafts read-only when
+their projections remain on disk).
