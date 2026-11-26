@@ -932,8 +932,13 @@ def wilson_interval(
         raise ValueError("confidence must be strictly between 0 and 1")
     if total == 0:
         return None
-    z = _STANDARD_NORMAL.inv_cdf(1.0 - (1.0 - float(confidence)) / 2.0)
+    conf = float(confidence)
+    z = _STANDARD_NORMAL.inv_cdf(1.0 - (1.0 - conf) / 2.0)
     z2 = z * z
+    if successes == 0:
+        return Interval(low=0.0, high=z2 / (total + z2), confidence=conf)
+    if successes == total:
+        return Interval(low=total / (total + z2), high=1.0, confidence=conf)
     p_hat = successes / total
     denom = 1.0 + z2 / total
     center = (p_hat + z2 / (2.0 * total)) / denom
@@ -941,7 +946,7 @@ def wilson_interval(
     return Interval(
         low=max(0.0, center - half),
         high=min(1.0, center + half),
-        confidence=float(confidence),
+        confidence=conf,
     )
 
 
