@@ -24,9 +24,11 @@ are in `docs/memory-utility-evaluation-spec.md`, and its terms are in
   `memory_set.create_trial_home`, which stays readable after the run.
 - A task's hidden tests live only under `<task_dir>/hidden_tests/` (never
   in the repository clone while the agent works) and are installed only
-  after the agent finishes via `tasks.install_hidden_tests`. Every trial
-  must verify its task against the run's task manifest before starting
-  (`tasks.load_verified_task` / `tasks.verify_task_against_manifest`).
+  after the agent finishes via `tasks.install_hidden_tests` inside
+  `checks.run_trial_checks`. Check results go to write-once `checks.json`
+  (omitting the arm for blind grading) and must never alter `record.json`.
+  Every trial must verify its task against the run's task manifest before
+  starting (`tasks.load_verified_task` / `tasks.verify_task_against_manifest`).
 - Every trial runs in a fresh git clone at `task.commit` with future refs
   stripped and repository-configured memory MCP servers removed in both
   arms. No capture hook runs during a trial, and nothing reaches the
@@ -35,6 +37,14 @@ are in `docs/memory-utility-evaluation-spec.md`, and its terms are in
   hosted and refuses to run without `AGENT_MEMORY_JUDGE_ALLOW_REMOTE=1`
   (through `endpoints.require_egress`). Token counts the harness does not
   report are recorded as `None`, never `0`.
+- At the end of a memory-arm trial, `runner.run_trial` imports its
+  transcript into its trial home via the capture path
+  (`accounting.import_trial_transcript`, setting
+  `AGENT_MEMORY_MCP_SERVER_NAME` to the trial's configured memory server
+  so cross-session attribution binds citations) and counts recalls and
+  citations against the pre-trial baseline (`accounting.account_trial_recall`).
+  A recall the transcript shows that is absent from the trial's retrievals
+  is counted as `missing_record`, never as `miss`.
 - Tests of the trial runner use `ScriptedHarnessAdapter` or a fake local
   executable script with `DroidHarnessAdapter`; no test calls a real
   model.

@@ -9,6 +9,7 @@ from typing import Annotated
 import typer
 
 from ..config import command_config
+from .checks import DEFAULT_CHECK_TIMEOUT_S, run_trial_checks
 from .memory_set import estimate_run_disk_usage, make_memory_set, verify_memory_set
 from .runner import (
     DEFAULT_AUTO_LEVEL,
@@ -261,7 +262,78 @@ def run_trial_command(
         f"tokens      in={record.tokens.input_tokens} out={record.tokens.output_tokens} "
         f"total={record.tokens.total_tokens}"
     )
+    if record.recall_accounting is not None:
+        ra = record.recall_accounting
+        ci = ra.citations
+        print(
+            f"recall      total={ra.total_recalls} "
+            f"(returned={ra.returned_count}, miss={ra.miss_count}, "
+            f"degraded={ra.degraded_count}, missing_record={ra.missing_record_count})  "
+            f"citations={ci.citations_made} "
+            f"(returned_cited={ci.returned_memories_cited_count}, "
+            f"unbound={ci.unbound_placeholder_count}, "
+            f"single_reply={ci.single_citation_reply_count})"
+        )
     print(f"record      {record.record_path}")
+
+
+@usefulness_app.command("run-checks")
+def run_checks_command(
+    ctx: typer.Context,
+    run_id: Annotated[
+        str,
+        typer.Option("--run-id", help="Run identifier under <experiment_home>/runs/<run_id>."),
+    ],
+    trial_id: Annotated[
+        str,
+        typer.Option("--trial-id", help="Finished trial identifier to check."),
+    ],
+    task: Annotated[
+        str | None,
+        typer.Option(
+            "--task",
+            help="Optional task directory path (defaults to <experiment_home>/tasks/<task_id>).",
+        ),
+    ] = None,
+    timeout: Annotated[
+        float,
+        typer.Option(
+            "--timeout",
+            help="Default timeout in seconds for checks that do not declare their own timeout_s.",
+        ),
+    ] = DEFAULT_CHECK_TIMEOUT_S,
+    as_json: Annotated[
+        bool,
+        typer.Option("--json", help="Print the full checks result as JSON."),
+    ] = False,
+) -> None:
+    """Install hidden tests and run a task's checks on a finished trial's clone."""
+    cfg = command_config(ctx)
+    task_dir = _resolve_task_arg(cfg.home, task) if task is not None else None
+    result = run_trial_checks(
+        cfg,
+        run_id,
+        trial_id,
+        task_or_dir=task_dir,
+        default_timeout_s=timeout,
+    )
+    if as_json:
+        print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2, sort_keys=True))
+        return
+
+    print(f"trial       {result.trial_id}")
+    print(f"task        {result.task_id}")
+    print(
+        f"checks      {result.overall_status} "
+        f"(passed={result.passed_count}, failed={result.failed_count}, "
+        f"could_not_run={result.could_not_run_count})"
+    )
+    if result.hidden_tests_installed:
+        print(f"hidden      installed {len(result.hidden_tests_installed)} file(s)")
+    elif result.hidden_tests_error:
+        print(f"hidden      error: {result.hidden_tests_error}")
+    print(f"duration    {result.total_duration_s:.2f}s")
+    print(f"results     {result.checks_path}")
 
 
 def _parse_task_repeats(entries: list[str] | None) -> dict[str, int] | None:
