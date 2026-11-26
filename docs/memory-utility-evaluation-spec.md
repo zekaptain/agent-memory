@@ -863,6 +863,44 @@ arm and write an immutable `record.json` under
   and fake-binary tests exercise the full runner without calling a real
   model.
 
+### Recall and citation accounting (`usefulness/accounting.py`, 2026-11-26, MEM-19)
+
+`src/agent_memory/usefulness/accounting.py` and its integration in
+`runner.run_trial` import each finished memory-arm trial's transcript
+into its trial home and record what recall and citations did under
+`record.json`'s `recall_accounting` (`None` in the `no_memory` arm):
+
+- **Pre-trial baseline:** Before invoking the harness in the memory arm,
+  `capture_trial_baseline` snapshots pre-existing `sessions`,
+  `retrievals`, `context_links`, and placeholder `events` copied from the
+  memory set so historical rows are excluded from the trial's counts.
+- **Transcript import:** After the harness finishes and before stopping
+  the trial `MemoryServer`, `import_trial_transcript` imports the
+  transcript via `get_adapter(harness).from_transcript` and
+  `capture.pipeline.deliver` with `AGENT_MEMORY_MCP_SERVER_NAME` set to
+  the trial's configured memory server name so cross-session attribution
+  (`captured_cite_turn_v1`) binds citation placeholders to imported
+  replies.
+- **Recall classification:** `account_trial_recall` reconciles transcript
+  `recall` and `graph` tool calls against the trial's new `retrievals`
+  rows and records `made_no_recall` plus per-recall entries classified as
+  `returned` (`retrievals.returned > 0`), `miss` (`retrievals.returned ==
+  0`), `degraded` (`tool_result` reports `degraded: true` without the
+  ledger), or `missing_record` (any recall shown in the transcript that
+  the trial ledger does not hold, including zero-item responses with an
+  unrecorded or historical `retrieval_id`, tool errors, or missing tool
+  results, never counted as `miss`). Any trial ledger retrieval without a
+  matching transcript call is also retained as `ledger_only`.
+- **Citation counts:** Counts `citations_made`, transcript `cite` calls
+  (and `degraded_cite_calls`), `returned_memories_cited_count` (distinct
+  memories returned by trial retrievals and declared used via
+  `cited_memory` links), `unbound_placeholder_count` (placeholders with
+  no binding or a null/invalid target in `effective_answer_bindings`),
+  and `single_citation_reply_count` alongside `multi_citation_reply_count`
+  for actual assistant replies bound to one vs. multiple citations.
+  `account_trial_recall` also accepts a stopped trial home path directly
+  (read-only) to verify or recompute counts offline.
+
 ### Post-trial check runner (`usefulness/checks.py`, `usefulness/cli.py`, 2026-11-26, MEM-24)
 
 `src/agent_memory/usefulness/checks.py` and
