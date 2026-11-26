@@ -17,7 +17,8 @@ document there says, on top of the root `AGENTS.md`.
   `mem audit check` preflight, and rollout policy.
 - `docs/judge-how-to.md`: step-by-step experiment commands.
 - `docs/memory-utility-evaluation-spec.md`: the design of the usefulness
-  experiment and the plan of its build; nothing is built from it yet.
+  experiment, the plan of its build, and dated "As built" notes for the
+  pieces implemented so far.
 - `docs/parametric-consolidation-spec.md`: a draft research proposal, not
   implemented functionality or authorization to add its proposed migration.
 - `docs/agent-memory-literature-review.md` and `docs/paper/`: research

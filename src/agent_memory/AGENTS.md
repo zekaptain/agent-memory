@@ -2,8 +2,8 @@
 
 This guide applies to every change under `src/agent_memory/`, on top of
 the root `AGENTS.md`. `adapters/`, `capture/`, `mcp_server/`, `judge/`,
-and `admission/` each add a guide of their own. Paths here are relative
-to this directory unless they start with `docs/` or `tests/`.
+`admission/`, and `usefulness/` each add a guide of their own. Paths here
+are relative to this directory unless they start with `docs/` or `tests/`.
 
 Read `docs/logic-hardening-spec.md` before changing lifecycle, coverage,
 attribution, the `mem audit check` preflight, or rollout policy.
