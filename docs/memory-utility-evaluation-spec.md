@@ -1,11 +1,10 @@
 # Does retrieved memory help future tasks?
 
-Status: designed, with its build planned under "Building it". Nothing is
-built. Building starts when that plan is accepted (see "Next approved work"
-in [roadmap.md](roadmap.md)). A read of a home in use, a model that is not
-on this machine, and every run then each need the user's go-ahead (see
-"What needs the user's go-ahead"). Judge agreement is not evidence of task
-benefit.
+Status: designed, with its build planned under "Building it" and the
+first modules recorded under "As built". A read of a home in use, a model
+that is not on this machine, and every run then each need the user's
+go-ahead (see "What needs the user's go-ahead"). Judge agreement is not
+evidence of task benefit.
 
 ## Question and arms
 
@@ -456,6 +455,40 @@ checked here against a run.
 3. Tune retrieval or expand graph use only for measured failure modes.
 4. Reconsider parametric consolidation only after retrieval shows value and
    withdrawal/backflow can be measured.
+
+## As built
+
+### Statistics (`usefulness/stats.py`, 2026-11-25, MEM-26)
+
+`src/agent_memory/usefulness/stats.py` implements the standard-library
+statistical functions with no new dependency and no file I/O:
+
+- `paired_success_summary`: paired success-rate difference with a
+  percentile bootstrap interval resampling whole task families with
+  replacement (preserving pairs and repeated trials together) for a
+  registered seed and resample count, alongside `exact_mcnemar_test`
+  (exact two-sided and one-sided binomial test on discordant pairs) and
+  `exact_family_sign_test` (exact sign test over family net differences,
+  which matches McNemar when every family has one pair and respects
+  family independence when families have repeats).
+- `cluster_summary`: task-family count, one-way random-effects ANOVA
+  intra-class correlation (Donner & Klar / Fleiss), Kish unequal-cluster
+  design effect, and effective sample size (`N / DEFF`, clamping
+  negative sample ICC to 0 and defaulting conservatively to `rho = 1`
+  when repeated trials show zero variance).
+- `paired_numeric_summary` and `distribution_summary`: paired
+  differences (mean, median, tail quantiles), paired ratios (ratio of
+  means and per-pair median/tail quantiles over pairs with positive
+  no-memory denominator), and per-arm distributions, all with
+  family-clustered bootstrap intervals and Hyndman & Fan type-7 linear
+  quantiles.
+- `clustered_rate_summary` and `wilson_interval`: denominator, missing
+  count, family-clustered bootstrap CI, and closed-form Wilson score
+  interval for secondary rates.
+- Missing values (`None`) are excluded from estimates and counted
+  explicitly; non-finite floats and booleans passed as numbers are
+  rejected. Every statistic is checked against an independent worked
+  example in `tests/test_usefulness_stats.py`.
 
 ## Runs
 

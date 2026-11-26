@@ -34,6 +34,7 @@ that. Read the guide yourself in these cases:
 | add an MCP tool or change a tool's inputs | `src/agent_memory/mcp_server/AGENTS.md` |
 | change `judge/` or its Go labeling helper, or run a `mem judge` command | `src/agent_memory/judge/AGENTS.md` |
 | change `admission/`, or run a `mem admit` command | `src/agent_memory/admission/AGENTS.md` and the judge guide |
+| change `usefulness/` | `src/agent_memory/usefulness/AGENTS.md` |
 | add or change a test | `tests/AGENTS.md` and the guide of the code under test |
 | edit a document under `docs/`, or act on what one proposes | `docs/AGENTS.md`: what each document is, and which are drafts or records |
 
@@ -106,6 +107,7 @@ All runtime paths below are under `src/agent_memory/`.
 | `graph/` | Relation metadata, traversal SQL, graph recall strategies, entity merges, entity resolution | `test_graph` |
 | `judge/` | Import, callers and authors, candidates, projection, draft, decide, label (including the Go helper in `label_ui/`), report | `test_judge`, `test_judge_pipeline`, `test_judge_verdict`, `test_judge_unanswered`, `test_judge_core_regressions`, `test_judge_store`, `test_judge_admission`, `test_label_ui` |
 | `admission/` | Production lesson admission, fitting, exact-value checks, reports, and admission review | `test_admission`, `test_admission_fit`, `test_admission_exact_values` |
+| `usefulness/` | Usefulness experiment statistics (paired differences, family-clustered bootstrap intervals, exact paired tests, effective sample size, quantiles, ratios) | `test_usefulness_stats` |
 | `cli.py`, `smoke.py` | Typer entry point and end-to-end check | `test_cli`, `test_cli_capture` |
 
 Test names in the table refer to `tests/<name>.py`. The Go helper's own
