@@ -70,6 +70,7 @@ class Screen:
             raise JudgeError("Invalid labeling draft slots.")
         if self.subject not in {
             "Turn",
+            "Trial",
             "Compare drafts",
             "Notes",
             "Review",

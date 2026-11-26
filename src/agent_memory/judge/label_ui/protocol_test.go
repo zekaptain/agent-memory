@@ -82,7 +82,7 @@ func TestProtocolRoundTrip(t *testing.T) {
 		f.Screen.Evidence != s.Evidence || len(f.Screen.Options) != 3 {
 		t.Fatalf("round trip: frame=%+v error=%v", f, err)
 	}
-	for _, subject := range []string{"Turn", "Draft A", "Draft B", "Compare drafts", "Notes", "Review", "Summary"} {
+	for _, subject := range []string{"Turn", "Trial", "Draft A", "Draft B", "Compare drafts", "Notes", "Review", "Summary"} {
 		s.Subject = subject
 		if _, err := decodeFrame(screenWire(t, s, 1)); err != nil {
 			t.Fatalf("subject %s: %v", subject, err)

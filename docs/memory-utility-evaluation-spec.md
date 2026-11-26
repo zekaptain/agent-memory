@@ -1009,6 +1009,51 @@ its enforcement:
   `metadata`) to `runs/<run_id>/deviations.jsonl` via
   `UsefulnessRunStore.append_deviation`, never rewriting earlier lines.
 
+### Blind trial grading and post-grading attribution (`usefulness/grading.py`, `judge/label_ui/`, 2026-11-26, MEM-25)
+
+`src/agent_memory/usefulness/grading.py`, `UsefulnessRunStore`, the
+`"Trial"` subject in `judge/label_controller.py` and
+`judge/label_ui/protocol.go`, and the CLI commands
+`mem --home <exp_home> usefulness grade`, `grades-status`,
+`finalize-grades`, and `attribute` implement blind grading and
+post-grading memory-use attribution on top of the shared
+`judge.label_frontend.drive` loop:
+
+- **Protocol and shared frontends:** Both the Python `Screen` validator
+  and the Go labeling helper's `decodeFrame` accept `"Trial"` as a
+  subject alongside existing subjects; `PlainFrontend` renders the same
+  `Trial`, `Notes`, `Review`, and `Summary` screens. Judge labeling and
+  admission review screens, controls, and tests are unchanged, and
+  nothing under `judge/` or `admission/` imports `usefulness/`.
+- **Blinded evidence and seeded non-adjacent order:**
+  `BlindGradingController` shows only the task request, required
+  behavior, task checks and what they gave, repository changes, and last
+  reply, scrubbing trial directory paths and `trial_id` from check
+  outputs and diffs and omitting the arm, memory tool calls, recall
+  accounting, and any ledger data. `order_trials_blind` orders trials
+  deterministically from a seed so the order is uncorrelated with the
+  arm and never puts the two trials of a pair back to back when at least
+  two pairs are present.
+- **Grades, arm-leaked flag, edit history, and finalization:** Each
+  grade records `met_checks`, `failure_category`
+  (`ordinary_wrong_answer`, `timeout`, `tool_outage`, `model_refusal`,
+  `evaluator_failure`, `interrupted`), `confident_wrong_reply`,
+  `repeated_earlier_error` (on `recurrence`-stratum tasks), `arm_leaked`,
+  and an optional literal note. Every save or `--review` correction
+  appends a new revision to `runs/<run_id>/grades.jsonl` (preserving full
+  history) until `finalize_grades` verifies every finished trial is
+  graded and writes write-once `runs/<run_id>/grades-final.json` with
+  the SHA-256 of `grades.jsonl`. Once finalized, further grades and
+  corrections are refused.
+- **Post-grading memory-use attribution:** `MemoryAttributionController`
+  and `record_attribution` refuse to open until `grades-final.json`
+  exists and still matches `grades.jsonl`. After finalization they show
+  the finalized grade, recall accounting, citations, memory tool calls,
+  and recalled/cited memories read read-only from the trial's own home,
+  appending `harmful_memory_use`, `attempted_invalid_memory_use`, and
+  `confident_wrong_linked_to_memory` to `runs/<run_id>/attributions.jsonl`
+  without changing any grade.
+
 ## Runs
 
 None yet. A run is listed here with the SHA-256 of its registration when

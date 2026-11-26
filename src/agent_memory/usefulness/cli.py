@@ -10,6 +10,12 @@ import typer
 
 from ..config import command_config
 from .checks import DEFAULT_CHECK_TIMEOUT_S, run_trial_checks
+from .grading import (
+    attribution_session,
+    finalize_grades,
+    grade_session,
+    inspect_grading_status,
+)
 from .memory_set import estimate_run_disk_usage, make_memory_set, verify_memory_set
 from .registration import (
     append_deviation,
@@ -743,3 +749,195 @@ def deviations_command(
         return
     for row in rows:
         print(f"{row['recorded_at']}  {row['reason']}")
+
+
+@usefulness_app.command("grade")
+def grade_command(
+    ctx: typer.Context,
+    run_id: Annotated[
+        str,
+        typer.Option("--run-id", help="Run identifier under <experiment_home>/runs/<run_id>."),
+    ],
+    seed: Annotated[
+        int,
+        typer.Option("--seed", help="Seed controlling blind trial ordering."),
+    ] = 1,
+    limit: Annotated[
+        int | None,
+        typer.Option("--limit", min=1, help="Grade at most N trials in this sitting."),
+    ] = None,
+    review: Annotated[
+        bool,
+        typer.Option("--review", help="Review and correct already-graded trials before finalize."),
+    ] = False,
+    plain: Annotated[
+        bool,
+        typer.Option("--plain", help="Use the plain-text interface instead of the Go helper."),
+    ] = False,
+    tasks_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--tasks-dir",
+            help="Directory containing task subdirectories (defaults to <experiment_home>/tasks).",
+        ),
+    ] = None,
+    allow_missing_checks: Annotated[
+        bool,
+        typer.Option(
+            "--allow-missing-checks",
+            help="Allow grading trials that do not have checks.json yet.",
+        ),
+    ] = False,
+) -> None:
+    """Grade finished trials blind to the arm using the shared labeling helper."""
+    cfg = command_config(ctx)
+    grade_session(
+        cfg,
+        run_id,
+        plain=plain,
+        seed=seed,
+        limit=limit,
+        review=review,
+        tasks_dir=tasks_dir,
+        require_checks=not allow_missing_checks,
+        progress=lambda msg: typer.echo(msg, err=True),
+    )
+
+
+@usefulness_app.command("grades-status")
+def grades_status_command(
+    ctx: typer.Context,
+    run_id: Annotated[
+        str,
+        typer.Option("--run-id", help="Run identifier under <experiment_home>/runs/<run_id>."),
+    ],
+    tasks_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--tasks-dir",
+            help="Directory containing task subdirectories (defaults to <experiment_home>/tasks).",
+        ),
+    ] = None,
+    as_json: Annotated[
+        bool,
+        typer.Option("--json", help="Print the grading status as JSON."),
+    ] = False,
+) -> None:
+    """Show read-only, arm-blind grading progress for a usefulness run."""
+    cfg = command_config(ctx)
+    status = inspect_grading_status(cfg, run_id, tasks_dir=tasks_dir, require_checks=False)
+    if as_json:
+        print(json.dumps(status.to_dict(), ensure_ascii=False, indent=2, sort_keys=True))
+        return
+
+    print(f"run          {status.run_id}")
+    print(
+        f"trials       total={status.total_trials}  graded={status.graded_trials}  "
+        f"ungraded={status.ungraded_trials}  revisions={status.total_grade_revisions}"
+    )
+    print(
+        f"state        final={status.grades_final}  arm_leaked={status.arm_leaked_count}  "
+        f"attributions={status.attributions_count}"
+    )
+    if status.grades_final_sha256 is not None:
+        print(f"final sha256 {status.grades_final_sha256}")
+
+
+@usefulness_app.command("finalize-grades")
+def finalize_grades_command(
+    ctx: typer.Context,
+    run_id: Annotated[
+        str,
+        typer.Option("--run-id", help="Run identifier under <experiment_home>/runs/<run_id>."),
+    ],
+    tasks_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--tasks-dir",
+            help="Directory containing task subdirectories (defaults to <experiment_home>/tasks).",
+        ),
+    ] = None,
+    allow_missing_checks: Annotated[
+        bool,
+        typer.Option(
+            "--allow-missing-checks",
+            help="Allow finalizing trials that do not have checks.json.",
+        ),
+    ] = False,
+    as_json: Annotated[
+        bool,
+        typer.Option("--json", help="Print the finalized grades summary as JSON."),
+    ] = False,
+) -> None:
+    """Write grades-final.json once every trial of the run has been graded."""
+    cfg = command_config(ctx)
+    result = finalize_grades(
+        cfg,
+        run_id,
+        tasks_dir=tasks_dir,
+        require_checks=not allow_missing_checks,
+    )
+    if as_json:
+        print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+        return
+
+    print(f"run          {result['run_id']}")
+    print(
+        f"finalized    trials={result['trial_count']}  "
+        f"revisions={result['total_grade_revisions']}  arm_leaked={result['arm_leaked_count']}"
+    )
+    print(f"grades_final {result['grades_final_path']}")
+    print(f"sha256       {result['grades_final_sha256']}")
+
+
+@usefulness_app.command("attribute")
+def attribute_command(
+    ctx: typer.Context,
+    run_id: Annotated[
+        str,
+        typer.Option("--run-id", help="Run identifier under <experiment_home>/runs/<run_id>."),
+    ],
+    seed: Annotated[
+        int,
+        typer.Option("--seed", help="Seed controlling order of trials in attribution."),
+    ] = 1,
+    limit: Annotated[
+        int | None,
+        typer.Option("--limit", min=1, help="Attribute at most N trials in this sitting."),
+    ] = None,
+    review: Annotated[
+        bool,
+        typer.Option("--review", help="Review and update existing attributions."),
+    ] = False,
+    include_passed: Annotated[
+        bool,
+        typer.Option(
+            "--include-passed",
+            help="Also open passing memory-arm trials (not only failed / confident-wrong ones).",
+        ),
+    ] = False,
+    plain: Annotated[
+        bool,
+        typer.Option("--plain", help="Use the plain-text interface instead of the Go helper."),
+    ] = False,
+    tasks_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--tasks-dir",
+            help="Directory containing task subdirectories (defaults to <experiment_home>/tasks).",
+        ),
+    ] = None,
+) -> None:
+    """Link wrong actions or confident wrong replies to memory use after grades are final."""
+    cfg = command_config(ctx)
+    attribution_session(
+        cfg,
+        run_id,
+        plain=plain,
+        seed=seed,
+        limit=limit,
+        review=review,
+        include_passed=include_passed,
+        tasks_dir=tasks_dir,
+        progress=lambda msg: typer.echo(msg, err=True),
+    )

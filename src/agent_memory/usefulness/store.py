@@ -167,8 +167,20 @@ class UsefulnessRunStore:
         return self.root / "grades.jsonl"
 
     @property
+    def grades_final_path(self) -> Path:
+        return self.root / "grades-final.json"
+
+    @property
+    def attributions_path(self) -> Path:
+        return self.root / "attributions.jsonl"
+
+    @property
     def report_path(self) -> Path:
         return self.root / "report.md"
+
+    @property
+    def is_grades_final(self) -> bool:
+        return self.grades_final_path.exists()
 
     def write_task_manifest(self, manifest: Mapping[str, Any]) -> str:
         """Write ``task-manifest.json`` once and return its SHA-256."""
@@ -242,3 +254,43 @@ class UsefulnessRunStore:
     def deviations(self) -> list[dict[str, Any]]:
         """Every recorded deviation, in append order."""
         return read_jsonl(self.deviations_path)
+
+    def append_grade(self, row: Mapping[str, Any]) -> None:
+        """Append one grade revision to ``grades.jsonl``; refused once grades are final."""
+        if self.grades_final_path.exists():
+            raise UsefulnessError(
+                f"grades are already final for run {self.run_id!r} "
+                f"({self.grades_final_path}); no further grades or corrections may be written"
+            )
+        append_jsonl(self.grades_path, row)
+
+    def grades(self) -> list[dict[str, Any]]:
+        """Every recorded grade revision, in append order (preserving full edit history)."""
+        return read_jsonl(self.grades_path, strict=True)
+
+    def write_grades_final(self, data: Mapping[str, Any]) -> str:
+        """Write ``grades-final.json`` once and return its SHA-256."""
+        return write_once_json(self.grades_final_path, data)
+
+    def read_grades_final(self) -> dict[str, Any]:
+        """Read ``grades-final.json``."""
+        return read_json_file(self.grades_final_path)
+
+    def grades_final_sha256(self) -> str:
+        """SHA-256 of the written ``grades-final.json``."""
+        if not self.grades_final_path.exists():
+            raise UsefulnessError(f"grades are not final yet: {self.grades_final_path}")
+        return sha256_file(self.grades_final_path)
+
+    def append_attribution(self, row: Mapping[str, Any]) -> None:
+        """Append one post-grading memory-use attribution; refused until grades are final."""
+        if not self.grades_final_path.exists():
+            raise UsefulnessError(
+                f"cannot record memory-use attribution for run {self.run_id!r} "
+                f"before grades are final ({self.grades_final_path})"
+            )
+        append_jsonl(self.attributions_path, row)
+
+    def attributions(self) -> list[dict[str, Any]]:
+        """Every recorded post-grading attribution, in append order."""
+        return read_jsonl(self.attributions_path, strict=True)

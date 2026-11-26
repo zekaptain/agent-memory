@@ -12,12 +12,26 @@ are in `docs/memory-utility-evaluation-spec.md`, and its terms are in
   any ledger, and refuses to use the default home as an experiment home
   (`store.ensure_experiment_home`).
 - Write-once run files (task manifest, memory-set manifest, schedule,
-  registration) must go through `store.write_once_json` and cannot be
-  overwritten; deviations and schedule execution events are append-only
+  registration, finalized grades `grades-final.json`) must go through
+  `store.write_once_json` and cannot be overwritten; deviations,
+  schedule execution events, grade revisions (`grades.jsonl`), and
+  post-grading attributions (`attributions.jsonl`) are append-only
   (`store.append_jsonl`). Interrupted trials are kept and marked on disk
   (`record.json` with `failure_category="interrupted"` or write-once
   `interrupted.json`), never overwritten in place; pair retries use new
   attempt-scoped trial IDs and follow `schedule.RetryRule` only.
+- Blind grading (`grading.BlindGradingController`) and post-grading
+  memory-use attribution (`grading.MemoryAttributionController`) drive
+  the shared `judge.label_frontend.drive` loop with the `"Trial"`
+  subject (on both the Python and Go helper sides, and `--plain`),
+  leaving judge labeling and admission review unchanged. Blind grading
+  never exposes the arm, `trial_id`, trial paths in check output, memory
+  tool calls, or ledger content, and orders trials deterministically from
+  a seed without placing a pair's two trials back to back. Grades stay
+  correctable with append-only history until `grading.finalize_grades`
+  writes `grades-final.json`; memory-use attribution cannot open until
+  `grades-final.json` exists and matches `grades.jsonl`, reads trial
+  homes read-only, and never alters any grade.
 - Held-out tasks cannot start a trial before `registration.json` is
   frozen (`registration.freeze_registration`). Once `registration.json`
   exists in a run, every trial verifies the live task manifest, memory

@@ -249,7 +249,7 @@ func decodeFrame(data []byte) (frame, error) {
 		return frame{}, errProtocol
 	}
 	switch s.Subject {
-	case "Turn", "Compare drafts", "Notes", "Review", "Summary":
+	case "Turn", "Trial", "Compare drafts", "Notes", "Review", "Summary":
 	default:
 		slot, found := strings.CutPrefix(s.Subject, "Draft ")
 		if !found || !validDraftSlot(slot) {
