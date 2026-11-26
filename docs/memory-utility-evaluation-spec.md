@@ -430,8 +430,8 @@ and a trial has no interface.
 Stage 1 starts by recording these from a real run. Factory's
 documentation speaks to the first three, and none of it has been
 checked here against a run. The first six items were checked on
-2026-11-25 (MEM-17, recorded under "As built" below); the seventh waits
-for the memory set (MEM-20).
+2026-11-25 (MEM-17, recorded under "As built" below), and the seventh
+was measured on a synthetic 1.05 GiB ledger on 2026-11-25 (MEM-20).
 
 - What a run with no interface reports when it ends: the last reply,
   the session's id, how long it took, and token counts.
@@ -749,6 +749,68 @@ tasks with their `reason_code`, verifies an optional `cutoff`
   `verify_task_against_manifest` recomputes every part hash from disk
   and refuses any task that is missing, excluded, or modified in any
   part or hidden test file.
+
+### Memory set (`usefulness/memory_set.py`, `usefulness/cli.py`, 2026-11-25, MEM-20)
+
+`src/agent_memory/usefulness/memory_set.py` and the CLI commands
+`mem --home <experiment_home> usefulness memory-set` and
+`verify-memory-set` implement immutable memory-set snapshots,
+write-once manifests, and per-trial home cloning:
+
+- `make_memory_set` copies `<source_home>/memory.duckdb` and all regular
+  files under `<source_home>/blobs/` into
+  `<experiment_home>/memory-set/` via a sibling staging directory and
+  writes `memory-set/manifest.json` once via `write_once_json`.
+  - Refuses the default home as the experiment home
+    (`ensure_experiment_home`), refuses nested source/experiment paths,
+    refuses overwriting an existing memory set, refuses symlinks under
+    `blobs/`, and refuses a source home that `mem serve` is serving
+    (checked via read-only DuckDB connection lock and non-empty
+    `memory.duckdb.wal`).
+  - Records the SHA-256 and byte size of `memory.duckdb` and every blob
+    file, the combined `memory_set_sha256`, the applied migration level
+    and checksums, the `cutoff` and `last_day` UTC bounds, counts of
+    memories by status, scope, and type (and active counts by scope and
+    type), and `validity_changes` (distinct memories whose `valid_from`
+    or effective end `min(valid_to, expires_at)` falls within
+    `[cutoff, last_day]`, with `non_terminal_crossing` excluding
+    already `retired`, `superseded`, or `deduplicated` rows).
+- `verify_memory_set` recomputes the database, per-blob, and combined
+  SHA-256 digests and refuses any missing, extra, or altered file.
+- `create_trial_home` verifies the memory set (by default), refuses the
+  default home and any non-empty target directory, generates a fresh
+  private `token` (`0o600`), and copies `memory.duckdb` and `blobs/`
+  into a fresh writable trial home. The memory set itself is never
+  written to, and every trial home stays readable after the run.
+- `estimate_run_disk_usage` computes the conservative non-CoW baseline
+  disk budget (`total_bytes * trial_count`) and optional copy-time
+  estimate for memory-arm trial homes.
+
+#### Copy time and disk measurement on a >= 1 GiB synthetic ledger
+
+Measured on 2026-11-25 on macOS (APFS) against a stopped synthetic
+ledger with a `1,116,745,728`-byte (`1.04 GiB`) DuckDB file and
+`10,485,760` bytes (`10 MiB`, 10 files) of blobs (`1,127,231,488` bytes
+/ `1.05 GiB` total):
+
+- `make_memory_set`: `0.166 s` copy, `0.596 s` total including SHA-256
+  hashing and DuckDB inspection.
+- `create_trial_home(verify=True)`: `0.156 s` copy, `0.555 s` total
+  including full SHA-256 re-verification of the memory set.
+- `create_trial_home(verify=False)`: `0.276 s` copy (`0.277 s` total).
+- Conservative non-CoW baseline disk budget for `N` memory-arm trial
+  homes (excluding the immutable memory set itself and per-trial writes):
+  - `20` memory-arm trials: `21.00 GiB` (`22,544,629,760` bytes; `~5.5 s`
+    copy at the measured APFS rate).
+  - `50` memory-arm trials: `52.49 GiB` (`56,361,574,400` bytes; `~13.8 s`
+    copy).
+  - `100` memory-arm trials: `104.98 GiB` (`112,723,148,800` bytes;
+    `~27.6 s` copy).
+- On APFS, `shutil.copyfile` uses `fcopyfile`, so unmodified blocks are
+  copy-on-write clones and actual physical disk growth is much smaller
+  than the conservative logical baseline above; on non-CoW filesystems
+  (such as ext4), plan for the full logical baseline plus per-trial
+  writes and slower physical copy throughput.
 
 ### Single-trial runner (`usefulness/runner.py`, `usefulness/cli.py`, 2026-11-25, MEM-18)
 

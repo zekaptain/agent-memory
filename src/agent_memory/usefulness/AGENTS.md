@@ -14,6 +14,10 @@ are in `docs/memory-utility-evaluation-spec.md`, and its terms are in
 - Write-once run files (task manifest, memory-set manifest, registration)
   must go through `store.write_once_json` and cannot be overwritten;
   deviations are append-only (`store.append_jsonl`).
+- A memory set (`memory_set.py`) is copied once from a stopped home
+  (never a home served by `mem serve`) and never written to afterwards.
+  Every memory-arm trial clones a fresh trial home via
+  `memory_set.create_trial_home`, which stays readable after the run.
 - A task's hidden tests live only under `<task_dir>/hidden_tests/` (never
   in the repository clone while the agent works) and are installed only
   after the agent finishes via `tasks.install_hidden_tests`. Every trial
