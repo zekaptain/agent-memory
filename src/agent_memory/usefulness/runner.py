@@ -30,10 +30,17 @@ from pathlib import Path
 from typing import Any, Literal, Protocol
 
 from ..config import Config
-from ..db import MemoryServer, initialize_home
+from ..db import MemoryClient, MemoryServer, initialize_home
 from ..endpoints import REMOTE_ENV, Unreachable, is_loopback, remote_allowed, require_egress
 from ..judge.store import private_dir, utc_now_iso
 from ..smoke import free_port
+from .accounting import (
+    RecallAccounting,
+    TrialLedgerBaseline,
+    account_trial_recall,
+    capture_trial_baseline,
+    import_trial_transcript,
+)
 from .store import UsefulnessError, UsefulnessRunStore, write_once_json
 from .tasks import TaskSpec, assert_hidden_tests_absent, load_task, load_verified_task
 
@@ -315,6 +322,7 @@ class HarnessResult:
     resolved_model: str | None = None
     resolved_reasoning_effort: str | None = None
     raw_events_path: Path | None = None
+    transcript_harness: str | None = None
 
 
 class HarnessAdapter(Protocol):
@@ -356,6 +364,7 @@ class TrialRecord:
     environment: Mapping[str, Any]
     record_path: Path
     record_sha256: str
+    recall_accounting: RecallAccounting | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -380,6 +389,9 @@ class TrialRecord:
             "wall_time": self.wall_time.to_dict(),
             "tool_calls": [tc.to_dict() for tc in self.tool_calls],
             "tokens": self.tokens.to_dict(),
+            "recall_accounting": (
+                self.recall_accounting.to_dict() if self.recall_accounting is not None else None
+            ),
             "started_at": self.started_at,
             "finished_at": self.finished_at,
             "paths": dict(self.paths),
@@ -1372,7 +1384,9 @@ def run_trial(
     # 2. Setup trial home & dedicated MemoryServer (memory arm only).
     t_setup_start = time.monotonic()
     server: MemoryServer | None = None
+    trial_cfg: Config | None = None
     trial_home_path: Path | None = None
+    trial_baseline: TrialLedgerBaseline | None = None
     memory_endpoint: MemoryEndpoint | None = None
     setup_error: str | None = None
 
@@ -1383,6 +1397,11 @@ def run_trial(
             trial_cfg = _prepare_trial_home(trial_home_path, config.source_home, port)
             server = MemoryServer(trial_cfg)
             server.start()
+            baseline_client = MemoryClient.from_config(trial_cfg)
+            try:
+                trial_baseline = capture_trial_baseline(baseline_client)
+            finally:
+                baseline_client.close()
             memory_endpoint = MemoryEndpoint(
                 home=trial_cfg.home,
                 host=trial_cfg.host,
@@ -1437,11 +1456,35 @@ def run_trial(
             )
     harness_s = time.monotonic() - t_harness_start
 
-    # 4. Teardown: stop MemoryServer, restore untouched sanitized MCP files, capture diff.
+    # 4. Teardown: import transcript & account recalls (memory arm), stop server, capture diff.
     t_teardown_start = time.monotonic()
-    if server is not None:
-        with contextlib.suppress(Exception):
-            server.stop()
+    recall_accounting: RecallAccounting | None = None
+    try:
+        if config.arm == "memory" and server is not None and trial_cfg is not None:
+            transcript_harness = harness_result.transcript_harness or active_adapter.name
+            import_summary, parsed_records = import_trial_transcript(
+                trial_cfg,
+                harness_result.transcript_path,
+                harness=transcript_harness,
+                memory_server_name=config.memory_server_name,
+            )
+            accounting_client = MemoryClient.from_config(trial_cfg)
+            try:
+                recall_accounting = account_trial_recall(
+                    accounting_client,
+                    transcript_path=harness_result.transcript_path,
+                    transcript_records=parsed_records,
+                    harness=transcript_harness,
+                    memory_server_name=config.memory_server_name,
+                    baseline=trial_baseline,
+                    transcript_import=import_summary,
+                )
+            finally:
+                accounting_client.close()
+    finally:
+        if server is not None:
+            with contextlib.suppress(Exception):
+                server.stop()
     _restore_untouched_sanitized_files(sanitized_files)
     repo_changes = _capture_repo_changes(clone_dir, base_commit)
     teardown_s = time.monotonic() - t_teardown_start
@@ -1532,6 +1575,9 @@ def run_trial(
         "wall_time": wall_time.to_dict(),
         "tool_calls": [tc.to_dict() for tc in harness_result.tool_calls],
         "tokens": harness_result.tokens.to_dict(),
+        "recall_accounting": (
+            recall_accounting.to_dict() if recall_accounting is not None else None
+        ),
         "started_at": started_at,
         "finished_at": finished_at,
         "paths": paths,
@@ -1571,4 +1617,5 @@ def run_trial(
         environment=environment,
         record_path=record_path,
         record_sha256=record_sha256,
+        recall_accounting=recall_accounting,
     )

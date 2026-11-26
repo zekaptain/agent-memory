@@ -252,4 +252,16 @@ def run_trial_command(
         f"tokens      in={record.tokens.input_tokens} out={record.tokens.output_tokens} "
         f"total={record.tokens.total_tokens}"
     )
+    if record.recall_accounting is not None:
+        ra = record.recall_accounting
+        ci = ra.citations
+        print(
+            f"recall      total={ra.total_recalls} "
+            f"(returned={ra.returned_count}, miss={ra.miss_count}, "
+            f"degraded={ra.degraded_count}, missing_record={ra.missing_record_count})  "
+            f"citations={ci.citations_made} "
+            f"(returned_cited={ci.returned_memories_cited_count}, "
+            f"unbound={ci.unbound_placeholder_count}, "
+            f"single_reply={ci.single_citation_reply_count})"
+        )
     print(f"record      {record.record_path}")
