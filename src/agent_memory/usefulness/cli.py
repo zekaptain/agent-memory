@@ -20,6 +20,15 @@ from .runner import (
     TrialConfig,
     run_trial,
 )
+from .schedule import (
+    VALID_SPLIT_FILTERS,
+    RetryRule,
+    ScheduleRunConfig,
+    SplitFilter,
+    create_run_schedule,
+    inspect_schedule_progress,
+    run_schedule,
+)
 from .store import UsefulnessError
 
 usefulness_app = typer.Typer(
@@ -325,3 +334,247 @@ def run_checks_command(
         print(f"hidden      error: {result.hidden_tests_error}")
     print(f"duration    {result.total_duration_s:.2f}s")
     print(f"results     {result.checks_path}")
+
+
+def _parse_task_repeats(entries: list[str] | None) -> dict[str, int] | None:
+    if not entries:
+        return None
+    parsed: dict[str, int] = {}
+    for raw in entries:
+        if "=" not in raw:
+            raise UsefulnessError(
+                f"invalid --task-repeat {raw!r}: expected '<task_id>=<positive_int>'"
+            )
+        task_id, count_str = raw.split("=", 1)
+        task_id = task_id.strip()
+        if not task_id:
+            raise UsefulnessError(f"invalid --task-repeat {raw!r}: empty task_id")
+        try:
+            count = int(count_str.strip())
+        except ValueError:
+            raise UsefulnessError(
+                f"invalid --task-repeat {raw!r}: repeat count must be an integer"
+            ) from None
+        parsed[task_id] = count
+    return parsed
+
+
+def _parse_split_filter(raw: str) -> SplitFilter:
+    if raw == "calibration":
+        return "calibration"
+    if raw == "held_out":
+        return "held_out"
+    if raw == "all":
+        return "all"
+    raise UsefulnessError(f"invalid --split {raw!r}: expected one of {VALID_SPLIT_FILTERS}")
+
+
+@usefulness_app.command("schedule")
+def schedule_command(
+    ctx: typer.Context,
+    run_id: Annotated[
+        str,
+        typer.Option("--run-id", help="Run identifier under <experiment_home>/runs/<run_id>."),
+    ],
+    seed: Annotated[
+        int,
+        typer.Option("--seed", help="Registered integer seed fixing pair and arm order."),
+    ],
+    split: Annotated[
+        str,
+        typer.Option("--split", help="Manifest split to schedule: held_out, calibration, or all."),
+    ] = "held_out",
+    repeats: Annotated[
+        int,
+        typer.Option("--repeats", min=1, help="Default number of repeated pairs per task."),
+    ] = 1,
+    task_repeat: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--task-repeat",
+            help="Per-task repeat override as '<task_id>=<count>' (repeatable).",
+        ),
+    ] = None,
+    max_pair_retries: Annotated[
+        int,
+        typer.Option(
+            "--max-pair-retries",
+            min=0,
+            help="Maximum additional attempts per pair allowed by the retry rule (default 0).",
+        ),
+    ] = 0,
+    retry_category: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--retry-category",
+            help="Failure category eligible for pair retry (repeatable; required when "
+            "--max-pair-retries > 0).",
+        ),
+    ] = None,
+    as_json: Annotated[
+        bool,
+        typer.Option("--json", help="Print the created schedule as JSON."),
+    ] = False,
+) -> None:
+    """Create and persist a write-once seeded pair schedule from a run's task manifest."""
+    cfg = command_config(ctx)
+    split_filter = _parse_split_filter(split)
+    overrides = _parse_task_repeats(task_repeat)
+    rule = RetryRule(
+        max_pair_retries=max_pair_retries,
+        retryable_failure_categories=tuple(retry_category or ()),
+    )
+    schedule, schedule_sha = create_run_schedule(
+        cfg,
+        run_id,
+        seed=seed,
+        split=split_filter,
+        repeats=repeats,
+        task_repeats=overrides,
+        retry_rule=rule,
+    )
+    if as_json:
+        payload = {
+            "schedule_sha256": schedule_sha,
+            "schedule": schedule.to_dict(),
+        }
+        print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+        return
+
+    print(f"run         {schedule.run_id}")
+    print(f"seed        {schedule.seed}  split={schedule.split}")
+    print(f"pairs       {len(schedule.pairs)}  repeats={schedule.default_repeats}")
+    print(
+        f"retry rule  max_pair_retries={schedule.retry_rule.max_pair_retries}  "
+        f"categories={list(schedule.retry_rule.retryable_failure_categories)}"
+    )
+    print(f"sha256      {schedule_sha}")
+
+
+@usefulness_app.command("schedule-status")
+def schedule_status_command(
+    ctx: typer.Context,
+    run_id: Annotated[
+        str,
+        typer.Option("--run-id", help="Run identifier under <experiment_home>/runs/<run_id>."),
+    ],
+    as_json: Annotated[
+        bool,
+        typer.Option("--json", help="Print reconciled schedule status as JSON."),
+    ] = False,
+) -> None:
+    """Inspect a scheduled run's completed, failed, interrupted, and pending trials."""
+    cfg = command_config(ctx)
+    progress = inspect_schedule_progress(cfg, run_id)
+    if as_json:
+        print(json.dumps(progress.to_dict(), ensure_ascii=False, indent=2, sort_keys=True))
+        return
+
+    print(
+        f"run         {progress.schedule.run_id}  seed={progress.schedule.seed}  "
+        f"split={progress.schedule.split}"
+    )
+    print(
+        f"trials      completed={progress.completed_trials}  failed={progress.failed_trials}  "
+        f"interrupted={progress.interrupted_trials}  pending={len(progress.pending_slots)}"
+    )
+    print(
+        f"pairs       scheduled={len(progress.schedule.pairs)}  "
+        f"attempts={len(progress.attempts)}  retried={progress.retried_pairs}"
+    )
+
+
+@usefulness_app.command("run-schedule")
+def run_schedule_command(
+    ctx: typer.Context,
+    run_id: Annotated[
+        str,
+        typer.Option("--run-id", help="Run identifier under <experiment_home>/runs/<run_id>."),
+    ],
+    model: Annotated[
+        str,
+        typer.Option("--model", help="Model id passed to the harness."),
+    ] = DEFAULT_DROID_MODEL,
+    reasoning_effort: Annotated[
+        str | None,
+        typer.Option("--reasoning-effort", help="Optional reasoning effort passed to the harness."),
+    ] = None,
+    model_base_url: Annotated[
+        str | None,
+        typer.Option(
+            "--model-base-url",
+            help="Base URL of the model server. Loopback URLs run without egress opt-in; "
+            "omitting it treats the model as hosted.",
+        ),
+    ] = None,
+    source_home: Annotated[
+        Path | None,
+        typer.Option(
+            "--source-home",
+            help="Stopped throwaway home or memory-set directory to clone into memory-arm trials.",
+        ),
+    ] = None,
+    wall_time_limit: Annotated[
+        float,
+        typer.Option(
+            "--wall-time-limit",
+            help="External wall-time limit in seconds before stopping the harness.",
+        ),
+    ] = DEFAULT_WALL_TIME_LIMIT_S,
+    auto_level: Annotated[
+        str,
+        typer.Option("--auto-level", help="Droid --auto autonomy level (low, medium, high)."),
+    ] = DEFAULT_AUTO_LEVEL,
+    tasks_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--tasks-dir",
+            help="Directory containing task subdirectories (defaults to <experiment_home>/tasks).",
+        ),
+    ] = None,
+    max_trials: Annotated[
+        int | None,
+        typer.Option("--max-trials", min=1, help="Stop cleanly after executing at most N trials."),
+    ] = None,
+    droid_bin: Annotated[
+        str,
+        typer.Option("--droid-bin", help="Droid executable path or name."),
+    ] = "droid",
+    as_json: Annotated[
+        bool,
+        typer.Option("--json", help="Print the run summary as JSON."),
+    ] = False,
+) -> None:
+    """Execute or resume a run's scheduled pairs in seeded order."""
+    cfg = command_config(ctx)
+    run_cfg = ScheduleRunConfig(
+        model=model,
+        reasoning_effort=reasoning_effort,
+        wall_time_limit_s=wall_time_limit,
+        auto_level=auto_level,
+        model_base_url=model_base_url,
+        source_home=source_home,
+    )
+    adapter = DroidHarnessAdapter(droid_bin=droid_bin)
+    result = run_schedule(
+        cfg,
+        run_id,
+        run_cfg,
+        tasks_dir=tasks_dir,
+        adapter=adapter,
+        max_trials=max_trials,
+    )
+    if as_json:
+        print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2, sort_keys=True))
+        return
+
+    p = result.progress
+    print(f"run         {p.schedule.run_id}  executed={len(result.executed_trial_ids)}")
+    print(
+        f"trials      completed={p.completed_trials}  failed={p.failed_trials}  "
+        f"interrupted={p.interrupted_trials}  pending={len(p.pending_slots)}"
+    )
+    print(
+        f"state       complete={p.is_complete}  interrupted={result.interrupted}  "
+        f"stopped_by_max_trials={result.stopped_by_max_trials}"
+    )

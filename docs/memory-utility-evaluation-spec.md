@@ -926,6 +926,43 @@ checks on a finished trial's clone and keep the results beside the trial:
   `hidden_test_conflict` when the agent's clone already holds a file or
   symlink at a hidden-test path).
 
+### Pair schedule and resumable execution (MEM-22)
+
+`src/agent_memory/usefulness/schedule.py` and the `mem usefulness
+schedule`, `mem usefulness schedule-status`, and `mem usefulness
+run-schedule` CLI commands fix a run's pair order and within-pair arm
+order from a registered integer seed and `task-manifest.json`:
+
+- **Deterministic order and repeats:** `build_schedule` sorts the
+  selected split's tasks by `task_id`, expands repeated trials per task
+  (`repeats` and per-task `task_repeats` overrides, producing canonical
+  pair IDs `<task_id>__r<k>`), shuffles the sorted pair list with
+  `random.Random(seed)`, and draws each pair's arm order from the same
+  seeded generator. `create_run_schedule` persists `schedule.json` once
+  via `UsefulnessRunStore.write_schedule` alongside
+  `task_manifest_sha256`; `load_run_schedule` refuses to continue if
+  `task-manifest.json` no longer matches.
+- **Resumable execution and preserved interruptions:** `run_schedule`
+  tracks execution in append-only `schedule-events.jsonl` and assigns
+  attempt-scoped trial IDs (`<pair_id>__a<attempt>__<arm>`). Preflight
+  checks (egress, source home, task manifest verification) run before
+  logging `trial_started` so configuration refusals never create false
+  interrupted markers. A trial interrupted mid-run (whether caught and
+  recorded with `failure_category="interrupted"` in `record.json`, or
+  hard-crashed before `record.json` could be written) is kept intact,
+  marked via `record.json` or a write-once `interrupted.json` plus a
+  `trial_interrupted` event, and never overwritten in place; resuming
+  continues with the unmade trials in seeded order.
+- **Explicit retry policy:** `RetryRule` (stored in `schedule.json`,
+  defaulting to `max_pair_retries=0`) is the sole rule deciding whether
+  a finished pair attempt is run again as `attempt + 1`. A pair is
+  retried only when `attempt <= max_pair_retries`, at least one arm did
+  not complete, and every non-completed arm's `failure_category` is in
+  `retryable_failure_categories`. Retry attempts receive fresh trial IDs
+  and an independent deterministic arm order derived from
+  `(seed, pair_id, attempt)` so retrying one pair never shifts another
+  pair's arm order.
+
 ## Runs
 
 None yet. A run is listed here with the SHA-256 of its registration when
