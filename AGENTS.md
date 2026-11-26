@@ -64,11 +64,13 @@ uv run mem smoke
 The Go labeling helper has checks of its own, listed in
 `src/agent_memory/judge/AGENTS.md`, and the omp TypeScript extension has
 its own tests (`bun test src/agent_memory/adapters/omp/omp.test.ts`). CI
-(`.github/workflows/ci.yml`) runs all three lists on every pull request
-and on every push to `main`: Ruff and Pyrefly once, the tests and
-`mem smoke` on Linux and on macOS with the Python that `.python-version`
-names, the Go checks once, and the omp extension tests once. When a
-command in any list changes, change it there too.
+(`.github/workflows/ci.yml`) runs all three lists on every push to `main`
+and on pull requests that touch files outside `docs/` and `*.md`: Ruff
+and Pyrefly once, the tests and `mem smoke` on Linux and on macOS with
+the Python that `.python-version` names, the Go checks once, and the omp
+extension tests once. Documentation-only pull requests skip the Linux
+and macOS test matrix. When a command in any list changes, change it
+there too.
 
 Use `uv run ruff format <changed-files>` to format only files you touched.
 Ruff targets Python 3.12 with a 100-character line limit. Follow the existing
