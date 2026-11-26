@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Annotated
 
@@ -23,6 +24,7 @@ from .registration import (
     list_deviations,
     verify_registration_artifacts,
 )
+from .report import build_report
 from .runner import (
     DEFAULT_AUTO_LEVEL,
     DEFAULT_DROID_MODEL,
@@ -941,3 +943,63 @@ def attribute_command(
         tasks_dir=tasks_dir,
         progress=lambda msg: typer.echo(msg, err=True),
     )
+
+
+@usefulness_app.command("report")
+def report_command(
+    ctx: typer.Context,
+    run_id: Annotated[
+        str,
+        typer.Option("--run-id", help="Run identifier under <experiment_home>/runs/<run_id>."),
+    ],
+    split: Annotated[
+        str | None,
+        typer.Option(
+            "--split",
+            help="Split to report: held_out, calibration, or all (auto-detected when omitted).",
+        ),
+    ] = None,
+    bootstrap_seed: Annotated[
+        int | None,
+        typer.Option(
+            "--bootstrap-seed",
+            help="Bootstrap seed for unregistered calibration runs (registered runs use the "
+            "registered seed).",
+        ),
+    ] = None,
+    bootstrap_resamples: Annotated[
+        int | None,
+        typer.Option(
+            "--bootstrap-resamples",
+            min=1,
+            help="Bootstrap resample count for unregistered calibration runs (registered runs "
+            "use the registered count).",
+        ),
+    ] = None,
+    no_write: Annotated[
+        bool,
+        typer.Option(
+            "--no-write",
+            help="Build and print the report without writing report.md / report.json.",
+        ),
+    ] = False,
+    as_json: Annotated[
+        bool,
+        typer.Option("--json", help="Print the canonical structured JSON report to stdout."),
+    ] = False,
+) -> None:
+    """Build the deterministic local aggregate report for a usefulness run."""
+    cfg = command_config(ctx)
+    split_filter = _parse_split_filter(split) if split is not None else None
+    result = build_report(
+        cfg,
+        run_id,
+        split=split_filter,
+        bootstrap_seed=bootstrap_seed,
+        bootstrap_resamples=bootstrap_resamples,
+        write=not no_write,
+    )
+    if as_json:
+        sys.stdout.write(result.json_text)
+        return
+    sys.stdout.write(result.markdown)
