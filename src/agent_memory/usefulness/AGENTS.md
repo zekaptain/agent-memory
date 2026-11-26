@@ -11,9 +11,13 @@ are in `docs/memory-utility-evaluation-spec.md`, and its terms are in
 - The usefulness experiment adds no table, no migration, and no agent to
   any ledger, and refuses to use the default home as an experiment home
   (`store.ensure_experiment_home`).
-- Write-once run files (task manifest, memory-set manifest, registration)
-  must go through `store.write_once_json` and cannot be overwritten;
-  deviations are append-only (`store.append_jsonl`).
+- Write-once run files (task manifest, memory-set manifest, schedule,
+  registration) must go through `store.write_once_json` and cannot be
+  overwritten; deviations and schedule execution events are append-only
+  (`store.append_jsonl`). Interrupted trials are kept and marked on disk
+  (`record.json` with `failure_category="interrupted"` or write-once
+  `interrupted.json`), never overwritten in place; pair retries use new
+  attempt-scoped trial IDs and follow `schedule.RetryRule` only.
 - A memory set (`memory_set.py`) is copied once from a stopped home
   (never a home served by `mem serve`) and never written to afterwards.
   Every memory-arm trial clones a fresh trial home via
