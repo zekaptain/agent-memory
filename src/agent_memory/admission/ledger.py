@@ -139,7 +139,9 @@ def admit(
                     {"event_id": source, "relation": "derived_from"} for source in sorted(sources)
                 ],
             )
-            if human_action is not None or (auto and result["action"] == "write"):
+            if human_action is not None or (
+                auto and result["action"] == "write" and mid not in plan.content_quarantined
+            ):
                 action = human_action or {
                     "action_id": stable_id(eid, "approve"),
                     "action": "approve",

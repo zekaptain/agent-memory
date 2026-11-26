@@ -16,6 +16,13 @@ import duckdb
 
 from .capture.record import parse_ts
 from .db import AgentMemoryError, MemoryClient, retrying, sql_literal
+from .quarantine import (
+    QUARANTINE_ACTOR,
+    Finding,
+    format_reason,
+    screen_memory,
+    screen_metadata,
+)
 
 REVIEW_ACTIONS = frozenset({"approve", "quarantine", "retire", "confirm", "flag_contradiction"})
 TERMINAL = frozenset({"retired", "superseded", "expired", "deduplicated"})
@@ -85,6 +92,7 @@ class LifecyclePlan:
         self.actions: set[str] = set()
         self.sources: set[tuple[str, str, str]] = set()
         self.proposals: set[tuple[str, str]] = set()
+        self.content_quarantined: dict[str, tuple[Finding, ...]] = {}
 
     def resolve(self, memory_id: str) -> str:
         """Resolve only explicit dedup links. Supersession is NEVER an identity alias."""
@@ -300,11 +308,27 @@ class LifecyclePlan:
                 }
             )
         self.add_sources(canonical, sources)
+        findings = screen_memory(row)
+        if findings:
+            self.content_quarantined[canonical] = findings
+            if not duplicate and not existing_id:
+                self._action(
+                    {
+                        "action_id": stable_id(event_id, f"content-quarantine:{canonical}"),
+                        "memory_id": canonical,
+                        "action": "quarantine",
+                        "actor": QUARANTINE_ACTOR,
+                        "session_id": row.get("created_by_session"),
+                        "event_id": event_id,
+                        "reason": format_reason(findings),
+                        "metadata": screen_metadata(findings),
+                    }
+                )
         if carry_approval_from:
             source = self.memory(self.resolve(carry_approval_from))
             if source.get("status") != "active":
                 raise LifecycleError("merge approval requires an active source relation")
-            if not duplicate and row["trust_level"] == "tool":
+            if not duplicate and row["trust_level"] == "tool" and not findings:
                 self.review(
                     {
                         "action_id": stable_id(event_id, f"merge-approve:{canonical}"),

@@ -95,7 +95,7 @@ All runtime paths below are under `src/agent_memory/`.
 | Location | Responsibility | Main tests |
 | --- | --- | --- |
 | `config.py`, `db.py`, `migrations/` | Configuration, migrations, authorization, Quack, export | `test_config`, `test_schema`, `test_migrations`, `test_attribution_migrations`, `test_authorize`, `test_server` |
-| `lifecycle.py` | Shared append-only memory writes, correction proposals, bounded due work | `test_lifecycle` |
+| `lifecycle.py`, `quarantine.py` | Shared append-only memory writes, write-time quarantine screen for invisible or instruction-like text, correction proposals, bounded due work | `test_lifecycle`, `test_quarantine` |
 | `audit.py` | Read-only `mem audit check` diagnostics, legacy replacement reconstruction | `test_audit_check` |
 | `review.py` | `mem review`: the memories awaiting approval, and a human's approval or retirement of one | `test_review` |
 | `hooks.py`, `extension.py` | `mem hooks`: mem's capture command in Droid's hooks file; `mem extension`: mem's capture extension in omp's extensions directory, installed, checked, and removed with everything else left alone | `test_hooks`, `test_omp_extension` |

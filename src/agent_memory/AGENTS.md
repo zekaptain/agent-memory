@@ -58,7 +58,12 @@ attribution, the `mem audit check` preflight, or rollout policy.
   entity merge carries over and admission's approvals. `mem-mcp` refuses
   to run as `human`, and `mem review approve` takes its answer from a
   terminal only. Do not add a route by which an agent's session approves.
-- Tool-derived memories start quarantined. Every recall reads active
+- Tool-derived memories start quarantined. Any memory whose content (or
+  relation fields) holds invisible or direction-changing characters or
+  instruction-like text also starts quarantined in `LifecyclePlan.remember`
+  (`quarantine.py`) regardless of its claimed `trust_level`, with its
+  content stored as written; neither entity merges nor admission auto mode
+  may approve it without a human. Every recall reads active
   memories and records a retrieval, a miss included, whatever its
   strategy: a query, a walk of relations from an entity, or the listing
   of every relation that `mem graph entities` and `resolve` read.

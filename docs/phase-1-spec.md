@@ -2349,3 +2349,46 @@ when `hooks.json` in the same directory does not define that event.
   hooks but is not JSON).
 - Neither command modifies `settings.json`, and neither prints any
   command from `settings.json`.
+
+### Write-time quarantine for invisible or instruction-like text (2026-11-25)
+
+Every memory write now passes through a deterministic, model-free
+content screen (`quarantine.py`, invoked by `LifecyclePlan.remember`)
+before the memory can become active (MEM-13).
+
+- **Routes covered.** Applies to every route that writes a memory:
+  `remember`, `relate` (screening `content`, `key`, and `metadata.graph`
+  entity/predicate fields), corrections (`supersedes`), spooled replay
+  through `capture/writer.py`, entity merges (`graph/merge.py`), and
+  admission (`admission/ledger.py`).
+- **Behavior on a hit.** Nothing is refused, dropped, or rewritten:
+  `memories.content` is stored as written, and a `quarantine` review
+  action (`actor = "ledger"`) is recorded in the same transaction with a
+  human-readable reason and structured `metadata.content_screen`
+  details. The claimed `trust_level` (`user`, `agent`, `tool`, or
+  `imported`) does not exempt a memory. Quarantined memories are never
+  returned by `recall`, `graph`, or `relations`, and a flagged
+  correction stays pending (`awaiting_approval`) without superseding its
+  predecessor until a human approves it.
+- **No agent or automatic bypass.** Entity merges do not carry an
+  earlier approval onto a flagged replacement relation, and admission in
+  auto mode does not auto-approve a flagged lesson (new or duplicate).
+  Only a human approves or retires a flagged memory (through
+  `mem review` at a terminal, or human-labeled `mem admit review`).
+  `mem review list` shows the recorded quarantine reason.
+- **Patterns and false-hit check.** The screen checks two classes:
+  invisible, direction-changing, or non-whitespace control characters
+  (Unicode categories `Cf` and `Cc` other than `\t`, `\n`, `\r`, plus
+  `U+034F`, Unicode Tags `U+E0000`..`U+E007F`, and Variation Selectors
+  Supplement `U+E0100`..`U+E01EF`), and six tested instruction-like
+  patterns (`instruction_override`, `role_hijack`, `prompt_delimiter`,
+  `conceal_from_user`, `secret_exfiltration`, `recall_trigger`).
+  Measured on 2026-11-25 before shipping: 0 of 0 existing memories in
+  the production home, 0 of 1,045 drafted lessons across the experiment
+  home's `exp1` to `exp4`, 0 of 98 non-test source and configuration
+  files in this repository, and 0 of 42 Markdown documents.
+- **MCP instructions.** `mem-mcp` (`INSTRUCTIONS` and the `remember`
+  tool description) states that a memory containing invisible or
+  direction-changing characters or instruction-like text starts
+  quarantined regardless of `trust_level` and waits for the user to
+  approve it with `mem review`.
